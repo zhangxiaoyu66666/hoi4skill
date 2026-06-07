@@ -64,6 +64,18 @@ hoi4skill validate "M:\path\existing_mod" --game-root "C:\path\Hearts of Iron IV
 - 想把中文设定、国策构想、事件草稿变成结构化 MOD 文件的人。
 - 想给自己的 MOD 团队建立更稳定工作流的人。
 
+### 安装到 AI 编程工具
+
+本仓库的 `hoi4-mod-maker/` 是标准 `SKILL.md` 技能包，可用于 Codex、OpenCode、Claude Code 以及其他兼容 Agent Skills 的工具。
+
+最省事的方式是下载 GitHub Releases 里的 `hoi4skill-agent-skill-v*.zip`，按 [INSTALL_AGENT_SKILL.md](INSTALL_AGENT_SKILL.md) 解压到对应目录。
+
+也可以直接从源码路径安装：
+
+```text
+https://github.com/zhangxiaoyu66666/hoi4skill/tree/main/hoi4-mod-maker
+```
+
 ---
 
 ## 2. 未来可能会做什么

@@ -94,6 +94,8 @@ Read only the reference needed for the current task:
 
 Use `hoi4skill.exe` for local work. It combines scaffolding, parsing, file generation, validation, style scanning, icon preview, error-log analysis, and optional structured YAML emission in one binary. Do not call PowerShell or Python helper scripts; this skill is Rust-only.
 
+If this skill was installed from the release package, prefer the bundled Windows binary at `bin/windows-x64/hoi4skill.exe` inside the skill folder when `hoi4skill` is not already on `PATH`. If the skill was installed from the source tree or on a non-Windows machine, build the CLI from `hoi4skill-cli` with `cargo build --release` before running CLI commands.
+
 ```text
 hoi4skill scaffold --name "My HOI4 Mod" --output "M:\path\my_hoi4_mod" --launcher-file
 hoi4skill generate-mod --text "给德国加一个国策，完成后获得3个军工厂，并触发一个新闻事件。" --output "M:\path\my_hoi4_mod"
