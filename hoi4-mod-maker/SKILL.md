@@ -28,17 +28,25 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - For decision, national-spirit, technology, or special-GUI cards, follow `references/decision-idea-cards.md`.
    - For event cards, follow `references/event-cards.md`.
    - For country creation, country leaders, or country leader traits, follow `references/country-creation-leaders.md`.
-4. Edit or create the minimum required files.
+4. Before writing generated workflow content, run a dry run.
+   - Run `hoi4skill run-workflow --input <copy.txt> --tag <TAG> --prefix <prefix> --dry-run --output workflow_plan.json`.
+   - Read the dry-run plan before writing files. Confirm target tag, prefix, touched systems, generated IDs, localisation targets, skipped reasons, warnings, and validation expectations.
+   - If using a narrower `apply-*` path instead of `run-workflow`, first run the matching `parse-*` command and inspect the generated plan.
+   - If the plan touches `history/countries`, `history/states`, state IDs, province IDs, or capitals, run `hoi4skill plan-history-edit` and follow its `decision`, `checks`, `warnings`, and `skipped` entries before writing.
+5. Edit or create the minimum required files.
    - Preserve existing formatting and folder organization.
    - Keep unrelated mod content unchanged.
    - Add Simplified Chinese localisation when the request is Chinese.
    - Add English localisation only when the mod already uses it or the user asks.
    - For icon work, support `.dds`, `.png`, and `.tga`; add or reuse `interface/*.gfx` sprite definitions, preview icons when useful, and run `register-gfx-icons` before referencing new custom images.
    - When `register-gfx-icons` sees a non-English/non-ASCII image filename, it automatically translates the local filename into a semantic English filename, renames the asset, updates matching `interface/*.gfx` texturefile references, and then registers sprites. If the filename is already English/ASCII, it is left unchanged. If the filename cannot be translated semantically, skip that image and report it in `skipped_assets` for the AI/user summary; never invent random names such as `SOV_12347.png`.
-5. Validate.
+6. Validate.
    - Run `hoi4skill validate <mod-root>` after edits.
    - Also run any repo-specific checks if the mod provides them.
-6. Report exactly what was created or changed and any remaining in-game test steps.
+7. After the mod is launched in HOI4, analyze `error.log`.
+   - Run `hoi4skill analyze-error-log --input "<HOI4 user folder>\\logs\\error.log" --mod-root <mod-root> --output error_report.json`.
+   - Treat new log entries as repair evidence. Do not claim the feature is in-game clean until the relevant `error.log` output has been checked.
+8. Report exactly what was created or changed, which gates were run, and any remaining in-game test steps.
 
 ## Hard Output Rules
 
@@ -55,7 +63,12 @@ These are non-negotiable for AI-generated HOI4 content:
 - If the target TAG is unknown, infer it from local localisation plus `common/country_tags` and `common/countries` when a source mod is available. If it still cannot be determined, stop and ask; do not invent prefix-based localisation.
 - When editing an existing mod, do not generate code from memory alone. First build/read `mod_knowledge.json`; facts missing from it are unknown until verified in local files or dependency indexes.
 - For country creation and country leaders, standalone mods use modern `common/characters` plus `history/countries` `recruit_character` by default unless the user asks for legacy syntax. Submods must follow the dependency mod's observed country/leader syntax from `mod_knowledge.json` and `--mod-path`; if dependency syntax is not indexed, report it as unknown instead of guessing.
-- For history files, states, provinces, capitals, cores, resources, buildings, and victory points, follow `references/history-states-provinces.md`. `capital` uses a province ID, not a state ID; if the target mod has no local `history/states` or `map/definition.csv`, index the game/dependency root or ask for explicit IDs instead of guessing.
+- For history files, states, provinces, capitals, cores, resources, buildings, and victory points, follow `references/history-states-provinces.md`.
+- Never edit `history/states` or `history/countries` from a place name, localisation key, focus text, or memory alone. Direct history edits require local file evidence or indexed game/dependency evidence.
+- Before any direct `history/states` edit, run `hoi4skill plan-history-edit`. If `direct_history_edit_allowed` is false, do not write `history/states`; report the skipped reason and use a state-scoped scripted effect or ask for missing IDs.
+- State IDs identify `history/states` blocks/files. Province IDs come from state `provinces = { ... }` or `map/definition.csv`. `victory_points = { <province_id> <points> }` uses province IDs.
+- `capital = ...` in `history/countries` uses a province ID, not a state ID. If a value also matches a known state ID, warn and verify manually before writing.
+- Buildings and resources in `history/states` are state-level data. Gameplay rewards should normally use state-scoped effects such as `random_owned_controlled_state` plus `add_building_construction`, not direct start-date state-file edits.
 
 ## Reference Files
 
@@ -192,5 +205,7 @@ When details are missing:
 ## Validation Discipline
 
 Always run the validator after generating files. If the validator warns about localisation BOM or missing in-game-only validation, explain that clearly without claiming the mod is fully tested in HOI4.
+
+After an in-game launch test, analyze the current HOI4 `error.log` with `hoi4skill analyze-error-log`. Summarize new errors and repair hints for the user; do not treat static validation as a substitute for the in-game log.
 
 Do not claim Workshop readiness unless `descriptor.mod`, launcher `.mod` metadata, thumbnail policy, and an in-game launch test have all been handled.
