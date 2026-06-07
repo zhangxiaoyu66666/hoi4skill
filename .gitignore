@@ -1,0 +1,52 @@
+# Rust build output
+target/
+hoi4skill-cli/target/
+
+# Private research, local demos, and release drafts
+研究.md
+_research/
+chinaprc_1979/
+chinaprc_1979.mod
+sov_nep_demo/
+sov_nep_demo.mod
+TIEBA_POST.md
+TAURI_RUST_FLUENT_DESKTOP_ROADMAP.md
+
+# Local scratch and generated reports
+_scratch/
+hoi4skill-cli/_scratch/
+*.tmp
+*.bak
+*.log
+*_report.json
+*_plan.json
+*_knowledge.json
+*_style.json
+game_index.json
+mod_knowledge.json
+workflow_report.json
+workflow_plan.json
+history_plan.json
+
+# Local launcher files and generated demo launchers
+*.mod
+_scratch/**/*.mod
+**/local/*.mod
+
+# Archives and packaged release artifacts
+*.zip
+*.rar
+*.7z
+
+# Windows and editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store
+.idea/
+.vscode/
+
+# Large or private local assets
+*.pdb
+*.rmeta
+*.rlib
+*.dds

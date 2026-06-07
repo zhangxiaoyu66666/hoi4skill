@@ -1,0 +1,6 @@
+interface:
+  display_name: "HOI4 Mod Maker"
+  short_description: "Turn HOI4 mod ideas into real files"
+  default_prompt: "Use $hoi4-mod-maker to turn my Hearts of Iron IV mod idea into complete, validated mod files."
+policy:
+  allow_implicit_invocation: true
