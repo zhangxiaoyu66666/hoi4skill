@@ -242,7 +242,9 @@ impl Reporter {
         if self.errors.is_empty() && self.warnings.is_empty() {
             println!("OK: no static issues found.");
         } else if self.errors.is_empty() {
-            println!("OK: warnings only.");
+            println!("WARN: warnings only; review the list above.");
+        } else {
+            println!("ERROR: validation failed.");
         }
     }
 }

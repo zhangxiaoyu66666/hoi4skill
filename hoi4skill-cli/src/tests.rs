@@ -2413,6 +2413,19 @@ fn validator_warns_for_mod_name_localisation_keys() {
 }
 
 #[test]
+fn workflow_validation_json_marks_warnings_as_not_ok() {
+    let mut reporter = Reporter::default();
+    reporter.warn("localisation file has no UTF-8 BOM".to_string());
+
+    let json = workflow_validation_json(Some(&reporter));
+
+    assert!(json.contains("\"ran\": true"));
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("\"status\": \"warnings\""));
+    assert!(json.contains("UTF-8 BOM"));
+}
+
+#[test]
 fn focus_copy_prompt_scans_focus_localisation() {
     let root = unique_temp_dir("focus-copy-prompt");
     fs::create_dir_all(root.join("common").join("national_focus")).unwrap();
@@ -2697,6 +2710,10 @@ fn focus_copy_cards_render_prompt_batch() {
     assert!(markdown.contains("保守脚本骨架"));
     assert!(markdown.contains("内部第一视角"));
     assert!(markdown.contains("第三方观察者"));
+    assert!(markdown.contains("完整国策骨架"));
+    assert!(markdown.contains("focus = {"));
+    assert!(markdown.contains("relative_position_id =  #基于某个国策位置的相对位置"));
+    assert!(markdown.contains("country = { factor = 0 modifier = { add = 10 tag = <TAG> } }"));
 }
 
 #[test]

@@ -32,7 +32,27 @@ Minimal pieces:
 
 - `common/national_focus/<prefix>_<tag>_focus.txt`
 - `focus_tree` with a unique tree ID or an edit to the existing tree.
-- `focus = { id = ... icon = ... x = ... y = ... cost = 2.5 ai_will_do = { factor = 10 } available = { } bypass = { } cancel_if_invalid = yes continue_if_invalid = no available_if_capitulated = no completion_reward = { ... } }`
+- Always emit the full focus skeleton; do not collapse it into a short focus stub.
+- `focus_tree = {`
+  `id = ...`
+  `country = { factor = 0 modifier = { add = 10 tag = <TAG> } }`
+  `focus = {`
+    `id = ...`
+    `icon = ...`
+    `x = ...`
+    `y = ...`
+    `prerequisite = { focus = ... }`
+    `relative_position_id = ...`
+    `cost = 2.5`
+    `ai_will_do = { factor = 10 }`
+    `available = { }`
+    `bypass = { }`
+    `cancel_if_invalid = yes`
+    `continue_if_invalid = no`
+    `available_if_capitulated = no`
+    `completion_reward = { ... }`
+  `}`
+`}`
 - localisation keys: `<focus_id>` and `<focus_id>_desc`.
 
 Immediate rewards stay in `completion_reward`. Long-term modifiers do not: route them through a national spirit, add it from the focus with `add_ideas`, and remove it later with `remove_ideas` only if the state is temporary.

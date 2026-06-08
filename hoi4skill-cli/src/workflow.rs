@@ -1171,14 +1171,26 @@ pub(crate) fn json_optional_raw(value: Option<&str>) -> String {
 
 pub(crate) fn workflow_validation_json(reporter: Option<&Reporter>) -> String {
     if let Some(reporter) = reporter {
+        let ok = reporter.errors.is_empty() && reporter.warnings.is_empty();
+        let status = if reporter.errors.is_empty() {
+            if reporter.warnings.is_empty() {
+                json_str("ok")
+            } else {
+                json_str("warnings")
+            }
+        } else {
+            json_str("errors")
+        };
         format!(
-            "{{\"ran\": true, \"ok\": {}, \"errors\": {}, \"warnings\": {}}}",
-            json_bool(reporter.errors.is_empty()),
+            "{{\"ran\": true, \"ok\": {}, \"status\": {}, \"errors\": {}, \"warnings\": {}}}",
+            json_bool(ok),
+            status,
             json_array(&reporter.errors),
             json_array(&reporter.warnings)
         )
     } else {
-        "{\"ran\": false, \"ok\": null, \"errors\": [], \"warnings\": []}".to_string()
+        "{\"ran\": false, \"ok\": null, \"status\": null, \"errors\": [], \"warnings\": []}"
+            .to_string()
     }
 }
 
@@ -1204,7 +1216,7 @@ pub(crate) fn workflow_next_steps(
         if !reporter.errors.is_empty() {
             steps.push("先修复 validation.errors 中的静态错误，再进游戏测试。".to_string());
         } else if !reporter.warnings.is_empty() {
-            steps.push("检查 validation.warnings；确认无误后用 -debug 启动游戏测试。".to_string());
+            steps.push("先逐条核对 validation.warnings，不要把它当成通过；确认可接受后再用 -debug 启动游戏测试。".to_string());
         } else if has_mod_root && !dry_run {
             steps.push("静态校验通过；用 -debug 启动 HOI4 并检查 error.log。".to_string());
         }

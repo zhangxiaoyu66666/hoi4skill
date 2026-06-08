@@ -912,12 +912,12 @@ pub(crate) fn render_focus_copy_card_prompts(cards: &[FocusCopyCard]) -> String 
     let mut out = String::new();
     out.push_str("# Focus Copywriting Batch\n\n");
     out.push_str(
-        "Use each block as a prompt for Chinese HOI4 focus title and description writing.\n\n",
+        "Use each block as a prompt for Chinese HOI4 focus skeleton, title, and description writing.\n\n",
     );
     for (idx, card) in cards.iter().enumerate() {
         out.push_str(&format!("## {}. {}\n\n", idx + 1, card.title_hint));
         out.push_str("```text\n");
-        out.push_str("你是钢铁雄心4中文国策文案作者。请按我的本地 mod 文案风格，为下面的国策写中文标题与描述。\n\n");
+        out.push_str("你是钢铁雄心4中文国策文案作者。请按我的本地 mod 文案风格，为下面的国策写完整国策骨架、中文标题与描述。\n\n");
         out.push_str("风格要求：\n");
         out.push_str("- 写成 HOI4 架空历史国策文案，不要写成现代说明书。\n");
         out.push_str("- 标题短促有力，像政策名、政治口号、路线名、运动名或人物路线标签。\n");
@@ -928,6 +928,10 @@ pub(crate) fn render_focus_copy_card_prompts(cards: &[FocusCopyCard]) -> String 
         out.push_str("交付硬规则：不准以“先做可校验 demo”“保守脚本骨架”“之后补回文案/路线叙事”为由跳过国策文案工作流；可编译骨架不是完成品，必须先抽取路线叙事，再输出完成态标题、描述、本地化和脚本。\n\n");
         out.push_str("本地化硬规则：不准生成 `<prefix>_mod_name`、`chinaprc_1979_mod_name` 或任何 `*_mod_name`；mod 名称只写在 `descriptor.mod` 和外层 `.mod` 文件。\n\n");
         out.push_str("机制路由硬规则：即时奖励写国策 `completion_reward`；长期修正必须生成/引用民族精神，用 `add_ideas` 添加，临时状态再用 `remove_ideas` 移除；不要把 `modifier = { ... }` 直接写进国策效果。\n\n");
+        out.push_str("国策骨架硬规则：如果要输出国策代码，必须展开成完整 `focus = { ... }` 模板，不准写短国策或半截片段，方便玩家手动调整条件。\n");
+        out.push_str(
+            "国家筛选块硬规则：必须使用固定结构 `country = { factor = 0 modifier = { add = 10 tag = <TAG> } }`；不要把 `add` 改成 100 或其他数值。\n\n",
+        );
         out.push_str("输入：\n");
         out.push_str(&format!("国家/势力：{}\n", card.country));
         out.push_str(&format!("时间线背景：{}\n", card.timeline));
@@ -940,9 +944,30 @@ pub(crate) fn render_focus_copy_card_prompts(cards: &[FocusCopyCard]) -> String 
         out.push_str(&format!("关键词：{}\n", card.keywords));
         out.push_str(&format!("长度：{}\n\n", card.length));
         out.push_str("输出：\n");
-        out.push_str("1. 标题\n");
-        out.push_str("2. 描述\n");
-        out.push_str("3. 本地化：\n");
+        out.push_str("1. 完整国策骨架，必须按模板展开，不准输出短国策：\n");
+        out.push_str("```text\n");
+        out.push_str("focus = {\n");
+        out.push_str("id = \n");
+        out.push_str("icon = \n");
+        out.push_str("x = \n");
+        out.push_str("y = \n");
+        out.push_str("prerequisite = {focus = }\n");
+        out.push_str("relative_position_id =  #基于某个国策位置的相对位置\n");
+        out.push_str("cost = 2.5\n");
+        out.push_str("\t\tai_will_do = {\n");
+        out.push_str("\t\t\tfactor = 10\n");
+        out.push_str("\t\t}\n\n");
+        out.push_str("\t\tavailable = {\n\n\t\t}\n\n");
+        out.push_str("\t\tbypass = {\n\t\t}\n\n");
+        out.push_str("\t\tcancel_if_invalid = yes\n");
+        out.push_str("\t\tcontinue_if_invalid = no\n");
+        out.push_str("\t\tavailable_if_capitulated = no\n\n");
+        out.push_str("\t\tcompletion_reward = {\n\n\t\t}\n");
+        out.push_str("}\n");
+        out.push_str("```\n");
+        out.push_str("2. 标题\n");
+        out.push_str("3. 描述\n");
+        out.push_str("4. 本地化：\n");
         out.push_str(&format!("   {}:0 \"标题\"\n", card.focus_id));
         out.push_str(&format!("   {}_desc:0 \"描述\"\n", card.focus_id));
         out.push_str("```\n\n");
