@@ -351,7 +351,7 @@ pub(crate) fn normalise_localisation_language(raw: &str) -> Result<String, Strin
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
     {
         return Err(format!(
-            "invalid localisation language `{raw}`; use names like english or simp_chinese"
+            "invalid localisation language `{raw}`; use a HOI4 language folder name like english, french, german, russian, japanese, or simp_chinese"
         ));
     }
     Ok(value)
@@ -499,7 +499,9 @@ pub(crate) fn render_localisation_translation_prompt(
     out.push_str(&format!("- Entries: {}\n\n", entries.len()));
     out.push_str("## Rules\n\n");
     out.push_str("- Preserve localisation keys exactly; translate only quoted values.\n");
-    out.push_str("- Output a valid HOI4 localisation block using the target header.\n");
+    out.push_str(&format!(
+        "- Output a valid HOI4 localisation block using exactly `l_{to}:`; do not hard-code `l_simp_chinese:` unless the target language is `simp_chinese`.\n"
+    ));
     out.push_str("- Preserve HOI4 placeholders, scripted localisation, variables, colour codes, icon codes, and formatting tokens exactly.\n");
     out.push_str("- Do not translate tokens such as `$VAR$`, `$STATE|Y$`, `[ROOT.GetName]`, `[From.GetAdjective]`, `§Y...§!`, `£pol_power`, `%`, `\\n`, or `^` control fragments.\n");
     out.push_str("- Keep escaped quotes valid for `.yml` output.\n");

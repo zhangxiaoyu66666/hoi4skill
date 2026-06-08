@@ -2448,6 +2448,38 @@ fn translate_localisation_yml_writes_target_named_files() {
 }
 
 #[test]
+fn translate_localisation_supports_non_english_non_chinese_language_pairs() {
+    let root = unique_temp_dir("translate-localisation-arbitrary-language");
+    let output_dir = root.join("localisation").join("german");
+    fs::create_dir_all(root.join("localisation").join("french")).unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("french")
+            .join("events_l_french.yml"),
+        "l_french:\n evt.2.t:0 \"Aube nouvelle\"\n evt.2.d:0 \"Le cabinet se réunit.\"\n",
+    )
+    .unwrap();
+
+    let source_roots = vec![root.join("localisation").join("french")];
+    let files =
+        collect_localisation_source_files(Some(&root), &source_roots, &[], &BTreeSet::new(), 100)
+            .unwrap();
+    let prompt = render_localisation_translation_prompt("french", "german", &files);
+    let report =
+        write_translation_yml_files(&files, "french", "german", &output_dir, false).unwrap();
+    let written = fs::read_to_string(output_dir.join("events_l_german.yml")).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(prompt.contains("Source language: `french`"));
+    assert!(prompt.contains("Target language: `german`"));
+    assert!(prompt.contains("l_german:"));
+    assert!(prompt.contains("do not hard-code `l_simp_chinese:`"));
+    assert!(report.contains("events_l_german.yml"));
+    assert!(written.contains("l_german:"));
+    assert!(written.contains("evt.2.t:0 \"Aube nouvelle\""));
+}
+
+#[test]
 fn translate_localisation_apply_injects_translated_values_and_reports_omissions() {
     let root = unique_temp_dir("translate-localisation-apply");
     fs::create_dir_all(root.join("localisation").join("english")).unwrap();

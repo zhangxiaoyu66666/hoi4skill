@@ -26,7 +26,7 @@
 - **游戏 / MOD 索引构建**：索引国家 tag、sprite、state、province、technology 等引用信息。
 - **历史文件编辑计划**：在修改 `history/states` 等危险区域前，先生成编辑计划，避免乱猜 state id / province id。
 - **`error.log` 反向分析**：读取 HOI4 报错日志，辅助定位和修复 MOD 问题。
-- **本地化快速翻译**：读取 `english` 等语言的 localisation，生成 `simp_chinese` 或其他目标语言的翻译 prompt / yml 骨架。
+- **本地化快速翻译**：读取任意 `localisation/<source_language>`，对照目标语言键名，生成任意目标语言的翻译 prompt / yml 骨架，并支持写回后查漏。
 - **AI 工作流辅助**：适合配合 Codex、ChatGPT、啊拼等工具，把“人话需求”转成更可控的 MOD 文件改动。
 
 ### 构建方式
@@ -56,7 +56,8 @@ hoi4skill mod-knowledge "M:\path\existing_mod" --mod-path "M:\path\dependency.mo
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output workflow_report.json
 hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --output history_plan.json
 hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from english --to simp_chinese --format prompt --output loc_translate_prompt.md
-hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from english --to simp_chinese --translated-input translated_l_simp_chinese.yml --apply --report loc_apply_report.json
+hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from french --to german --format prompt --output loc_fr_to_de_prompt.md
+hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from french --to german --translated-input translated_l_german.yml --apply --report loc_apply_report.json
 hoi4skill validate "M:\path\existing_mod" --game-root "C:\path\Hearts of Iron IV"
 ```
 

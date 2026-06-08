@@ -85,7 +85,7 @@ Read only the reference needed for the current task:
 - `references/country-creation-leaders.md`: researched rules for country tag creation, `common/countries`, `history/countries`, country leader traits, modern `common/characters`, and legacy `create_country_leader`.
 - `references/history-states-provinces.md`: researched rules for `history/states`, province IDs, `map/definition.csv`, capitals, cores, victory points, buildings, and resources.
 - `references/event-cards.md`: plain Chinese card syntax for country, news, and state events.
-- `references/localisation-translation.md`: fast translation workflow for reading one localisation language and producing `simp_chinese` or another target language while preserving HOI4 tokens.
+- `references/localisation-translation.md`: fast translation workflow for reading any localisation language folder and producing any target language while preserving HOI4 tokens.
 - `references/wiki-code-index.md`: HOI4 Wiki, ParaWiki, and local game documentation lookup routes for current code names.
 - `references/hoi4-script-snippets.md`: copy-adapt templates for focuses, events, decisions, ideas, localisation, GFX, and state effects.
 - `references/gfx-icon-preview.md`: icon asset rules, `.dds`/`.png`/`.tga` handling, sprite mapping, batch registration, conflict reports, and preview workflow.
@@ -114,9 +114,10 @@ hoi4skill parse-feature-cards --input "M:\path\cards.txt" --tag SOV --prefix sov
 hoi4skill parse-event-cards --input "M:\path\events.txt" --tag SOV --prefix sov_nep --output event_plan.json
 hoi4skill idea-copy-prompt "M:\path\modA" "M:\path\modB" --style compact --output idea_prompt.md
 hoi4skill country-localisation-template --tag FER --name "远东铁路共和国" --prefix fer_rail --idea FER_fragmented_railway_authority=分裂的铁路主权 --output FER_l_simp_chinese.yml
-hoi4skill translate-localisation --mod-root "M:\path\mod" --from english --to simp_chinese --format prompt --output loc_translate_prompt.md
-hoi4skill translate-localisation --mod-root "M:\path\mod" --from english --to simp_chinese --translated-input translated_l_simp_chinese.yml --apply --report loc_apply_report.json
-hoi4skill translate-localisation --mod-root "M:\path\mod" --from english --to simp_chinese --format yml --output-dir "M:\path\mod\localisation\simp_chinese"
+hoi4skill translate-localisation --mod-root "M:\path\mod" --from english --to simp_chinese --format prompt --output loc_en_to_zh_prompt.md
+hoi4skill translate-localisation --mod-root "M:\path\mod" --from french --to german --format prompt --output loc_fr_to_de_prompt.md
+hoi4skill translate-localisation --mod-root "M:\path\mod" --from french --to german --translated-input translated_l_german.yml --apply --report loc_apply_report.json
+hoi4skill translate-localisation --mod-root "M:\path\mod" --from russian --to japanese --format yml --output-dir "M:\path\mod\localisation\japanese"
 hoi4skill validate "M:\path\mod"
 hoi4skill analyze-error-log --input "%USERPROFILE%\Documents\Paradox Interactive\Hearts of Iron IV\logs\error.log" --mod-root "M:\path\mod" --output error_report.json
 ```
@@ -151,7 +152,7 @@ For state-effect cards, the writer creates `common/scripted_effects/<prefix>_sta
 
 `country-localisation-template` outputs one country's Simplified Chinese localisation skeleton in fixed sections: country tag/name, cosmetic name, focus tree, national spirits, decisions, events, unique technologies, and special GUI. National-spirit IDs passed with `--idea` are normalized to end with `_idea` so AI-generated text does not confuse them with focus IDs.
 
-`translate-localisation` reads localisation from one language folder or input file, compares source keys against the target language, skips keys already present unless `--include-existing` is used, and emits either an AI translation prompt, JSON report, or target-language `.yml` scaffold. After translating the extracted content, run it again with `--translated-input <file-or-dir> --apply` to inject translated values back into `localisation/<target_language>` and report `missing_after_apply`. Use it when translating `localisation/english` to `localisation/simp_chinese`, or any other language pair. The CLI does not machine-translate by itself; translate the quoted values with the model, preserve keys and HOI4 tokens exactly, then apply and validate.
+`translate-localisation` reads localisation from any language folder or input file, compares source keys against any target language, skips keys already present unless `--include-existing` is used, and emits either an AI translation prompt, JSON report, or target-language `.yml` scaffold. After translating the extracted content, run it again with `--translated-input <file-or-dir> --apply` to inject translated values back into `localisation/<target_language>` and report `missing_after_apply`. This is not limited to English or Simplified Chinese: `english -> simp_chinese`, `french -> german`, `russian -> japanese`, and other HOI4 language folder names follow the same closed-loop workflow. The CLI does not machine-translate by itself; translate the quoted values with the model, preserve keys and HOI4 tokens exactly, then apply and validate.
 
 ## Natural-Language Modding Rules
 

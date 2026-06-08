@@ -1,28 +1,29 @@
 # Localisation Translation
 
-Use this when the user asks to translate HOI4 localisation, copy another language into `simp_chinese`, or create another target language from existing localisation files.
+Use this when the user asks to translate HOI4 localisation between any supported language folders, such as `english -> simp_chinese`, `french -> german`, `russian -> japanese`, or `simp_chinese -> english`.
 
 ## Fast Workflow
 
-1. Identify the source and target language folder names, such as `english`, `simp_chinese`, `french`, `russian`, or `japanese`.
+1. Identify the source and target language folder names, such as `english`, `simp_chinese`, `french`, `german`, `russian`, or `japanese`. Do not assume the target is Simplified Chinese unless the user asked for it.
 2. Compare key names and extract only missing source content:
 
 ```text
-hoi4skill translate-localisation --mod-root "M:\path\mod" --from english --to simp_chinese --format prompt --output loc_translate_prompt.md
+hoi4skill translate-localisation --mod-root "M:\path\mod" --from <source_language> --to <target_language> --format prompt --output loc_translate_prompt.md
 ```
 
 3. Translate only quoted values. Preserve every key exactly.
-4. Put the translated `l_simp_chinese:` block in a temporary file, for example `translated_l_simp_chinese.yml`.
+4. Put the translated `l_<target_language>:` block in a temporary file, for example `translated_l_german.yml` when translating to German.
 5. Inject the translated content back into the target language files:
 
 ```text
-hoi4skill translate-localisation --mod-root "M:\path\mod" --from english --to simp_chinese --translated-input translated_l_simp_chinese.yml --apply --report loc_apply_report.json
+hoi4skill translate-localisation --mod-root "M:\path\mod" --from <source_language> --to <target_language> --translated-input translated_l_<target_language>.yml --apply --report loc_apply_report.json
 ```
 
 The apply step maps source filenames to target filenames, for example:
 
 ```text
-localisation/english/events_l_english.yml -> localisation/simp_chinese/events_l_simp_chinese.yml
+localisation/<source_language>/events_l_<source_language>.yml -> localisation/<target_language>/events_l_<target_language>.yml
+localisation/french/events_l_french.yml -> localisation/german/events_l_german.yml
 ```
 
 6. Read `loc_apply_report.json`.
@@ -43,7 +44,7 @@ hoi4skill validate "M:\path\mod"
 To create target-language yml skeleton files before manual or AI translation:
 
 ```text
-hoi4skill translate-localisation --mod-root "M:\path\mod" --from english --to simp_chinese --format yml --output-dir "M:\path\mod\localisation\simp_chinese"
+hoi4skill translate-localisation --mod-root "M:\path\mod" --from french --to german --format yml --output-dir "M:\path\mod\localisation\german"
 ```
 
 The yml scaffold copies source values and writes comments saying they still need translation. Do not treat this scaffold as finished localisation.
@@ -66,7 +67,7 @@ If `missing_after_apply` is not empty, report the missing keys and do not claim 
 
 ## Translation Rules
 
-- Keep the first line as the target header, such as `l_simp_chinese:` or `l_english:`.
+- Keep the first line as the target header, `l_<target_language>:`. Examples: `l_simp_chinese:`, `l_german:`, `l_japanese:`, or `l_english:`.
 - Preserve keys exactly, including dots and suffixes such as `.t`, `.d`, `.a`, `_desc`, `_DEF`, and `_ADJ`.
 - Translate only the quoted value.
 - Preserve HOI4 scripted localisation and formatting tokens exactly.
@@ -91,6 +92,10 @@ When the target is `simp_chinese`:
 - Use Chinese punctuation unless a token requires ASCII punctuation.
 - For focus and national-spirit descriptions, keep the established HOI4 copywriting rules from `focus-copywriting-prompt.md` and `decision-idea-cards.md`.
 
+## Other Target Languages
+
+When the target is not `simp_chinese`, still translate into natural player-facing HOI4 prose for that requested language. Do not leave Chinese or English source values in place unless the source value is a proper noun, token, code fragment, or intentionally untranslated in the original mod. Report any uncertain names or terms instead of inventing new lore.
+
 ## Output Example
 
 Source:
@@ -107,4 +112,12 @@ Target:
 l_simp_chinese:
   SOV_new_order:0 "新秩序"
   SOV_new_order_desc:0 "委员会必须保卫$STATE|Y$与[ROOT.GetName]。"
+```
+
+Another target language:
+
+```yaml
+l_german:
+  SOV_new_order:0 "Eine neue Ordnung"
+  SOV_new_order_desc:0 "Das Komitee muss $STATE|Y$ und [ROOT.GetName] verteidigen."
 ```
