@@ -22,7 +22,7 @@ Usage:
   hoi4skill icon-preview --mod-root "M:\path\mod" [--output "M:\preview"] [--max-icons 800]
   hoi4skill register-gfx-icons --mod-root "M:\path\mod" --prefix sov_nep [--category all|dynamic|focus-idea|event|decision] [--output report.json]
   hoi4skill parse-focus-layout --input layout.txt --tag SOV --prefix sov_alt [--output plan.json]
-  hoi4skill apply-focus-layout --input layout.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_alt
+  hoi4skill apply-focus-layout --input layout.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_alt [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"]
   hoi4skill parse-focus-excel --input tree.xlsx --tag SOV --prefix sov_alt [--sheet FocusTree] [--format focus-tree|json] [--output focus_tree.txt]
   hoi4skill apply-focus-excel --input tree.xlsx --mod-root "M:\path\mod" --tag SOV --prefix sov_alt [--sheet FocusTree]
   hoi4skill parse-focus-copy-cards --input focus_copy.txt [--output focus_prompts.md]
@@ -31,7 +31,7 @@ Usage:
   hoi4skill parse-event-cards --input events.txt --tag SOV --prefix sov_nep [--output plan.json]
   hoi4skill apply-event-cards --input events.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep
   hoi4skill emit-hoi4yaml --input cards.txt --kind feature-cards|event-cards|focus-layout --tag SOV --prefix sov_nep [--output mod.yaml]
-  hoi4skill run-workflow --input copy.txt [--mod-root "M:\path\mod"] --tag SOV --prefix sov_nep [--dry-run] [--output workflow_report.json]
+  hoi4skill run-workflow --input copy.txt [--mod-root "M:\path\mod"] --tag SOV --prefix sov_nep [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--dry-run] [--output workflow_report.json]
   hoi4skill generate-mod --text "给德国加一个国策，完成后获得3个军工厂" --output "M:\path\mod" [--tag GER] [--prefix ger_demo] [--name "My Mod"] [--source-root "M:\path\source_mod"] [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--report report.json]
   hoi4skill country-localisation-template --tag FER --name "远东铁路共和国" --prefix fer_rail [--output FER_l_simp_chinese.yml]
   hoi4skill translate-localisation --mod-root "M:\path\mod" --from <source_language> --to <target_language> [--format prompt|yml|json] [--output translated.md]

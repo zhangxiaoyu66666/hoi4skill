@@ -25,6 +25,7 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - Pick stable IDs with a unique mod prefix.
    - For narrative or promotional prose, follow `references/copy-to-code-workflow.md` and translate the prose into a Feature Plan before writing files.
    - For plain-text national focus tree sketches, follow `references/focus-tree-layout.md`.
+   - If the user asks for a focus tree, focus route, or several focuses but does not provide a layout, use the default five-stage focus template from `references/focus-tree-layout.md` instead of inventing scattered `x/y` coordinates.
    - For decision, national-spirit, technology, or special-GUI cards, follow `references/decision-idea-cards.md`.
    - For event cards, follow `references/event-cards.md`.
    - For country creation, country leaders, or country leader traits, follow `references/country-creation-leaders.md`.
@@ -40,6 +41,7 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - Add Simplified Chinese localisation when the request is Chinese.
    - Add English localisation only when the mod already uses it or the user asks.
    - For icon work, support `.dds`, `.png`, and `.tga`; add or reuse `interface/*.gfx` sprite definitions, preview icons when useful, and run `register-gfx-icons` before referencing new custom images.
+   - For national-focus icons, first read the target mod/dependencies/game `interface/*.gfx` sprites through `mod-knowledge`, `build-game-index --game-root`, or `run-workflow/apply-focus-layout --game-root`; choose only verified `GFX_goal*` sprite names. If no verified goal icon is available, use `GFX_goal_unknown` and report that icon indexing is missing instead of inventing a sprite key.
    - When `register-gfx-icons` sees a non-English/non-ASCII image filename, it automatically translates the local filename into a semantic English filename, renames the asset, updates matching `interface/*.gfx` texturefile references, and then registers sprites. If the filename is already English/ASCII, it is left unchanged. If the filename cannot be translated semantically, skip that image and report it in `skipped_assets` for the AI/user summary; never invent random names such as `SOV_12347.png`.
 6. Validate.
    - Run `hoi4skill validate <mod-root>` after edits.
@@ -54,6 +56,8 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
 These are non-negotiable for AI-generated HOI4 content:
 
 - Generated focus IDs must use only ASCII letters, digits, and underscores. Before writing focuses, scan existing `common/national_focus/*.txt`; do not collide with any existing `focus = { id = ... }`. If an ID is taken, rename the generated focus with a stable numeric suffix and update prerequisites, mutual exclusions, and localisation keys to match.
+- When generating a focus tree without a user-supplied visual layout, use the default `x/y` structure: row `y=0` has one opening focus at `x=0`; row `y=1` has two to four expansion focuses with an `x` gap of 2; row `y=2` has one phase-result focus at `x=0`; row `y=3` has two to four expansion focuses with an `x` gap of 2; row `y=4` has one closing-result focus at `x=0`. Do not scatter focuses randomly.
+- National-focus `icon = ...` values must come from verified `GFX_goal*` sprites in the target mod, dependency mods, or game `interface/*.gfx`. Do not invent icon names from the focus title.
 - Simplified Chinese country-content localisation must be written to the target country TAG file, for example `localisation/simp_chinese/SOV_l_simp_chinese.yml` or `localisation/simp_chinese/FER_l_simp_chinese.yml`. Never output feature-prefix localisation files such as `sov_nep_l_simp_chinese.yml`, `ger_build_army_industry_l_simp_chinese.yml`, or `<prefix>_l_simp_chinese.yml`.
 - Mod display names belong only in `descriptor.mod` and the launcher-side `.mod` file. Never generate localisation keys such as `<prefix>_mod_name`, `chinaprc_1979_mod_name`, or any `*_mod_name:0 "..."` entry under `l_simp_chinese:`.
 - Focus descriptions must be finished, stylized HOI4 Chinese national-focus prose. They must sound like in-universe policy, route struggle, state-building, revolutionary mobilisation, military reform, or economic reconstruction. Do not output placeholders such as `具体效果待补充`, `描述`, `TODO`, or raw effect explanations.
@@ -105,11 +109,13 @@ hoi4skill generate-mod --text "给远东铁路共和国加一个国策，完成�
 hoi4skill mod-knowledge "M:\path\mod_or_launcher.mod" --mod-path "M:\path\dependency.mod" --output mod_knowledge.json
 hoi4skill plan-history-edit "M:\path\mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod" --output history_plan.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --output workflow_report.json
+hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod" --output workflow_report.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --tag SOV --prefix sov_nep --dry-run --output workflow_plan.json
 hoi4skill import-mod-ir "M:\path\mod" --max-items 1000 --output imported_ir.json
 hoi4skill icon-preview --mod-root "M:\path\mod" --output "M:\preview"
 hoi4skill register-gfx-icons --mod-root "M:\path\mod" --prefix sov_nep --category all --output gfx_report.json
 hoi4skill parse-focus-layout --input "M:\path\layout.txt" --tag SOV --prefix sov_alt --output focus_plan.json
+hoi4skill apply-focus-layout --input "M:\path\layout.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_alt --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod"
 hoi4skill parse-focus-excel --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_alt --sheet FocusTree --output focus_tree.txt
 hoi4skill apply-focus-excel --input "M:\path\focus_tree.xlsx" --mod-root "M:\path\mod" --tag SOV --prefix sov_alt --sheet FocusTree
 hoi4skill parse-feature-cards --input "M:\path\cards.txt" --tag SOV --prefix sov_nep --output feature_plan.json
@@ -124,7 +130,7 @@ hoi4skill validate "M:\path\mod"
 hoi4skill analyze-error-log --input "%USERPROFILE%\Documents\Paradox Interactive\Hearts of Iron IV\logs\error.log" --mod-root "M:\path\mod" --output error_report.json
 ```
 
-`run-workflow` accepts mixed Chinese prose/cards, detects focus-tree sketches, decision/national-spirit/technology/special-GUI/scripted-helper/state-effect cards, and event cards, then writes the generated files when `--mod-root` is supplied. Its JSON report includes detected sections, generated plans, changed files, validation errors/warnings, and next steps. When the target mod already has a `focus_tree` whose country block resolves to the target tag, focus generation extends that existing tree and shifts new focus rows below the current max `y`; otherwise it creates a new focus file.
+`run-workflow` accepts mixed Chinese prose/cards, detects focus-tree sketches, decision/national-spirit/technology/special-GUI/scripted-helper/state-effect cards, and event cards, then writes the generated files when `--mod-root` is supplied. Its JSON report includes detected sections, generated plans, changed files, validation errors/warnings, and next steps. When the target mod already has a `focus_tree` whose country block resolves to the target tag, focus generation extends that existing tree and shifts new focus rows below the current max `y`; otherwise it creates a new focus file. When `--game-root` and optional `--mod-path` are supplied, generated focuses choose missing icons from verified indexed `GFX_goal*` sprites.
 
 `parse-focus-excel` and `apply-focus-excel` read `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, or `.ods` files where AI or a human drew a national focus tree as a worksheet grid. Every non-empty non-connector cell becomes a focus. Cell text may include lines such as `ID: english_id`, `icon: GFX_goal...`, and `completion_reward: 1个军工厂`. The importer expands worksheet columns into HOI4 `x` coordinates with a minimum gap of 2 on the same `y` row, so if one focus is `x = 1`, the adjacent same-row focus is at least `x = 3`. Child focuses receive `relative_position_id` when a nearest parent is inferred from the row above.
 
@@ -140,7 +146,7 @@ For decision cards, the writer scans existing decision categories, decision file
 
 For national-spirit cards, the writer scans existing target-country `common/ideas` files first. A safe country-wrapper file is reused, while large shared minister/advisor/character idea files are skipped; otherwise it creates `<prefix>_ideas.txt`.
 
-For focus layouts, the writer scans existing target-country focus trees and all existing focus IDs before writing. It extends an existing target-country tree when one exists, shifts rows below the current max `y`, and renames generated IDs before writing if any ID already exists elsewhere in the mod.
+For focus layouts, the writer scans existing target-country focus trees and all existing focus IDs before writing. It extends an existing target-country tree when one exists, shifts rows below the current max `y`, and renames generated IDs before writing if any ID already exists elsewhere in the mod. For missing focus icons, pass `--game-root` and dependency `--mod-path` so the writer can reuse verified `GFX_goal*` icons from `interface/*.gfx` instead of falling back to generic guesses.
 
 For technology cards, the writer creates a minimal unique-technology skeleton under `common/technologies/<prefix>_technologies.txt`, with IDs ending in `_tech`.
 
@@ -197,6 +203,7 @@ When details are missing:
 - If a change requires DLC-specific mechanics, state that dependency in the final answer.
 - If the user mentions icons or focus/idea/decision art, build or update the icon preview and report the preview HTML path.
 - If the user sends a visual focus tree sketch, preserve its rows and branches; treat `互斥` as a mutual-exclusion marker.
+- If the user asks for a focus tree or route but does not provide a visual sketch, use the default five-stage focus layout: 1 opener, 2-4 expansion focuses, 1 phase result, 2-4 expansion focuses, 1 closing result.
 - If the user sends feature cards starting with `决议：`, `民族精神：`, `独有科技：`, `特殊GUI：`, `脚本效果：`, `脚本触发：`, or `州效果：`, parse them as structured feature cards before generating files.
 - If the user sends cards starting with `事件：`, parse them as structured event cards before generating files.
 

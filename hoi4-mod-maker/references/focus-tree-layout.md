@@ -32,6 +32,30 @@ Then turn it into a focus plan with:
 - A focus defaults to a prerequisite from the nearest focus in the previous row.
 - If this inferred prerequisite is wrong, edit the Feature Plan before generating code.
 
+## Default Template When User Gives No Layout
+
+If the user asks for a focus tree, focus route, or several focuses but does not provide a visual sketch, do not invent scattered coordinates. Use this default five-stage structure:
+
+```text
+<opening focus>
+<expansion focus A>    <expansion focus B>    [optional expansion focus C]    [optional expansion focus D]
+<phase-result focus>
+<expansion focus A>    <expansion focus B>    [optional expansion focus C]    [optional expansion focus D]
+<closing-result focus>
+```
+
+Coordinate rules:
+
+- Row `y = 0`: exactly one opening focus at `x = 0`.
+- Row `y = 1`: two to four expansion focuses. Use `x = -1, 1` for two, `x = -2, 0, 2` for three, or `x = -3, -1, 1, 3` for four.
+- Row `y = 2`: exactly one phase-result focus at `x = 0`.
+- Row `y = 3`: two to four expansion focuses using the same spacing rule as `y = 1`.
+- Row `y = 4`: exactly one closing-result focus at `x = 0`.
+- Same-row focus positions must keep an `x` gap of 2.
+- Use the nearest sensible previous-row focus as prerequisite, then adjust only when the route logic requires it.
+
+Default to two expansion focuses for a compact request, three when the prose has political/economic/military branches, and four only when the user provides four clearly distinct themes.
+
 The example above means:
 
 ```yaml
@@ -74,6 +98,14 @@ The helper produces JSON. To write files directly, use `hoi4skill apply-focus-la
 
 When writing to an existing mod, `apply-focus-layout` first looks for `common/national_focus/*.txt` files with a `focus_tree` whose `country` block references the target tag. If a matching tree exists, it inserts the new focus blocks into that tree and offsets their `y` values below the existing max row. If no matching tree exists, it creates the normal generated focus file.
 
+For real focus icons, pass a game root and dependency mods when available:
+
+```text
+hoi4skill apply-focus-layout --input layout.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_alt --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod"
+```
+
+With `--game-root`, the writer chooses missing icons from verified `GFX_goal*` sprites found in the target mod and game/dependency `interface/*.gfx` files.
+
 ## Excel Layout
 
 Use Excel when the author or AI draws the focus tree visually as a worksheet grid. Supported file types are `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, and `.ods`.
@@ -95,6 +127,13 @@ ID: industrial_revival
 icon: GFX_goal_generic_construct_civ_factory
 completion_reward: 1个军工厂
 ```
+
+Icon rules:
+
+- `icon:` values must be verified `GFX_goal*` sprite names from the target mod, dependency mods, or game `interface/*.gfx`.
+- Do not invent icon names from a focus title.
+- If no verified focus icon is available, use `GFX_goal_unknown` and report that the icon index is missing.
+- For custom images, run `hoi4skill register-gfx-icons` first, then use the generated `GFX_goal*` sprite name.
 
 Commands:
 

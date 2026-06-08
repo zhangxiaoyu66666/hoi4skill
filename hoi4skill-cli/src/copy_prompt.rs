@@ -932,6 +932,8 @@ pub(crate) fn render_focus_copy_card_prompts(cards: &[FocusCopyCard]) -> String 
         out.push_str(
             "国家筛选块硬规则：必须使用固定结构 `country = { factor = 0 modifier = { add = 10 tag = <TAG> } }`；不要把 `add` 改成 100 或其他数值。\n\n",
         );
+        out.push_str("x/y 排布硬规则：如果用户没有给国策树草图，一律套五段模板：y=0 一个开篇国策 x=0；y=1 两到四个展开国策，x 间隔 2；y=2 一个阶段成果 x=0；y=3 两到四个展开国策，x 间隔 2；y=4 一个收尾成果 x=0。不要随机散点。\n\n");
+        out.push_str("icon 硬规则：`icon =` 必须填写从目标 MOD、依赖 MOD 或游戏 `interface/*.gfx` 读取到的真实 `GFX_goal*` 国策图标；如果没有图标索引，只能用 `GFX_goal_unknown` 并说明需要先索引，禁止按标题编造 sprite 名。\n\n");
         out.push_str("输入：\n");
         out.push_str(&format!("国家/势力：{}\n", card.country));
         out.push_str(&format!("时间线背景：{}\n", card.timeline));
@@ -948,9 +950,9 @@ pub(crate) fn render_focus_copy_card_prompts(cards: &[FocusCopyCard]) -> String 
         out.push_str("```text\n");
         out.push_str("focus = {\n");
         out.push_str("id = \n");
-        out.push_str("icon = \n");
-        out.push_str("x = \n");
-        out.push_str("y = \n");
+        out.push_str("icon = <verified GFX_goal* from interface/*.gfx, or GFX_goal_unknown>\n");
+        out.push_str("x = <use default template or user sketch>\n");
+        out.push_str("y = <use default template or user sketch>\n");
         out.push_str("prerequisite = {focus = }\n");
         out.push_str("relative_position_id =  #基于某个国策位置的相对位置\n");
         out.push_str("cost = 2.5\n");

@@ -171,6 +171,8 @@ Create new files when:
 - Generate new localisation as `key:0 "文本"` with UTF-8 BOM.
 - Do not generate mod display-name localisation such as `<prefix>_mod_name:0 "..."` or `chinaprc_1979_mod_name:0 "..."`; mod names belong in `descriptor.mod` and the launcher-side `.mod` file.
 - National-spirit IDs must end with `_idea`; keep their localisation in the national-spirit section, not the focus-tree section.
+- If the user asks for a national focus tree or route but gives no visual layout, use the default five-stage x/y template: one opening focus, two to four expansion focuses, one phase result, two to four expansion focuses, and one closing result. Keep same-row `x` values spaced by 2.
+- National-focus icons must be chosen from verified `GFX_goal*` sprites read from target/dependency/game `interface/*.gfx` via `mod-knowledge`, `build-game-index`, or `run-workflow/apply-focus-layout --game-root`; do not invent icon sprite names.
 - Unique-technology IDs generated from cards end with `_tech`.
 - Special-GUI IDs generated from cards end with `_gui`.
 - Scripted-effect IDs generated from cards end with `_effect`.

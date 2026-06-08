@@ -381,12 +381,22 @@ pub(crate) fn cmd_apply_focus_layout(args: &[String]) -> Result<(), String> {
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("focus");
     let tree_id = value(&map, "tree-id");
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+        .transpose()?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err("--mod-path requires --game-root during focus layout application".to_string());
+    }
     let text = read_utf8_lossy(&normalize_path(&input)?)?;
     let mut layout = parse_focus_layout_with_rewards(&text, tag, prefix);
     if let Some(tree_id) = tree_id {
         layout.tree_id = tree_id.to_string();
     }
-    let changed = apply_focus_layout_to_mod(&mod_root, &layout, tag, prefix)?;
+    let changed =
+        apply_focus_layout_to_mod_with_index(&mod_root, &layout, tag, prefix, game_index.as_ref())?;
 
     println!("Applied focus layout: {} focuses", layout.focuses.len());
     if changed.is_empty() {
@@ -406,7 +416,18 @@ pub(crate) fn apply_focus_layout_to_mod(
     tag: &str,
     prefix: &str,
 ) -> Result<Vec<PathBuf>, String> {
+    apply_focus_layout_to_mod_with_index(mod_root, layout, tag, prefix, None)
+}
+
+pub(crate) fn apply_focus_layout_to_mod_with_index(
+    mod_root: &Path,
+    layout: &FocusLayout,
+    tag: &str,
+    prefix: &str,
+    game_index: Option<&GameIndex>,
+) -> Result<Vec<PathBuf>, String> {
     let mut layout = layout.clone();
+    assign_indexed_focus_icons(&mut layout, mod_root, game_index)?;
     let existing_target = find_country_focus_tree_target(mod_root, tag)?;
     let localisation = collect_focus_localisation_map(mod_root)?;
     let (focus_path, focus_changed) = if let Some(target) = existing_target {
@@ -454,6 +475,65 @@ pub(crate) fn apply_focus_layout_to_mod(
         changed.push(loc_path);
     }
     Ok(changed)
+}
+
+pub(crate) fn assign_indexed_focus_icons(
+    layout: &mut FocusLayout,
+    mod_root: &Path,
+    game_index: Option<&GameIndex>,
+) -> Result<(), String> {
+    let catalog = collect_focus_goal_icon_catalog(mod_root, game_index)?;
+    if catalog.is_empty() {
+        return Ok(());
+    }
+    for focus in &mut layout.focuses {
+        if focus.icon.is_none() {
+            focus.icon = choose_focus_icon_from_catalog(&focus.title, &catalog);
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn collect_focus_goal_icon_catalog(
+    mod_root: &Path,
+    game_index: Option<&GameIndex>,
+) -> Result<BTreeSet<String>, String> {
+    let mut icons = BTreeSet::new();
+    collect_focus_goal_icons_from_interface(mod_root, &mut icons)?;
+    if let Some(index) = game_index {
+        icons.extend(
+            index
+                .sprites
+                .iter()
+                .filter(|sprite| is_focus_goal_sprite_name(sprite))
+                .cloned(),
+        );
+    }
+    Ok(icons)
+}
+
+pub(crate) fn collect_focus_goal_icons_from_interface(
+    root: &Path,
+    icons: &mut BTreeSet<String>,
+) -> Result<(), String> {
+    let interface_root = root.join("interface");
+    if !interface_root.exists() {
+        return Ok(());
+    }
+    for file in collect_files(&interface_root)? {
+        if file.extension().and_then(OsStr::to_str).unwrap_or("") != "gfx" {
+            continue;
+        }
+        let text = read_utf8_lossy(&file)?;
+        let mut sprites = BTreeSet::new();
+        collect_sprite_names(&text, &mut sprites);
+        icons.extend(
+            sprites
+                .into_iter()
+                .filter(|sprite| is_focus_goal_sprite_name(sprite)),
+        );
+    }
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -839,6 +919,71 @@ pub(crate) fn choose_focus_icon(title: &str) -> &'static str {
     }
 }
 
+pub(crate) fn choose_focus_icon_from_catalog(
+    title: &str,
+    catalog: &BTreeSet<String>,
+) -> Option<String> {
+    if catalog.is_empty() {
+        return None;
+    }
+    let keywords = focus_icon_keywords(title);
+    let mut best: Option<(i32, String)> = None;
+    for icon in catalog {
+        let lower = icon.to_ascii_lowercase();
+        let mut score = 1;
+        for keyword in &keywords {
+            if lower.contains(keyword) {
+                score += 10;
+            }
+        }
+        if lower.contains("unknown") {
+            score -= 5;
+        }
+        if best.as_ref().is_none_or(|(best_score, best_icon)| {
+            score > *best_score || (score == *best_score && icon < best_icon)
+        }) {
+            best = Some((score, icon.clone()));
+        }
+    }
+    best.map(|(_, icon)| icon)
+}
+
+pub(crate) fn focus_icon_keywords(title: &str) -> Vec<&'static str> {
+    if title.contains("海军") || title.contains("舰") || title.contains("港口") {
+        vec!["navy", "naval", "fleet", "dockyard", "ship"]
+    } else if title.contains("空军") || title.contains("航空") || title.contains("飞机") {
+        vec!["air", "airforce", "aviation", "plane"]
+    } else if title.contains("军") || title.contains("战争") || title.contains("武装") {
+        vec!["army", "military", "war", "doctrine"]
+    } else if title.contains("工业")
+        || title.contains("工厂")
+        || title.contains("五年")
+        || title.contains("建设")
+        || title.contains("生产")
+    {
+        vec![
+            "factory",
+            "industry",
+            "industrial",
+            "construct",
+            "construction",
+            "production",
+        ]
+    } else if title.contains("农业") || title.contains("农民") || title.contains("土地") {
+        vec!["agriculture", "farm", "peasant", "consumer"]
+    } else if title.contains("铁路") || title.contains("交通") || title.contains("运输") {
+        vec!["rail", "railway", "infrastructure", "transport"]
+    } else if title.contains("经济") || title.contains("市场") || title.contains("贸易") {
+        vec!["trade", "market", "economic", "consumer"]
+    } else {
+        vec!["political", "reform", "focus"]
+    }
+}
+
+pub(crate) fn is_focus_goal_sprite_name(sprite: &str) -> bool {
+    sprite == "GFX_goal_unknown" || sprite.starts_with("GFX_goal")
+}
+
 pub(crate) fn link_mutual(focuses: &mut [FocusNode], left: &str, right: &str) {
     for f in focuses {
         if f.id == left && !f.mutually_exclusive.iter().any(|x| x == right) {
@@ -993,6 +1138,9 @@ pub(crate) fn focus_phrase_dictionary() -> &'static [(&'static str, &'static str
         ("边疆", "frontier"),
         ("税制", "tax_system"),
         ("设立", "establish"),
+        ("复兴", "revival"),
+        ("政治", "political"),
+        ("改革", "reform"),
         ("工厂", "factory"),
         ("招揽", "invite"),
         ("海外", "overseas"),

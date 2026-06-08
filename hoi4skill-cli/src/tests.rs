@@ -701,7 +701,7 @@ fn import_mod_ir_extracts_core_content() {
 #[test]
 fn workflow_dry_run_detects_mixed_copy() {
     let text = "国策树：\n斯大林宪法\n第一个五年计划   互斥   继续新经济政策\n\n决议：鼓励奈普曼投资\n目标：SOV\n效果：政治点+25\n\n民族精神：新经济政策复兴\n效果：稳定度+5%\n\n事件：新经济政策的未来\n类型：国家事件\n命名空间：sov_nep\n标题：新经济政策的未来\n描述：党内围绕新经济政策展开了激烈争论。\n选项A：继续试验\n效果A：政治点+50\n";
-    let json = run_workflow_json(text, None, "SOV", "sov_nep", None, true).unwrap();
+    let json = run_workflow_json(text, None, "SOV", "sov_nep", None, true, None).unwrap();
 
     assert!(json.contains("\"schema\": \"hoi4skill.copy_to_code_workflow.v1\""));
     assert!(json.contains("\"dry_run\": true"));
@@ -726,7 +726,7 @@ fn workflow_applies_files_and_embeds_validation() {
     .unwrap();
     let text = "国策树：\n斯大林宪法\n继续新经济政策\n\n决议：鼓励奈普曼投资\n目标：SOV\n效果：政治点+25\n\n事件：新经济政策的未来\n类型：国家事件\n命名空间：sov_nep\n标题：新经济政策的未来\n描述：党内围绕新经济政策展开了激烈争论。\n选项A：继续试验\n效果A：政治点+50\n";
 
-    let json = run_workflow_json(text, Some(&root), "SOV", "sov_nep", None, false).unwrap();
+    let json = run_workflow_json(text, Some(&root), "SOV", "sov_nep", None, false, None).unwrap();
     let focus = fs::read_to_string(
         root.join("common")
             .join("national_focus")
@@ -853,6 +853,78 @@ fn generate_mod_infers_country_from_source_root() {
     assert!(focus.contains("id = FER_"));
     assert!(focus.contains("tag = FER"));
     assert!(focus.contains("type = arms_factory level = 3"));
+}
+
+#[test]
+fn one_sentence_focus_tree_uses_default_stage_template() {
+    let synthesized =
+        synthesize_one_sentence_workflow("给德国做一套工业国策树。", "GER", "ger_industry");
+    let layout_text = extract_focus_layout_text(&synthesized);
+    let layout = parse_focus_layout(&layout_text, "GER", "ger_industry");
+
+    assert_eq!(layout.rows.len(), 5);
+    assert_eq!(
+        layout
+            .rows
+            .iter()
+            .map(|row| row.focus_ids.len())
+            .collect::<Vec<_>>(),
+        vec![1, 3, 1, 3, 1]
+    );
+    assert_eq!(
+        layout
+            .focuses
+            .iter()
+            .map(|focus| (focus.y, focus.x))
+            .collect::<Vec<_>>(),
+        vec![
+            (0, 0),
+            (1, -2),
+            (1, 0),
+            (1, 2),
+            (2, 0),
+            (3, -2),
+            (3, 0),
+            (3, 2),
+            (4, 0),
+        ]
+    );
+}
+
+#[test]
+fn apply_focus_layout_uses_indexed_goal_icons() {
+    let root = unique_temp_dir("apply-focus-layout-indexed-icons");
+    let game = unique_temp_dir("apply-focus-layout-game-icons");
+    fs::create_dir_all(root.join("interface")).unwrap();
+    fs::create_dir_all(game.join("interface")).unwrap();
+    fs::write(
+        root.join("interface").join("local_goals.gfx"),
+        r#"spriteType = { name = "GFX_goal_local_political_reform" texturefile = "gfx/interface/goals/local.dds" }"#,
+    )
+    .unwrap();
+    fs::write(
+        game.join("interface").join("game_goals.gfx"),
+        r#"spriteType = { name = "GFX_goal_game_factory" texturefile = "gfx/interface/goals/factory.dds" }"#,
+    )
+    .unwrap();
+    let index = build_game_index(&game).unwrap();
+    let layout = parse_focus_layout("工业复兴\n政治改革\n", "SOV", "sov_alt");
+
+    apply_focus_layout_to_mod_with_index(&root, &layout, "SOV", "sov_alt", Some(&index)).unwrap();
+
+    let focus_file = fs::read_to_string(
+        root.join("common")
+            .join("national_focus")
+            .join("sov_alt_SOV_focus.txt"),
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&game).unwrap();
+
+    assert!(focus_file.contains("id = SOV_industry_revival"));
+    assert!(focus_file.contains("icon = GFX_goal_game_factory"));
+    assert!(focus_file.contains("id = SOV_political_reform"));
+    assert!(focus_file.contains("icon = GFX_goal_local_political_reform"));
 }
 
 #[test]
@@ -2733,6 +2805,9 @@ fn focus_copy_cards_render_prompt_batch() {
     assert!(markdown.contains("focus = {"));
     assert!(markdown.contains("relative_position_id =  #基于某个国策位置的相对位置"));
     assert!(markdown.contains("country = { factor = 0 modifier = { add = 10 tag = <TAG> } }"));
+    assert!(markdown.contains("y=0 一个开篇国策 x=0"));
+    assert!(markdown.contains("真实 `GFX_goal*` 国策图标"));
+    assert!(markdown.contains("icon = <verified GFX_goal* from interface/*.gfx"));
 }
 
 #[test]

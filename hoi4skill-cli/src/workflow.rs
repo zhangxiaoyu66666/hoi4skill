@@ -11,8 +11,25 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     let prefix = value(&map, "prefix").unwrap_or("mod");
     let tree_id = value(&map, "tree-id");
     let dry_run = map.flags.contains("dry-run") || mod_root.is_none();
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+        .transpose()?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err("--mod-path requires --game-root during workflow generation".to_string());
+    }
     let text = read_utf8_lossy(&input)?;
-    let json = run_workflow_json(&text, mod_root.as_deref(), tag, prefix, tree_id, dry_run)?;
+    let json = run_workflow_json(
+        &text,
+        mod_root.as_deref(),
+        tag,
+        prefix,
+        tree_id,
+        dry_run,
+        game_index.as_ref(),
+    )?;
     write_or_print(&json, value(&map, "output"))
 }
 
@@ -162,6 +179,7 @@ pub(crate) fn generate_mod_json(request: &GenerateModRequest<'_>) -> Result<Stri
         request.prefix,
         None,
         request.dry_run,
+        None,
     )?;
     let created_files = created
         .iter()
@@ -270,8 +288,12 @@ pub(crate) fn synthesize_one_sentence_workflow(text: &str, tag: &str, prefix: &s
     let mut out = String::new();
     if wants_focus {
         out.push_str("国策树：\n");
-        out.push_str(&title);
-        out.push('\n');
+        if wants_default_focus_tree_template(text) {
+            out.push_str(&default_focus_tree_template(&title));
+        } else {
+            out.push_str(&title);
+            out.push('\n');
+        }
         if !effects.trim().is_empty() {
             if long_term_effect {
                 out.push_str(&format!("# completion_reward: 添加民族精神 {idea_title}\n"));
@@ -345,6 +367,34 @@ pub(crate) fn synthesize_one_sentence_workflow(text: &str, tag: &str, prefix: &s
         ));
     }
     out
+}
+
+pub(crate) fn wants_default_focus_tree_template(text: &str) -> bool {
+    contains_any(
+        text,
+        &[
+            "国策树",
+            "一套国策",
+            "一条国策",
+            "一条路线",
+            "路线国策",
+            "多个国策",
+            "系列国策",
+            "完整国策",
+        ],
+    )
+}
+
+pub(crate) fn default_focus_tree_template(title: &str) -> String {
+    let title = title.trim();
+    let opening = if title.is_empty() {
+        "确立路线"
+    } else {
+        title
+    };
+    format!(
+        "{opening} | opening_focus\n整顿行政机关 | reorganize_administration    扩大工业基础 | expand_industry    稳定社会秩序 | stabilize_society\n第一阶段成果 | first_phase_result\n深化制度建设 | deepen_institutions    强化动员体系 | strengthen_mobilisation    巩固地方执行 | consolidate_local_execution\n完成路线收束 | complete_route\n"
+    )
 }
 
 #[derive(Clone)]
@@ -932,6 +982,7 @@ pub(crate) fn run_workflow_json(
     prefix: &str,
     tree_id: Option<&str>,
     dry_run: bool,
+    game_index: Option<&GameIndex>,
 ) -> Result<String, String> {
     let feature_text = extract_card_text(text, FEATURE_CARD_HEADERS);
     let event_text = extract_card_text(text, &["事件"]);
@@ -959,7 +1010,9 @@ pub(crate) fn run_workflow_json(
                 if let Some(tree_id) = tree_id {
                     layout.tree_id = tree_id.to_string();
                 }
-                changed.extend(apply_focus_layout_to_mod(root, &layout, tag, prefix)?);
+                changed.extend(apply_focus_layout_to_mod_with_index(
+                    root, &layout, tag, prefix, game_index,
+                )?);
             }
             if !feature_cards.is_empty() {
                 changed.extend(apply_feature_cards_to_mod(
@@ -982,7 +1035,7 @@ pub(crate) fn run_workflow_json(
         .collect::<Vec<_>>();
 
     let validation = if let Some(root) = mod_root {
-        Some(validate_mod(root, None)?)
+        Some(validate_mod(root, game_index)?)
     } else {
         None
     };
