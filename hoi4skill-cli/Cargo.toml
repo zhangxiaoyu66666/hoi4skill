@@ -1,6 +1,6 @@
 [package]
 name = "hoi4skill"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Rust CLI backend for the hoi4-mod-maker Codex skill."
@@ -9,3 +9,9 @@ description = "Rust CLI backend for the hoi4-mod-maker Codex skill."
 strip = true
 lto = true
 codegen-units = 1
+
+[dependencies]
+calamine = "0.35.0"
+
+[dev-dependencies]
+zip = { version = "7.2.0", default-features = false }

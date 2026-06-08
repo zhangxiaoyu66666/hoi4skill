@@ -1,6 +1,6 @@
 # Text Focus Tree Layout
 
-Use this when the user sketches a national focus tree as plain text.
+Use this when the user sketches a national focus tree as plain text or draws it in an Excel/OpenDocument worksheet.
 
 ## Goal
 
@@ -28,6 +28,7 @@ Then turn it into a focus plan with:
 - A token named `互斥`, `x`, or `X` marks mutual exclusivity between the nearest focus token on its left and right.
 - `y` equals the row number, starting at `0`.
 - `x` is centered around the row's focus count.
+- Same-row focus positions must keep an `x` gap of 2 to avoid UI overlap. If one focus is `x = 1`, the adjacent same-row focus must be `x = 3`, not `x = 2`.
 - A focus defaults to a prerequisite from the nearest focus in the previous row.
 - If this inferred prerequisite is wrong, edit the Feature Plan before generating code.
 
@@ -73,6 +74,36 @@ The helper produces JSON. To write files directly, use `hoi4skill apply-focus-la
 
 When writing to an existing mod, `apply-focus-layout` first looks for `common/national_focus/*.txt` files with a `focus_tree` whose `country` block references the target tag. If a matching tree exists, it inserts the new focus blocks into that tree and offsets their `y` values below the existing max row. If no matching tree exists, it creates the normal generated focus file.
 
+## Excel Layout
+
+Use Excel when the author or AI draws the focus tree visually as a worksheet grid. Supported file types are `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, and `.ods`.
+
+Rules:
+
+- Every non-empty non-connector cell is a focus.
+- Blank cells preserve horizontal spacing.
+- Connector-only cells such as `│`, `─`, arrows, or header cells such as `国策树` are ignored.
+- Worksheet columns become HOI4 `x` coordinates with a same-row minimum gap of 2.
+- Worksheet rows become HOI4 `y` coordinates.
+- The importer infers a parent from the nearest focus in the closest non-empty row above.
+- Child focuses use `relative_position_id = <parent_focus_id>` and relative `x/y` offsets.
+- Cell text may include multiple lines:
+
+```text
+工业复兴
+ID: industrial_revival
+icon: GFX_goal_generic_construct_civ_factory
+completion_reward: 1个军工厂
+```
+
+Commands:
+
+```text
+hoi4skill parse-focus-excel --input focus_tree.xlsx --tag SOV --prefix sov_alt --sheet FocusTree --format focus-tree --output focus_tree.txt
+hoi4skill parse-focus-excel --input focus_tree.xlsx --tag SOV --prefix sov_alt --format json --output focus_excel_plan.json
+hoi4skill apply-focus-excel --input focus_tree.xlsx --mod-root "M:\path\mod" --tag SOV --prefix sov_alt --sheet FocusTree
+```
+
 Focus IDs must stay ASCII. For AI-generated sketches, prefer giving an explicit English ID hint after the Chinese title:
 
 ```text
@@ -117,7 +148,21 @@ focus = {
 	icon = GFX_goal_generic_political_reform
 	x = 0
 	y = 0
-	cost = 10
+	# relative_position_id = <focus id for relative placement>
+	cost = 2.5
+	ai_will_do = {
+		factor = 10
+	}
+
+	available = {
+	}
+
+	bypass = {
+	}
+	cancel_if_invalid = yes
+	continue_if_invalid = no
+	available_if_capitulated = no
+
 	completion_reward = {
 		add_political_power = 50
 	}
@@ -128,9 +173,23 @@ focus = {
 	icon = GFX_goal_generic_construct_civ_factory
 	x = -1
 	y = 1
-	cost = 10
 	prerequisite = { focus = SOV_stalin_constitution }
 	mutually_exclusive = { focus = SOV_continue_nep }
+	relative_position_id = SOV_stalin_constitution
+	cost = 2.5
+	ai_will_do = {
+		factor = 10
+	}
+
+	available = {
+	}
+
+	bypass = {
+	}
+	cancel_if_invalid = yes
+	continue_if_invalid = no
+	available_if_capitulated = no
+
 	completion_reward = {
 		add_stability = 0.03
 	}

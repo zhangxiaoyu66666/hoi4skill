@@ -1048,11 +1048,13 @@ pub(crate) fn focus_layout_json(layout: &FocusLayout, tag: &str, prefix: &str) -
     for (i, f) in layout.focuses.iter().enumerate() {
         comma(&mut out, i, "    ");
         out.push_str(&format!(
-            "{{\"title\": {}, \"id\": {}, \"x\": {}, \"y\": {}, \"row\": {}, \"column\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}, \"completion_reward\": {}}}",
+            "{{\"title\": {}, \"id\": {}, \"icon\": {}, \"x\": {}, \"y\": {}, \"relative_position_id\": {}, \"row\": {}, \"column\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}, \"completion_reward\": {}}}",
             json_str(&f.title),
             json_str(&f.id),
+            json_optional_str(f.icon.as_deref()),
             f.x,
             f.y,
+            json_optional_str(f.relative_position_id.as_deref()),
             f.row,
             f.column,
             json_array(&f.prerequisite),

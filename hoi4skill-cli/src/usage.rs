@@ -5,7 +5,7 @@ use crate::*;
 
 pub(crate) fn print_usage() {
     println!(
-        r#"hoi4skill 0.1.0
+        r#"hoi4skill {}
 
 Usage:
   hoi4skill scaffold --name "My Mod" --output "M:\path\mod" [--launcher-file]
@@ -23,6 +23,8 @@ Usage:
   hoi4skill register-gfx-icons --mod-root "M:\path\mod" --prefix sov_nep [--category all|dynamic|focus-idea|event|decision] [--output report.json]
   hoi4skill parse-focus-layout --input layout.txt --tag SOV --prefix sov_alt [--output plan.json]
   hoi4skill apply-focus-layout --input layout.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_alt
+  hoi4skill parse-focus-excel --input tree.xlsx --tag SOV --prefix sov_alt [--sheet FocusTree] [--format focus-tree|json] [--output focus_tree.txt]
+  hoi4skill apply-focus-excel --input tree.xlsx --mod-root "M:\path\mod" --tag SOV --prefix sov_alt [--sheet FocusTree]
   hoi4skill parse-focus-copy-cards --input focus_copy.txt [--output focus_prompts.md]
   hoi4skill parse-feature-cards --input cards.txt --tag SOV --prefix sov_nep [--output plan.json]
   hoi4skill apply-feature-cards --input cards.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep
@@ -37,6 +39,7 @@ Usage:
   hoi4skill analyze-error-log --input "%USERPROFILE%\Documents\Paradox Interactive\Hearts of Iron IV\logs\error.log" [--mod-root "M:\path\mod"] [--output report.json]
 
 This binary has no Python or PowerShell dependency.
-"#
+"#,
+        env!("CARGO_PKG_VERSION")
     );
 }

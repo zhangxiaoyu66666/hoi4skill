@@ -17,8 +17,12 @@ pub(crate) fn cmd_parse_focus_layout(args: &[String]) -> Result<(), String> {
 pub(crate) struct FocusNode {
     pub(crate) title: String,
     pub(crate) id: String,
+    pub(crate) icon: Option<String>,
     pub(crate) x: i32,
     pub(crate) y: i32,
+    pub(crate) relative_position_id: Option<String>,
+    pub(crate) relative_x: Option<i32>,
+    pub(crate) relative_y: Option<i32>,
     pub(crate) row: usize,
     pub(crate) column: usize,
     pub(crate) prerequisite: Vec<String>,
@@ -81,8 +85,12 @@ pub(crate) fn parse_focus_layout(text: &str, tag: &str, prefix: &str) -> FocusLa
             focuses.push(FocusNode {
                 title,
                 id: id.clone(),
+                icon: None,
                 x,
                 y: row_index as i32,
+                relative_position_id: None,
+                relative_x: None,
+                relative_y: None,
                 row: row_index,
                 column: col,
                 prerequisite: Vec::new(),
@@ -108,6 +116,7 @@ pub(crate) fn parse_focus_layout(text: &str, tag: &str, prefix: &str) -> FocusLa
         row_index += 1;
     }
 
+    ensure_focus_row_x_spacing(&mut focuses, 2);
     for idx in 0..focuses.len() {
         if focuses[idx].row == 0 {
             continue;
@@ -338,11 +347,13 @@ pub(crate) fn parse_focus_layout_json(text: &str, tag: &str, prefix: &str) -> St
     for (i, f) in layout.focuses.iter().enumerate() {
         comma(&mut out, i, "    ");
         out.push_str(&format!(
-            "{{\"title\": {}, \"id\": {}, \"x\": {}, \"y\": {}, \"row\": {}, \"column\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}}}",
+            "{{\"title\": {}, \"id\": {}, \"icon\": {}, \"x\": {}, \"y\": {}, \"relative_position_id\": {}, \"row\": {}, \"column\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}}}",
             json_str(&f.title),
             json_str(&f.id),
+            json_optional_str(f.icon.as_deref()),
             f.x,
             f.y,
+            json_optional_str(f.relative_position_id.as_deref()),
             f.row,
             f.column,
             json_array(&f.prerequisite),
@@ -608,6 +619,29 @@ pub(crate) fn offset_layout_y(layout: &mut FocusLayout, offset: i32) {
     }
 }
 
+pub(crate) fn ensure_focus_row_x_spacing(focuses: &mut [FocusNode], min_gap: i32) {
+    if min_gap <= 0 {
+        return;
+    }
+    let mut rows: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for (idx, focus) in focuses.iter().enumerate() {
+        rows.entry(focus.row).or_default().push(idx);
+    }
+    for indexes in rows.values_mut() {
+        indexes.sort_by_key(|idx| (focuses[*idx].x, focuses[*idx].column));
+        let mut previous_x: Option<i32> = None;
+        for idx in indexes {
+            if let Some(previous_x) = previous_x {
+                let wanted = previous_x + min_gap;
+                if focuses[*idx].x < wanted {
+                    focuses[*idx].x = wanted;
+                }
+            }
+            previous_x = Some(focuses[*idx].x);
+        }
+    }
+}
+
 pub(crate) fn dedupe_layout_focus_ids(layout: &mut FocusLayout, existing_ids: &BTreeSet<String>) {
     let mut used = existing_ids.clone();
     let mut id_map = BTreeMap::new();
@@ -629,6 +663,11 @@ pub(crate) fn dedupe_layout_focus_ids(layout: &mut FocusLayout, existing_ids: &B
         return;
     }
     for focus in &mut layout.focuses {
+        if let Some(relative_id) = &mut focus.relative_position_id {
+            if let Some(new_id) = id_map.get(relative_id) {
+                *relative_id = new_id.clone();
+            }
+        }
         for value in focus
             .prerequisite
             .iter_mut()
@@ -738,16 +777,37 @@ pub(crate) fn render_focus_block(focus: &FocusNode) -> String {
     let mut out = String::new();
     out.push_str("\tfocus = {\n");
     out.push_str(&format!("\t\tid = {}\n", focus.id));
-    out.push_str(&format!("\t\ticon = {}\n", choose_focus_icon(&focus.title)));
-    out.push_str(&format!("\t\tx = {}\n", focus.x));
-    out.push_str(&format!("\t\ty = {}\n", focus.y));
-    out.push_str("\t\tcost = 10\n");
+    let icon = focus
+        .icon
+        .as_deref()
+        .unwrap_or_else(|| choose_focus_icon(&focus.title));
+    out.push_str(&format!("\t\ticon = {icon}\n"));
+    out.push_str(&format!(
+        "\t\tx = {}\n",
+        focus.relative_x.unwrap_or(focus.x)
+    ));
+    out.push_str(&format!(
+        "\t\ty = {}\n",
+        focus.relative_y.unwrap_or(focus.y)
+    ));
     for parent in &focus.prerequisite {
         out.push_str(&format!("\t\tprerequisite = {{ focus = {parent} }}\n"));
     }
     for other in &focus.mutually_exclusive {
         out.push_str(&format!("\t\tmutually_exclusive = {{ focus = {other} }}\n"));
     }
+    if let Some(relative_id) = &focus.relative_position_id {
+        out.push_str(&format!("\t\trelative_position_id = {relative_id}\n"));
+    } else {
+        out.push_str("\t\t# relative_position_id = <focus id for relative placement>\n");
+    }
+    out.push_str("\t\tcost = 2.5\n");
+    out.push_str("\t\tai_will_do = {\n\t\t\tfactor = 10\n\t\t}\n\n");
+    out.push_str("\t\tavailable = {\n\t\t}\n\n");
+    out.push_str("\t\tbypass = {\n\t\t}\n");
+    out.push_str("\t\tcancel_if_invalid = yes\n");
+    out.push_str("\t\tcontinue_if_invalid = no\n");
+    out.push_str("\t\tavailable_if_capitulated = no\n\n");
     out.push_str("\t\tcompletion_reward = {\n");
     if focus.completion_reward.is_empty() {
         out.push_str("\t\t\tadd_political_power = 50\n");
@@ -757,7 +817,6 @@ pub(crate) fn render_focus_block(focus: &FocusNode) -> String {
         }
     }
     out.push_str("\t\t}\n");
-    out.push_str("\t\tai_will_do = {\n\t\t\tfactor = 1\n\t\t}\n");
     out.push_str("\t}\n");
     out
 }

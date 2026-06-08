@@ -31,6 +31,10 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
         }
         "parse-focus-layout" => super::cmd_parse_focus_layout(&args),
         "apply-focus-layout" => super::cmd_apply_focus_layout(&args),
+        "parse-focus-excel" | "parse-focus-xlsx" | "focus-excel-skeleton" => {
+            super::cmd_parse_focus_excel(&args)
+        }
+        "apply-focus-excel" | "apply-focus-xlsx" => super::cmd_apply_focus_excel(&args),
         "parse-focus-copy-cards" => super::cmd_parse_focus_copy_cards(&args),
         "parse-feature-cards" => super::cmd_parse_feature_cards(&args),
         "apply-feature-cards" => super::cmd_apply_feature_cards(&args),

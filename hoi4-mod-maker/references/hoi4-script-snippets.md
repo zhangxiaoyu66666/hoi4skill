@@ -86,15 +86,23 @@ focus_tree = {
 		icon = GFX_goal_generic_construct_civ_factory
 		x = 0
 		y = 0
-		cost = 10
+		# relative_position_id = TAG_parent_focus
+		cost = 2.5
+		ai_will_do = {
+			factor = 10
+		}
+
 		available = {
 			has_war = no
 		}
+		bypass = {
+		}
+		cancel_if_invalid = yes
+		continue_if_invalid = no
+		available_if_capitulated = no
+
 		completion_reward = {
 			add_political_power = 100
-		}
-		ai_will_do = {
-			factor = 1
 		}
 	}
 }

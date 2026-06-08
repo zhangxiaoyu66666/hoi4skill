@@ -20,7 +20,7 @@
 - **创建 MOD 骨架**：快速生成基础 MOD 文件夹结构。
 - **扫描现有 MOD**：在修改前读取 MOD 风格、文件结构和已有内容。
 - **静态校验**：检查常见 HOI4 MOD 错误，减少启动爆炸概率。
-- **国策树生成**：从纯文本草图生成 focus tree 相关文件。
+- **国策树生成**：从纯文本草图或 Excel 表格画出的国策树生成 focus tree 相关文件，国策坐标按同一行 `x` 间隔 2 防重叠。
 - **卡片式内容解析与写入**：支持决议、民族精神、事件、科技、特殊 GUI、scripted helper、state-effect 等内容。
 - **GFX 图标注册**：辅助把图标注册到 `interface/*.gfx`。
 - **游戏 / MOD 索引构建**：索引国家 tag、sprite、state、province、technology 等引用信息。
@@ -55,6 +55,7 @@ hoi4skill scaffold --name "My HOI4 Mod" --output "M:\path\my_mod" --launcher-fil
 hoi4skill mod-knowledge "M:\path\existing_mod" --mod-path "M:\path\dependency.mod" --output mod_knowledge.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output workflow_report.json
 hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --output history_plan.json
+hoi4skill parse-focus-excel --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_excel --sheet FocusTree --output focus_tree.txt
 hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from english --to simp_chinese --format prompt --output loc_translate_prompt.md
 hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from french --to german --format prompt --output loc_fr_to_de_prompt.md
 hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from french --to german --translated-input translated_l_german.yml --apply --report loc_apply_report.json

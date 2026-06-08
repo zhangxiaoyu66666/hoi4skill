@@ -10,6 +10,87 @@ fn unique_temp_dir(name: &str) -> PathBuf {
     ))
 }
 
+fn write_minimal_focus_xlsx(path: &Path) {
+    let file = fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default();
+    write_zip_xml(
+        &mut zip,
+        options,
+        "[Content_Types].xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#,
+    );
+    write_zip_xml(
+        &mut zip,
+        options,
+        "_rels/.rels",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#,
+    );
+    write_zip_xml(
+        &mut zip,
+        options,
+        "xl/workbook.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="FocusTree" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#,
+    );
+    write_zip_xml(
+        &mut zip,
+        options,
+        "xl/_rels/workbook.xml.rels",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#,
+    );
+    write_zip_xml(
+        &mut zip,
+        options,
+        "xl/worksheets/sheet1.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>国策树</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>重建中央委员会|rebuild_committee</t></is></c>
+    </row>
+    <row r="2">
+      <c r="C2" t="inlineStr"><is><t>│</t></is></c>
+    </row>
+    <row r="3">
+      <c r="B3" t="inlineStr"><is><t xml:space="preserve">工业复兴&#10;ID: industrial_revival&#10;icon: GFX_goal_generic_construct_civ_factory&#10;completion_reward: 1个军工厂</t></is></c>
+      <c r="D3" t="inlineStr"><is><t>整顿军队</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>"#,
+    );
+    zip.finish().unwrap();
+}
+
+fn write_zip_xml(
+    zip: &mut zip::ZipWriter<fs::File>,
+    options: zip::write::SimpleFileOptions,
+    path: &str,
+    xml: &str,
+) {
+    use std::io::Write;
+
+    zip.start_file(path, options).unwrap();
+    zip.write_all(xml.as_bytes()).unwrap();
+}
+
 fn write_fer_country_source(root: &Path) {
     fs::create_dir_all(root.join("common").join("country_tags")).unwrap();
     fs::create_dir_all(root.join("common").join("countries")).unwrap();
@@ -1666,6 +1747,13 @@ fn apply_focus_layout_writes_focus_tree_and_localisation() {
     assert!(focus_file.contains("focus = {"));
     assert!(focus_file.contains("id = SOV_first_five_year_plan"));
     assert!(focus_file.contains("prerequisite = { focus = SOV_stalin_constitution }"));
+    assert!(focus_file.contains("cost = 2.5"));
+    assert!(focus_file.contains("ai_will_do = {\n\t\t\tfactor = 10\n\t\t}"));
+    assert!(focus_file.contains("available = {\n\t\t}"));
+    assert!(focus_file.contains("bypass = {\n\t\t}"));
+    assert!(focus_file.contains("cancel_if_invalid = yes"));
+    assert!(focus_file.contains("continue_if_invalid = no"));
+    assert!(focus_file.contains("available_if_capitulated = no"));
     assert!(
         focus_file.contains("mutually_exclusive = { focus = SOV_continue_new_economic_policy }")
     );
@@ -1677,6 +1765,57 @@ fn apply_focus_layout_writes_focus_tree_and_localisation() {
         "SOV_first_five_year_plan_desc:0 \"分散的工厂、铁路与计划机关无法独自承担时代的重压。"
     ));
     assert!(!loc.contains("具体效果待补充"));
+}
+
+#[test]
+fn focus_excel_reads_drawn_tree_and_renders_standard_skeleton() {
+    let root = unique_temp_dir("focus-excel");
+    fs::create_dir_all(&root).unwrap();
+    let xlsx = root.join("tree.xlsx");
+    write_minimal_focus_xlsx(&xlsx);
+
+    let layout = read_focus_excel_layout(&xlsx, Some("FocusTree"), "SOV", "sov_excel").unwrap();
+    let tree = render_focus_tree(&layout, "SOV");
+    fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(layout.focuses.len(), 3);
+    assert!(layout
+        .focuses
+        .iter()
+        .any(|focus| focus.id == "SOV_rebuild_committee" && focus.x == 2));
+    let industry = layout
+        .focuses
+        .iter()
+        .find(|focus| focus.title == "工业复兴")
+        .unwrap();
+    assert_eq!(industry.id, "SOV_industrial_revival");
+    assert_eq!(industry.x, 0);
+    assert_eq!(industry.relative_x, Some(-2));
+    assert_eq!(industry.relative_y, Some(2));
+    assert_eq!(
+        industry.relative_position_id.as_deref(),
+        Some("SOV_rebuild_committee")
+    );
+    let army = layout
+        .focuses
+        .iter()
+        .find(|focus| focus.title == "整顿军队")
+        .unwrap();
+    assert_eq!(army.x, 4);
+    assert_eq!(army.relative_x, Some(2));
+
+    assert!(tree.contains("id = SOV_industrial_revival"));
+    assert!(tree.contains("icon = GFX_goal_generic_construct_civ_factory"));
+    assert!(tree.contains("x = -2"));
+    assert!(tree.contains("relative_position_id = SOV_rebuild_committee"));
+    assert!(tree.contains("cost = 2.5"));
+    assert!(tree.contains("factor = 10"));
+    assert!(tree.contains("available = {\n\t\t}"));
+    assert!(tree.contains("bypass = {\n\t\t}"));
+    assert!(tree.contains("cancel_if_invalid = yes"));
+    assert!(tree.contains("continue_if_invalid = no"));
+    assert!(tree.contains("available_if_capitulated = no"));
+    assert!(tree.contains("arms_factory"));
 }
 
 #[test]
@@ -2784,11 +2923,14 @@ fn focus_layout_infers_branch_parents_before_mutation() {
     );
 
     assert!(json.contains(
-        "\"title\": \"快速工业化\", \"id\": \"SOV_rapid_industry\", \"x\": -3, \"y\": 2, \"row\": 2, \"column\": 0, \"prerequisite\": [\"SOV_first_five_year_plan\"]"
+        "\"title\": \"快速工业化\", \"id\": \"SOV_rapid_industry\", \"icon\": null, \"x\": -3, \"y\": 2, \"relative_position_id\": null, \"row\": 2, \"column\": 0, \"prerequisite\": [\"SOV_first_five_year_plan\"]"
     ));
     assert!(json.contains(
-        "\"title\": \"发财吧农民\", \"id\": \"SOV_prosper_peasants\", \"x\": 1, \"y\": 2, \"row\": 2, \"column\": 2, \"prerequisite\": [\"SOV_continue_new_economic_policy\"]"
+        "\"title\": \"发财吧农民\", \"id\": \"SOV_prosper_peasants\", \"icon\": null, \"x\": 1, \"y\": 2, \"relative_position_id\": null, \"row\": 2, \"column\": 2, \"prerequisite\": [\"SOV_continue_new_economic_policy\"]"
     ));
+    assert!(json.contains(
+        "\"title\": \"奈普曼入党\", \"id\": \"SOV_nepman_join_party\", \"icon\": null, \"x\": 3, \"y\": 2"
+    ) || json.contains("\"title\": \"奈普曼入党\"") && json.contains("\"x\": 3, \"y\": 2"));
 }
 #[test]
 fn history_edit_plan_blocks_unverified_direct_state_edits() {

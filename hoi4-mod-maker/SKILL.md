@@ -110,6 +110,8 @@ hoi4skill import-mod-ir "M:\path\mod" --max-items 1000 --output imported_ir.json
 hoi4skill icon-preview --mod-root "M:\path\mod" --output "M:\preview"
 hoi4skill register-gfx-icons --mod-root "M:\path\mod" --prefix sov_nep --category all --output gfx_report.json
 hoi4skill parse-focus-layout --input "M:\path\layout.txt" --tag SOV --prefix sov_alt --output focus_plan.json
+hoi4skill parse-focus-excel --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_alt --sheet FocusTree --output focus_tree.txt
+hoi4skill apply-focus-excel --input "M:\path\focus_tree.xlsx" --mod-root "M:\path\mod" --tag SOV --prefix sov_alt --sheet FocusTree
 hoi4skill parse-feature-cards --input "M:\path\cards.txt" --tag SOV --prefix sov_nep --output feature_plan.json
 hoi4skill parse-event-cards --input "M:\path\events.txt" --tag SOV --prefix sov_nep --output event_plan.json
 hoi4skill idea-copy-prompt "M:\path\modA" "M:\path\modB" --style compact --output idea_prompt.md
@@ -123,6 +125,8 @@ hoi4skill analyze-error-log --input "%USERPROFILE%\Documents\Paradox Interactive
 ```
 
 `run-workflow` accepts mixed Chinese prose/cards, detects focus-tree sketches, decision/national-spirit/technology/special-GUI/scripted-helper/state-effect cards, and event cards, then writes the generated files when `--mod-root` is supplied. Its JSON report includes detected sections, generated plans, changed files, validation errors/warnings, and next steps. When the target mod already has a `focus_tree` whose country block resolves to the target tag, focus generation extends that existing tree and shifts new focus rows below the current max `y`; otherwise it creates a new focus file.
+
+`parse-focus-excel` and `apply-focus-excel` read `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, or `.ods` files where AI or a human drew a national focus tree as a worksheet grid. Every non-empty non-connector cell becomes a focus. Cell text may include lines such as `ID: english_id`, `icon: GFX_goal...`, and `completion_reward: 1个军工厂`. The importer expands worksheet columns into HOI4 `x` coordinates with a minimum gap of 2 on the same `y` row, so if one focus is `x = 1`, the adjacent same-row focus is at least `x = 3`. Child focuses receive `relative_position_id` when a nearest parent is inferred from the row above.
 
 `mod-knowledge` is the required pre-edit dossier for existing mods. It resolves a directory, `descriptor.mod`, or launcher-side `.mod` file; classifies the target as `standalone_mod`, `submod`, or `unknown_no_descriptor`; reads local descriptor/launcher metadata, dependency names, focus trees, event namespaces, country tags, history countries, history states, province definition summaries, localisation style, decisions, ideas, GFX sprites, and content samples; then emits a JSON `knowledge_base` plus a model-readable `markdown_summary`. Use it before `run-workflow`, `apply-*`, or manual edits.
 
