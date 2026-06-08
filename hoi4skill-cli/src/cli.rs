@@ -42,6 +42,10 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
         "country-localisation-template" | "country-localization-template" => {
             super::cmd_country_localisation_template(&args)
         }
+        "translate-localisation"
+        | "translate-localization"
+        | "quick-translate-localisation"
+        | "quick-translate-localization" => super::cmd_translate_localisation(&args),
         "analyze-error-log" | "parse-error-log" => super::cmd_analyze_error_log(&args),
         _ => return Err(CliError::usage(format!("unknown command: {command}"))),
     };

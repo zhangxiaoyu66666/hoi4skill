@@ -2369,6 +2369,144 @@ fn idea_copy_prompt_scans_national_spirits_separately() {
 }
 
 #[test]
+fn translate_localisation_prompt_reads_source_and_skips_existing_target_keys() {
+    let root = unique_temp_dir("translate-localisation-prompt");
+    fs::create_dir_all(root.join("localisation").join("english")).unwrap();
+    fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("english")
+            .join("sample_l_english.yml"),
+        "l_english:\n TST_name:0 \"New Order\"\n TST_desc:0 \"We must protect $STATE|Y$ and [ROOT.GetName].\"\n TST_existing:0 \"Already done\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("simp_chinese")
+            .join("sample_l_simp_chinese.yml"),
+        "l_simp_chinese:\n TST_existing:0 \"已经完成\"\n",
+    )
+    .unwrap();
+
+    let map = parse_args(&[
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--from".to_string(),
+        "english".to_string(),
+        "--to".to_string(),
+        "simp_chinese".to_string(),
+    ]);
+    let from = normalise_localisation_language(value(&map, "from").unwrap()).unwrap();
+    let to = normalise_localisation_language(value(&map, "to").unwrap()).unwrap();
+    let source_roots = source_localisation_roots(&map, Some(&root), &from).unwrap();
+    let existing = target_existing_keys(Some(&root), &to).unwrap();
+    let files =
+        collect_localisation_source_files(Some(&root), &source_roots, &[], &existing, 100).unwrap();
+    let prompt = render_localisation_translation_prompt(&from, &to, &files);
+    fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(all_translation_entries(&files).len(), 2);
+    assert!(prompt.contains("l_simp_chinese:"));
+    assert!(prompt.contains("TST_name:0 \"New Order\""));
+    assert!(prompt.contains("$STATE|Y$"));
+    assert!(prompt.contains("[ROOT.GetName]"));
+    assert!(prompt.contains("Do not translate tokens"));
+    assert!(!prompt.contains("TST_existing:0"));
+}
+
+#[test]
+fn translate_localisation_yml_writes_target_named_files() {
+    let root = unique_temp_dir("translate-localisation-yml");
+    let output_dir = root.join("out").join("simp_chinese");
+    fs::create_dir_all(root.join("localisation").join("english")).unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("english")
+            .join("events_l_english.yml"),
+        "l_english:\n evt.1.t:0 \"A New Dawn\"\n evt.1.d:0 \"The cabinet meets again.\"\n",
+    )
+    .unwrap();
+
+    let source_roots = vec![root.join("localisation").join("english")];
+    let files =
+        collect_localisation_source_files(Some(&root), &source_roots, &[], &BTreeSet::new(), 100)
+            .unwrap();
+    let report =
+        write_translation_yml_files(&files, "english", "simp_chinese", &output_dir, false).unwrap();
+    let written = fs::read_to_string(output_dir.join("events_l_simp_chinese.yml")).unwrap();
+    let second_report =
+        write_translation_yml_files(&files, "english", "simp_chinese", &output_dir, false).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(report.contains("events_l_simp_chinese.yml"));
+    assert!(written.starts_with('\u{feff}'));
+    assert!(written.contains("l_simp_chinese:"));
+    assert!(written.contains("evt.1.t:0 \"A New Dawn\""));
+    assert!(written.contains("translate value before release"));
+    assert!(second_report.contains("skipped_existing_files"));
+    assert!(second_report.contains("events_l_simp_chinese.yml"));
+}
+
+#[test]
+fn translate_localisation_apply_injects_translated_values_and_reports_omissions() {
+    let root = unique_temp_dir("translate-localisation-apply");
+    fs::create_dir_all(root.join("localisation").join("english")).unwrap();
+    fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("english")
+            .join("events_l_english.yml"),
+        "l_english:\n evt.1.t:0 \"A New Dawn\"\n evt.1.d:0 \"The cabinet meets again.\"\n evt.1.a:0 \"Continue\"\n evt.1.b:0 \"Missing translation\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("simp_chinese")
+            .join("events_l_simp_chinese.yml"),
+        "l_simp_chinese:\n evt.1.a:0 \"继续\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("translated_l_simp_chinese.yml"),
+        "l_simp_chinese:\n evt.1.t:0 \"新的黎明\"\n evt.1.d:0 \"内阁再次召开会议。\"\n unused.key:0 \"多余条目\"\n",
+    )
+    .unwrap();
+
+    let source_roots = vec![root.join("localisation").join("english")];
+    let source_files =
+        collect_localisation_source_files(Some(&root), &source_roots, &[], &BTreeSet::new(), 100)
+            .unwrap();
+    let translations =
+        collect_translated_localisation_map(&[root.join("translated_l_simp_chinese.yml")]).unwrap();
+    let report = apply_localisation_translations(
+        &root,
+        &source_files,
+        "english",
+        "simp_chinese",
+        &translations,
+        false,
+    )
+    .unwrap();
+    let target = fs::read_to_string(
+        root.join("localisation")
+            .join("simp_chinese")
+            .join("events_l_simp_chinese.yml"),
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(target.contains("evt.1.a:0 \"继续\""));
+    assert!(target.contains("evt.1.t:0 \"新的黎明\""));
+    assert!(target.contains("evt.1.d:0 \"内阁再次召开会议。\""));
+    assert!(!target.contains("evt.1.b:0"));
+    assert!(report.contains("\"schema\": \"hoi4skill.localisation_translate.apply.v1\""));
+    assert!(report.contains("\"existing_keys\": [\"evt.1.a\"]"));
+    assert!(report.contains("\"missing_keys\": [\"evt.1.b\"]"));
+    assert!(report.contains("\"missing_after_apply\": [\"evt.1.b\"]"));
+    assert!(report.contains("\"translated_unused_keys\": [\"unused.key\"]"));
+}
+
+#[test]
 fn focus_copy_cards_render_prompt_batch() {
     let cards = parse_focus_copy_cards(
         "国策：整顿军队\n国策ID：PRC_army_rectification\n国家/势力：PRC\n时间线背景：中国内战结束后\n所属路线：群众路线\n国策作用：整顿旧军队残余，确立人民军队纪律\n前置矛盾：地方部队仍保留旧军阀习气\n关键词：人民军队，纪律，群众\n长度：中\n\n---\n\n国策：第二次文化革命\nID：PRC_second_cultural_revolution\n国家：PRC\n路线：继续革命\n作用：发动路线斗争，批判官僚主义\n关键词：继续革命，官僚主义\n",
