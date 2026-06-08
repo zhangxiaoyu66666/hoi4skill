@@ -35,7 +35,7 @@ Use this when the user asks for launch-ready or Workshop-ready output:
 
 ## Common Failure Modes
 
-- Missing localisation BOM may break older HOI4 localisation loading.
+- Missing localisation UTF-8 BOM is a fatal validation error because HOI4 may fail to load localisation without it.
 - Copied vanilla files can conflict with other mods and future patches.
 - `add_building_construction` must run in a state scope.
 - Focus rewards must be in valid country/state scopes.

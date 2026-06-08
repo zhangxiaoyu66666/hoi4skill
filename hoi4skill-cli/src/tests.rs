@@ -2413,16 +2413,35 @@ fn validator_warns_for_mod_name_localisation_keys() {
 }
 
 #[test]
+fn validator_errors_for_localisation_without_utf8_bom() {
+    let root = unique_temp_dir("loc-missing-bom-error");
+    let loc_dir = root.join("localisation").join("simp_chinese");
+    fs::create_dir_all(&loc_dir).unwrap();
+    let path = loc_dir.join("bad_l_simp_chinese.yml");
+    fs::write(&path, "l_simp_chinese:\n  TST:0 \"测试\"\n").unwrap();
+    let mut reporter = Reporter::default();
+
+    check_localisation(&path, &mut reporter);
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(reporter.errors.iter().any(|error| {
+        error.contains("localisation file has no UTF-8 BOM")
+            && error.contains("HOI4 may fail to load it")
+    }));
+    assert!(reporter.warnings.is_empty());
+}
+
+#[test]
 fn workflow_validation_json_marks_warnings_as_not_ok() {
     let mut reporter = Reporter::default();
-    reporter.warn("localisation file has no UTF-8 BOM".to_string());
+    reporter.warn("localisation key is referenced but not defined".to_string());
 
     let json = workflow_validation_json(Some(&reporter));
 
     assert!(json.contains("\"ran\": true"));
     assert!(json.contains("\"ok\": false"));
     assert!(json.contains("\"status\": \"warnings\""));
-    assert!(json.contains("UTF-8 BOM"));
+    assert!(json.contains("referenced but not defined"));
 }
 
 #[test]

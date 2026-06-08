@@ -293,8 +293,8 @@ pub(crate) fn check_localisation(path: &Path, reporter: &mut Reporter) {
         ));
     }
     if slash_path(path).contains("/localisation/") && !bytes.starts_with(&[0xef, 0xbb, 0xbf]) {
-        reporter.warn(format!(
-            "{}: localisation file has no UTF-8 BOM; older HOI4 setups may fail to load it",
+        reporter.error(format!(
+            "{}: localisation file has no UTF-8 BOM; HOI4 may fail to load it",
             path.display()
         ));
     }

@@ -218,7 +218,7 @@ When details are missing:
 
 ## Validation Discipline
 
-Always run the validator after generating files. If the validator warns about localisation BOM or missing in-game-only validation, explain that clearly without claiming the mod is fully tested in HOI4.
+Always run the validator after generating files. Treat missing localisation UTF-8 BOM as a fatal validation error, fix it before reporting success, and do not claim the mod is fully tested in HOI4 until the relevant in-game `error.log` has been checked.
 
 After an in-game launch test, analyze the current HOI4 `error.log` with `hoi4skill analyze-error-log`. Summarize new errors and repair hints for the user; do not treat static validation as a substitute for the in-game log.
 
