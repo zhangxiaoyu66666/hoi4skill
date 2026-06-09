@@ -881,6 +881,29 @@ fn prepare_edit_context_packages_model_preflight_context() {
 }
 
 #[test]
+fn indexed_resource_summary_lists_verified_leader_portraits() {
+    let mut index = GameIndex::default();
+    index.country_tags.insert("CHI".to_string());
+    index.ideologies.insert("democratic".to_string());
+    index
+        .focus_goal_sprites
+        .insert("GFX_focus_CHI_democratic_reform".to_string());
+    index
+        .idea_pictures
+        .insert("democratic_planned_economy".to_string());
+    index
+        .leader_portraits
+        .insert("GFX_portrait_CHI_chairman_mao".to_string());
+
+    let summary = render_indexed_resource_summary(&index, 10);
+
+    assert!(summary.contains("leader_portraits: 1 total"));
+    assert!(summary.contains("GFX_portrait_CHI_chairman_mao"));
+    assert!(summary.contains("focus_goal_sprites: 1 total"));
+    assert!(summary.contains("idea_pictures: 1 total"));
+}
+
+#[test]
 fn workflow_applies_files_and_embeds_validation() {
     let root = unique_temp_dir("workflow-apply");
     fs::create_dir_all(&root).unwrap();
@@ -1154,6 +1177,90 @@ spriteType = { name = "GFX_focus_SOV_socialism_in_one_country" texturefile = "gf
     assert!(json.contains("\"icon\": \"GFX_focus_generic_workers\""));
     assert!(json.contains("\"title\": \"社会主义建设\""));
     assert!(json.contains("\"icon\": \"GFX_focus_SOV_socialism_in_one_country\""));
+}
+
+#[test]
+fn semantic_icon_keywords_cover_major_ideologies_countries_and_leaders() {
+    let democratic = focus_icon_keywords("美国民主选举与宪政改革");
+    assert!(democratic.contains(&"usa"));
+    assert!(democratic.contains(&"democratic"));
+    assert!(democratic.contains(&"election"));
+
+    let fascist = focus_icon_keywords("德国法西斯黑衫运动");
+    assert!(fascist.contains(&"ger"));
+    assert!(fascist.contains(&"fascist"));
+    assert!(fascist.contains(&"blackshirt"));
+
+    let monarchist = focus_icon_keywords("日本皇帝与君主制复辟");
+    assert!(monarchist.contains(&"jap"));
+    assert!(monarchist.contains(&"monarchist"));
+    assert!(monarchist.contains(&"emperor"));
+
+    let anarchist = focus_icon_keywords("西班牙无政府工团公社");
+    assert!(anarchist.contains(&"spr"));
+    assert!(anarchist.contains(&"anarchist"));
+    assert!(anarchist.contains(&"syndicalist"));
+
+    let leader = focus_icon_keywords("中国主席与革命领袖");
+    assert!(leader.contains(&"chi"));
+    assert!(leader.contains(&"chairman"));
+    assert!(leader.contains(&"leader"));
+}
+
+#[test]
+fn semantic_icon_matching_handles_ideologies_countries_and_leaders() {
+    let catalog = BTreeSet::from([
+        "GFX_focus_generic_anarchist_commune".to_string(),
+        "GFX_focus_generic_befriend_republican_spain_focus".to_string(),
+        "GFX_focus_generic_democratic_reform".to_string(),
+        "GFX_focus_generic_fascist_movement".to_string(),
+        "GFX_focus_GER_revive_the_kaiserreich".to_string(),
+        "GFX_focus_JAP_draft_the_showa_constitution".to_string(),
+        "GFX_focus_JAP_democratic_reform".to_string(),
+        "GFX_focus_JAP_promote_japanese_settlement".to_string(),
+        "GFX_focus_SWI_closer_ties_with_germany".to_string(),
+        "GFX_focus_spr_anarchism_knows_no_borders".to_string(),
+        "GFX_focus_SOV_workers_council".to_string(),
+    ]);
+
+    assert_eq!(
+        choose_focus_icon_from_catalog("民主选举", &catalog).as_deref(),
+        Some("GFX_focus_generic_democratic_reform")
+    );
+    assert_eq!(
+        choose_focus_icon_from_catalog("法西斯运动", &catalog).as_deref(),
+        Some("GFX_focus_generic_fascist_movement")
+    );
+    assert_eq!(
+        choose_focus_icon_from_catalog("德国君主制复辟", &catalog).as_deref(),
+        Some("GFX_focus_GER_revive_the_kaiserreich")
+    );
+    assert_eq!(
+        choose_focus_icon_from_catalog("西班牙无政府公社", &catalog).as_deref(),
+        Some("GFX_focus_spr_anarchism_knows_no_borders")
+    );
+    assert_eq!(
+        choose_focus_icon_from_catalog("日本民主改革", &catalog).as_deref(),
+        Some("GFX_focus_JAP_democratic_reform")
+    );
+    assert_ne!(
+        choose_focus_icon_from_catalog("德国君主制复辟", &catalog).as_deref(),
+        Some("GFX_focus_SWI_closer_ties_with_germany")
+    );
+
+    let portraits = BTreeSet::from([
+        "GFX_portrait_GER_wilhelm_ii".to_string(),
+        "GFX_portrait_CHI_chairman_mao".to_string(),
+        "GFX_portrait_USA_democratic_president".to_string(),
+    ]);
+    assert_eq!(
+        choose_semantic_reference_from_catalog("中国主席", &portraits).as_deref(),
+        Some("GFX_portrait_CHI_chairman_mao")
+    );
+    assert_eq!(
+        choose_semantic_reference_from_catalog("美国总统民主派", &portraits).as_deref(),
+        Some("GFX_portrait_USA_democratic_president")
+    );
 }
 
 #[test]
@@ -2901,6 +3008,12 @@ spriteType = { name = "GFX_decision_category_generic_communism" texturefile = "g
         r#"spriteType = { name = "GFX_report_event_soviet_workers_revolution" texturefile = "gfx/event_pictures/workers.dds" }"#,
     )
     .unwrap();
+    fs::write(
+        root.join("interface").join("leader_portraits.gfx"),
+        r#"spriteType = { name = "GFX_portrait_SOV_lenin" texturefile = "gfx/leaders/SOV/lenin.dds" }
+spriteType = { name = "GFX_portrait_GER_wilhelm_ii" texturefile = "gfx/leaders/GER/wilhelm_ii.dds" }"#,
+    )
+    .unwrap();
 
     let index = build_game_index(&root).unwrap();
     let json = game_index_json(&index);
@@ -2930,6 +3043,10 @@ spriteType = { name = "GFX_decision_category_generic_communism" texturefile = "g
     assert!(index
         .decision_category_pictures
         .contains("GFX_decision_category_generic_communism"));
+    assert!(index.leader_portraits.contains("GFX_portrait_SOV_lenin"));
+    assert!(index
+        .leader_portraits
+        .contains("GFX_portrait_GER_wilhelm_ii"));
     assert!(index.buildings.contains("arms_factory"));
     assert_eq!(index.building_max_levels.get("arms_factory"), Some(&5));
     assert_eq!(
@@ -2958,6 +3075,9 @@ spriteType = { name = "GFX_decision_category_generic_communism" texturefile = "g
     assert!(json.contains("\"decision_icons\": [\"SOV_the_workers_dictatorship\"]"));
     assert!(json
         .contains("\"decision_category_pictures\": [\"GFX_decision_category_generic_communism\"]"));
+    assert!(json.contains(
+        "\"leader_portraits\": [\"GFX_portrait_GER_wilhelm_ii\", \"GFX_portrait_SOV_lenin\"]"
+    ));
     assert!(json.contains("\"buildings\": [\"arms_factory\", \"industrial_complex\"]"));
     assert!(
         json.contains("\"building_max_levels\": {\"arms_factory\": 5, \"industrial_complex\": 10}")

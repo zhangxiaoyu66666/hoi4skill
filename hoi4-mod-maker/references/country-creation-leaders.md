@@ -17,6 +17,28 @@ Optional but common:
 - `common/country_leader/<prefix>_leader_traits.txt`: country leader trait definitions.
 - `gfx/leaders/<TAG>/...` and matching `interface/*.gfx` sprites when the target style uses registered portrait sprites.
 
+## Portrait Resource Rules
+
+Leader portraits are verified resources, not names to invent. When `--game-root` or dependency `--mod-path` is available, run or rely on `build-game-index`/`prepare-edit-context` and choose from indexed `leader_portraits` (`GFX_portrait_*`). Match by country tag/name, leader name when present, role words such as president/chairman/king/general/advisor, and ideology words such as democratic, communist, fascist, monarchist, non-aligned, anarchist, or syndicalist.
+
+Modern `common/characters` portrait references keep the registered sprite name:
+
+```hoi4
+portraits = {
+  civilian = {
+    large = GFX_portrait_FER_alexei_smirnov
+  }
+}
+```
+
+Legacy `create_country_leader` blocks may use a direct file path only when that exact `gfx/leaders/...` asset exists or is explicitly supplied by the user:
+
+```hoi4
+picture = "gfx/leaders/CPC/Lidazhao.dds"
+```
+
+Do not create placeholder names such as `GFX_portrait_TAG_leader` or `gfx/leaders/TAG/leader.dds` unless the matching sprite/file is actually created and registered.
+
 ## Country Leader Traits
 
 Country leader traits are defined under `common/country_leader/*.txt`, normally in a wrapper:
@@ -104,6 +126,7 @@ Use these fields before generating country or leader files.
 - Country tags are exactly three ASCII uppercase letters.
 - Scripted IDs for characters and leader traits must be ASCII identifiers.
 - Do not invent `SOV_12347.png` style portrait names. If an image filename needs translation, use a semantic English name based on the local filename and report skipped assets when translation is not safe.
+- Do not invent `GFX_portrait_*` references; use indexed leader portraits, local `interface/*.gfx` evidence, or a verified legacy `gfx/leaders/...` picture path.
 - Do not confuse country leader traits with national spirits. National spirits end with `_idea`; leader traits do not.
 - Do not generate mod display-name localisation such as `<prefix>_mod_name`; mod names belong in `descriptor.mod` and the launcher-side `.mod`.
 - Do not claim a created country is complete until tag mapping, common country definition, history country file, and localisation are all present.

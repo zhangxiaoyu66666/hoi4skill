@@ -18,6 +18,7 @@ pub(crate) struct GameIndex {
     pub(crate) event_pictures: BTreeSet<String>,
     pub(crate) decision_icons: BTreeSet<String>,
     pub(crate) decision_category_pictures: BTreeSet<String>,
+    pub(crate) leader_portraits: BTreeSet<String>,
     pub(crate) buildings: BTreeSet<String>,
     pub(crate) building_max_levels: BTreeMap<String, i64>,
     pub(crate) resources: BTreeSet<String>,
@@ -168,6 +169,7 @@ pub(crate) fn collect_game_index_root(index: &mut GameIndex, root: &Path) -> Res
             collect_event_pictures(&text, &mut index.event_pictures);
             collect_decision_icons(&text, &mut index.decision_icons);
             collect_decision_category_pictures(&text, &mut index.decision_category_pictures);
+            collect_leader_portraits(&text, &mut index.leader_portraits);
         }
     }
     Ok(())
@@ -395,6 +397,16 @@ pub(crate) fn collect_decision_category_pictures(text: &str, pictures: &mut BTre
     }));
 }
 
+pub(crate) fn collect_leader_portraits(text: &str, portraits: &mut BTreeSet<String>) {
+    let mut sprites = BTreeSet::new();
+    collect_sprite_names(text, &mut sprites);
+    portraits.extend(
+        sprites
+            .into_iter()
+            .filter(|sprite| sprite.starts_with("GFX_portrait_")),
+    );
+}
+
 pub(crate) fn game_index_json(index: &GameIndex) -> String {
     let indexed_roots = index
         .indexed_roots
@@ -412,6 +424,7 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
         .iter()
         .cloned()
         .collect::<Vec<_>>();
+    let leader_portraits = index.leader_portraits.iter().cloned().collect::<Vec<_>>();
     let buildings = index.buildings.iter().cloned().collect::<Vec<_>>();
     let resources = index.resources.iter().cloned().collect::<Vec<_>>();
     let ideologies = index.ideologies.iter().cloned().collect::<Vec<_>>();
@@ -429,7 +442,7 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
     let state_ids = index.state_ids.iter().copied().collect::<Vec<_>>();
     let province_ids = index.province_ids.iter().copied().collect::<Vec<_>>();
     format!(
-        "{{\n  \"game\": {{\"id\": {}, \"display_name\": {}}},\n  \"game_root\": {},\n  \"indexed_roots\": {},\n  \"country_tags\": {},\n  \"state_ids\": {},\n  \"state_names\": {},\n  \"province_ids\": {},\n  \"sprites\": {},\n  \"focus_goal_sprites\": {},\n  \"idea_pictures\": {},\n  \"event_pictures\": {},\n  \"decision_icons\": {},\n  \"decision_category_pictures\": {},\n  \"buildings\": {},\n  \"building_max_levels\": {},\n  \"resources\": {},\n  \"ideologies\": {},\n  \"traits\": {},\n  \"equipment_types\": {},\n  \"technologies\": {},\n  \"technology_categories\": {},\n  \"sub_units\": {},\n  \"wargoal_types\": {},\n  \"modifiers\": {},\n  \"counts\": {{\"indexed_roots\": {}, \"country_tags\": {}, \"state_ids\": {}, \"state_names\": {}, \"province_ids\": {}, \"sprites\": {}, \"focus_goal_sprites\": {}, \"idea_pictures\": {}, \"event_pictures\": {}, \"decision_icons\": {}, \"decision_category_pictures\": {}, \"buildings\": {}, \"building_max_levels\": {}, \"resources\": {}, \"ideologies\": {}, \"traits\": {}, \"equipment_types\": {}, \"technologies\": {}, \"technology_categories\": {}, \"sub_units\": {}, \"wargoal_types\": {}, \"modifiers\": {}}}\n}}\n",
+        "{{\n  \"game\": {{\"id\": {}, \"display_name\": {}}},\n  \"game_root\": {},\n  \"indexed_roots\": {},\n  \"country_tags\": {},\n  \"state_ids\": {},\n  \"state_names\": {},\n  \"province_ids\": {},\n  \"sprites\": {},\n  \"focus_goal_sprites\": {},\n  \"idea_pictures\": {},\n  \"event_pictures\": {},\n  \"decision_icons\": {},\n  \"decision_category_pictures\": {},\n  \"leader_portraits\": {},\n  \"buildings\": {},\n  \"building_max_levels\": {},\n  \"resources\": {},\n  \"ideologies\": {},\n  \"traits\": {},\n  \"equipment_types\": {},\n  \"technologies\": {},\n  \"technology_categories\": {},\n  \"sub_units\": {},\n  \"wargoal_types\": {},\n  \"modifiers\": {},\n  \"counts\": {{\"indexed_roots\": {}, \"country_tags\": {}, \"state_ids\": {}, \"state_names\": {}, \"province_ids\": {}, \"sprites\": {}, \"focus_goal_sprites\": {}, \"idea_pictures\": {}, \"event_pictures\": {}, \"decision_icons\": {}, \"decision_category_pictures\": {}, \"leader_portraits\": {}, \"buildings\": {}, \"building_max_levels\": {}, \"resources\": {}, \"ideologies\": {}, \"traits\": {}, \"equipment_types\": {}, \"technologies\": {}, \"technology_categories\": {}, \"sub_units\": {}, \"wargoal_types\": {}, \"modifiers\": {}}}\n}}\n",
         json_str(HOI4_PROFILE.id),
         json_str(HOI4_PROFILE.display_name),
         json_str(&index.game_root.display().to_string()),
@@ -444,6 +457,7 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
         json_array(&event_pictures),
         json_array(&decision_icons),
         json_array(&decision_category_pictures),
+        json_array(&leader_portraits),
         json_array(&buildings),
         json_i64_object(&index.building_max_levels),
         json_array(&resources),
@@ -466,6 +480,7 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
         index.event_pictures.len(),
         index.decision_icons.len(),
         index.decision_category_pictures.len(),
+        index.leader_portraits.len(),
         index.buildings.len(),
         index.building_max_levels.len(),
         index.resources.len(),

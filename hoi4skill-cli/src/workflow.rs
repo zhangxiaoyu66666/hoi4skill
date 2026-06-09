@@ -1053,12 +1053,13 @@ pub(crate) fn run_workflow_json_with_focus_layout(
             layout.tree_id = tree_id.to_string();
         }
         if let Some(root) = mod_root {
-            assign_indexed_focus_icons(layout, root, game_index)?;
+            assign_indexed_focus_icons(layout, root, game_index, tag)?;
         } else if let Some(index) = game_index {
             for focus in &mut layout.focuses {
                 if focus.icon.is_none() {
+                    let semantic_title = focus_icon_semantic_title(tag, &focus.title);
                     focus.icon =
-                        choose_focus_icon_from_catalog(&focus.title, &index.focus_goal_sprites);
+                        choose_focus_icon_from_catalog(&semantic_title, &index.focus_goal_sprites);
                 }
             }
         }

@@ -42,6 +42,8 @@ For spreadsheet input, the workbook is the layout authority. Cell titles and occ
 
 `mod-knowledge` creates the pre-edit dossier: standalone/submod classification, descriptor/launcher metadata, dependency names, dependency roots supplied with `--mod-path`, observed tags, focus trees, namespaces, localisation style, decision categories, idea pictures, GFX sprites, and model-readable `markdown_summary`. Treat missing facts as unknown, not as permission to invent.
 
+When `--game-root` is supplied, `prepare-edit-context` also includes indexed game/dependency resources: focus goal sprites, national-spirit idea pictures, event pictures, decision icons, decision-category pictures, leader portraits, country tags, and ideologies. Use these lists as the verified art/source catalog before writing. Match icons and portraits by the feature meaning, not by a fixed demo list: ideology families include communist/socialist/soviet, democratic/liberal/parliament/election, fascist/nazi, monarchist/royal/kaiser/tsar, non-aligned/neutral/junta, anarchist/syndicalist; country and region words should bias toward matching tags/names; leader portraits should also match leader role words such as president, chairman, king, emperor, general, marshal, minister, or advisor.
+
 `prepare-edit-context` creates the model-facing preflight context. It combines the user's request, a `Write Gate`, the `mod-knowledge` `markdown_summary`, a dry-run plan, validation status, local file excerpts, an `Unknown Facts` section, and a `Blocked Until Verified` section. Read the `Write Gate` before code generation: `BLOCKED` means do not write; `VERIFY_FIRST` means run the listed verification steps before final script; `READY_FOR_NARROW_WRITE` means write only inside the allowed edit surface and the dry-run plan.
 
 `plan-history-edit` is the follow-up gate for `history/countries`, `history/states`, state IDs, province IDs, capitals, victory points, owner/controller, cores, buildings, and resources. Use it before direct history edits; if it returns `direct_history_edit_allowed = false`, report the skipped reasons and switch to state-scoped scripted effects or ask for a game/dependency index.
@@ -67,7 +69,7 @@ Accept loose prose, but try to infer these fields:
 - `balance`: cost, days, cooldown, reward size, AI factor.
 - `dependencies`: vanilla, DLC, Kaiserredux, other mod.
 - `style_source`: existing target mod files to imitate.
-- `icons`: requested icon style, existing sprite key, or image file path.
+- `icons`: requested icon style, existing sprite key, verified leader portrait sprite, or image file path.
 
 For one-sentence MOD creation, pass known source roots with `--source-root`, `--game-root`, or `--mod-path` so the CLI can read country localisation, verify `common/country_tags -> common/countries`, and choose the correct tag. Ask a question only when `target` or `feature_type` cannot be inferred safely.
 
@@ -133,6 +135,7 @@ Map common Chinese wording to HOI4 systems:
 - “开局触发、每月触发、战争胜利触发” -> `common/on_actions`
 - “按钮、面板、GUI” -> `common/scripted_guis` plus interface files; avoid auto-generating complex GUI unless the target mod already has a clear pattern
 - “图标、icon、图片、dds、png、预览” -> `interface/*.gfx` plus `gfx/interface/...` and `hoi4skill icon-preview`
+- “头像、领袖头像、portrait、领导人图片” -> indexed `GFX_portrait_*` in `interface/*.gfx` for modern characters, or verified `gfx/leaders/...` file paths for legacy leaders
 
 Persistent-effect routing rule:
 

@@ -131,6 +131,11 @@ pub(crate) fn prepare_edit_context_markdown(
         out.push('\n');
     }
 
+    if let Some(index) = game_index {
+        out.push_str("\n## Indexed Game/Dependency Resources\n\n");
+        out.push_str(&render_indexed_resource_summary(index, 40));
+    }
+
     out.push_str("\n## Dry Run Plan\n\n");
     out.push_str("This is a non-writing `run-workflow` plan with validation against the target mod root.\n\n");
     out.push_str(&markdown_fence(
@@ -177,6 +182,64 @@ pub(crate) fn prepare_edit_context_markdown(
     out.push_str("- If any blocked item remains, read/index the missing files first or ask the user for explicit IDs/roots.\n");
     out.push_str("- After writes, run `hoi4skill validate <mod-root>` and then check HOI4 `error.log` from an in-game launch.\n");
     Ok(out)
+}
+
+pub(crate) fn render_indexed_resource_summary(index: &GameIndex, limit: usize) -> String {
+    let mut out = String::new();
+    out.push_str("- rule: only use these indexed resources or local `interface/*.gfx` evidence; missing resources are unknown.\n");
+    out.push_str(&format!(
+        "- country_tags: {} total; sample: {}\n",
+        index.country_tags.len(),
+        sample_btree_strings(&index.country_tags, limit)
+    ));
+    out.push_str(&format!(
+        "- ideologies: {} total; sample: {}\n",
+        index.ideologies.len(),
+        sample_btree_strings(&index.ideologies, limit)
+    ));
+    out.push_str(&format!(
+        "- focus_goal_sprites: {} total; sample: {}\n",
+        index.focus_goal_sprites.len(),
+        sample_btree_strings(&index.focus_goal_sprites, limit)
+    ));
+    out.push_str(&format!(
+        "- idea_pictures: {} total; sample: {}\n",
+        index.idea_pictures.len(),
+        sample_btree_strings(&index.idea_pictures, limit)
+    ));
+    out.push_str(&format!(
+        "- event_pictures: {} total; sample: {}\n",
+        index.event_pictures.len(),
+        sample_btree_strings(&index.event_pictures, limit)
+    ));
+    out.push_str(&format!(
+        "- decision_icons: {} total; sample: {}\n",
+        index.decision_icons.len(),
+        sample_btree_strings(&index.decision_icons, limit)
+    ));
+    out.push_str(&format!(
+        "- decision_category_pictures: {} total; sample: {}\n",
+        index.decision_category_pictures.len(),
+        sample_btree_strings(&index.decision_category_pictures, limit)
+    ));
+    out.push_str(&format!(
+        "- leader_portraits: {} total; sample: {}\n",
+        index.leader_portraits.len(),
+        sample_btree_strings(&index.leader_portraits, limit)
+    ));
+    out
+}
+
+fn sample_btree_strings(values: &BTreeSet<String>, limit: usize) -> String {
+    if values.is_empty() {
+        return "none".to_string();
+    }
+    values
+        .iter()
+        .take(limit)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 #[derive(Clone)]
@@ -258,7 +321,7 @@ pub(crate) fn edit_context_write_gate(
     }
     if game_index.is_some() {
         verified_evidence.push(
-            "game/dependency index is available for tags, sprites, states, provinces, technologies, and symbols"
+            "game/dependency index is available for tags, sprites, leader portraits, states, provinces, technologies, and symbols"
                 .to_string(),
         );
     } else {
@@ -458,7 +521,7 @@ pub(crate) fn edit_context_unknown_facts(
         facts.push("history/state/province/capital facts require `plan-history-edit`, indexed game/dependency roots, or explicit user-provided IDs before direct history writes".to_string());
     }
     if mentions_icons && game_index.is_none() {
-        facts.push("game/dependency icon index was not built; focus icons, idea pictures, decision icons, decision category pictures, and event pictures may use only locally observed registrations, with `GFX_goal_unknown` as the focus fallback".to_string());
+        facts.push("game/dependency icon index was not built; focus icons, idea pictures, decision icons, decision category pictures, event pictures, and leader portraits may use only locally observed registrations, with `GFX_goal_unknown` as the focus fallback".to_string());
     }
     if mentions_country_or_leader && no_dependency_roots {
         facts.push("country/leader syntax for dependency-provided content is unknown until dependency roots are indexed".to_string());
@@ -482,7 +545,7 @@ fn edit_context_verification_steps(missing_evidence: &[String]) -> Vec<String> {
         } else if fact.contains("submod dependencies") || fact.contains("country/leader syntax") {
             steps.push("rerun `prepare-edit-context` with each dependency launcher/root supplied through `--mod-path`".to_string());
         } else if fact.contains("icon index") {
-            steps.push("supply `--game-root` or verify exact focus/idea/decision/event sprite registrations in local/dependency `interface/*.gfx`; ideas register `GFX_idea_*` but idea blocks must omit the `GFX_idea_` prefix".to_string());
+            steps.push("supply `--game-root` or verify exact focus/idea/decision/event/leader portrait sprite registrations in local/dependency `interface/*.gfx`; ideas register `GFX_idea_*` but idea blocks must omit the `GFX_idea_` prefix".to_string());
         } else if fact.contains("technology") {
             steps.push("supply `--game-root` so technologies, categories, equipment, and modifiers are checked against an index".to_string());
         } else if fact.contains("descriptor.mod") {
@@ -509,7 +572,7 @@ pub(crate) fn edit_context_blocked_until_verified(
         } else if fact.contains("submod dependencies") {
             blocked.push("Do not reference inherited dependency tags, sprites, scripted values, technologies, or state/province IDs until dependency roots are indexed.".to_string());
         } else if fact.contains("icon index") {
-            blocked.push("Do not invent focus, idea, decision, decision-category, or event sprite names; use verified local/indexed registrations, reference ideas without the `GFX_idea_` prefix, or use `GFX_goal_unknown` for an unresolved focus icon.".to_string());
+            blocked.push("Do not invent focus, idea, decision-category, event, or leader portrait sprite names; use verified local/indexed registrations, reference ideas without the `GFX_idea_` prefix, or use `GFX_goal_unknown` for an unresolved focus icon.".to_string());
         } else if fact.contains("technology") {
             blocked.push("Do not use unindexed technology/equipment/category/modifier IDs as confirmed facts.".to_string());
         } else if fact.contains("descriptor.mod") {

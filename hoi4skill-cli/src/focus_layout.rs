@@ -430,7 +430,7 @@ pub(crate) fn apply_focus_layout_to_mod_with_index(
     game_index: Option<&GameIndex>,
 ) -> Result<Vec<PathBuf>, String> {
     let mut layout = layout.clone();
-    assign_indexed_focus_icons(&mut layout, mod_root, game_index)?;
+    assign_indexed_focus_icons(&mut layout, mod_root, game_index, tag)?;
     let existing_target = find_country_focus_tree_target(mod_root, tag)?;
     let localisation = collect_focus_localisation_map(mod_root)?;
     let (focus_path, focus_changed) = if let Some(target) = existing_target {
@@ -484,6 +484,7 @@ pub(crate) fn assign_indexed_focus_icons(
     layout: &mut FocusLayout,
     mod_root: &Path,
     game_index: Option<&GameIndex>,
+    tag: &str,
 ) -> Result<(), String> {
     let catalog = collect_focus_goal_icon_catalog(mod_root, game_index)?;
     if catalog.is_empty() {
@@ -491,7 +492,8 @@ pub(crate) fn assign_indexed_focus_icons(
     }
     for focus in &mut layout.focuses {
         if focus.icon.is_none() {
-            focus.icon = choose_focus_icon_from_catalog(&focus.title, &catalog);
+            let semantic_title = focus_icon_semantic_title(tag, &focus.title);
+            focus.icon = choose_focus_icon_from_catalog(&semantic_title, &catalog);
         }
     }
     Ok(())
@@ -967,166 +969,649 @@ pub(crate) fn choose_focus_icon_from_catalog(
     if catalog.is_empty() {
         return None;
     }
-    let keywords = focus_icon_keywords(title);
-    let mut best: Option<(i32, String)> = None;
+    let mut best: Option<(i32, bool, String)> = None;
     for icon in catalog {
-        let lower = icon.to_ascii_lowercase();
-        let mut score = 1;
-        for keyword in &keywords {
-            if lower.contains(keyword) {
-                score += 10;
-            }
-        }
-        if lower.contains("_generic_") {
-            score += 1;
-        }
-        if lower.contains("attack_")
-            || lower.contains("crush_")
-            || lower.contains("counter_")
-            || lower.contains("anti_")
-            || lower.contains("ban_")
+        let score = semantic_reference_score(title, icon, 5);
+        let country_match = semantic_reference_country_match(title, icon);
+        if best
+            .as_ref()
+            .is_none_or(|(best_score, best_country_match, best_icon)| {
+                score > *best_score
+                    || (score == *best_score && country_match && !*best_country_match)
+                    || (score == *best_score
+                        && country_match == *best_country_match
+                        && icon < best_icon)
+            })
         {
-            score -= 4;
-        }
-        if lower.contains("fascist") || lower.contains("fascism") {
-            score -= 12;
-        }
-        if (lower.contains("monarchist") || lower.contains("monarchy")) && !title.contains("君主")
-        {
-            score -= 12;
-        }
-        if lower.contains("africa") && !title.contains("非洲") {
-            score -= 6;
-        }
-        if (lower.contains("armor")
-            || lower.contains("armored")
-            || lower.contains("air")
-            || lower.contains("naval")
-            || lower.contains("tank")
-            || lower.contains("fleet"))
-            && !(title.contains("军")
-                || title.contains("武装")
-                || title.contains("战争")
-                || title.contains("空军")
-                || title.contains("海军")
-                || title.contains("坦克")
-                || title.contains("装甲")
-                || title.contains("舰"))
-        {
-            score -= 6;
-        }
-        if lower.contains("spain") && !title.contains("西班牙") {
-            score -= 4;
-        }
-        if lower.contains("unknown") {
-            score -= 5;
-        }
-        if best.as_ref().is_none_or(|(best_score, best_icon)| {
-            score > *best_score || (score == *best_score && icon < best_icon)
-        }) {
-            best = Some((score, icon.clone()));
+            best = Some((score, country_match, icon.clone()));
         }
     }
-    best.map(|(_, icon)| icon)
+    best.map(|(_, _, icon)| icon)
+}
+
+pub(crate) fn focus_icon_semantic_title(tag: &str, title: &str) -> String {
+    let tag = sanitize_identifier_part(tag, "").to_ascii_uppercase();
+    if tag.is_empty() || title_has_country_context(title) {
+        title.to_string()
+    } else {
+        format!("{tag} {title}")
+    }
+}
+
+pub(crate) fn semantic_reference_score(
+    title: &str,
+    reference: &str,
+    placeholder_penalty: i32,
+) -> i32 {
+    let keywords = focus_icon_keywords(title);
+    let lower = reference.to_ascii_lowercase();
+    let mut score = 1;
+    for keyword in &keywords {
+        if is_country_reference_term(keyword) {
+            continue;
+        }
+        if reference_contains_semantic_term(&lower, keyword) {
+            score += 10;
+        }
+    }
+    let country_match = semantic_reference_country_match(title, reference);
+    if lower.contains("_generic_") && country_match {
+        score -= 1;
+    } else if lower.contains("_generic_") {
+        score += 1;
+    }
+    if contains_ascii_any(&lower, &["attack_", "crush_", "counter_", "anti_", "ban_"]) {
+        score -= 4;
+    }
+    for family in SEMANTIC_IDEOLOGY_FAMILIES {
+        if reference_contains_semantic_any(&lower, family.reference_terms)
+            && !contains_text_any(title, family.title_terms)
+        {
+            score -= family.mismatch_penalty;
+        }
+    }
+    for country in SEMANTIC_COUNTRY_FAMILIES {
+        if contains_text_any(title, country.title_terms)
+            && reference_contains_semantic_any(&lower, country.reference_terms)
+        {
+            score += 8;
+            if reference_contains_primary_country_token(&lower, country) {
+                score += 2;
+            }
+        }
+        if reference_contains_semantic_any(&lower, country.reference_terms)
+            && !contains_text_any(title, country.title_terms)
+        {
+            score -= country.mismatch_penalty;
+        }
+    }
+    if reference_contains_semantic_any(
+        &lower,
+        &["armor", "armored", "air", "naval", "tank", "fleet"],
+    ) && !contains_text_any(
+        title,
+        &[
+            "军", "武装", "战争", "空军", "海军", "坦克", "装甲", "舰", "航空", "飞机",
+        ],
+    ) {
+        score -= 6;
+    }
+    if contains_ascii_any(&lower, &["unknown", "placeholder"]) {
+        score -= placeholder_penalty;
+    }
+    score
+}
+
+pub(crate) fn semantic_reference_country_match(title: &str, reference: &str) -> bool {
+    let lower = reference.to_ascii_lowercase();
+    SEMANTIC_COUNTRY_FAMILIES.iter().any(|country| {
+        contains_text_any(title, country.title_terms)
+            && reference_contains_semantic_any(&lower, country.reference_terms)
+    })
 }
 
 pub(crate) fn focus_icon_keywords(title: &str) -> Vec<&'static str> {
-    let mut political = Vec::new();
-    if title.contains("社会主义") {
-        political.extend(["socialism", "socialist"]);
+    let mut keywords = Vec::new();
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["社会主义", "社民", "社会民主"],
+        &["socialism", "socialist", "social_democracy", "social"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["共产", "左翼", "马克思", "列宁", "布尔什维克"],
+        &["communist", "communism", "communists", "prc", "left"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["民主", "选举", "议会", "宪政", "自由", "共和"],
+        &[
+            "democratic",
+            "democracy",
+            "election",
+            "vote",
+            "voter",
+            "registration",
+            "parliament",
+            "constitution",
+            "constitutional",
+            "liberal",
+            "liberty",
+            "republic",
+        ],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["保守", "传统", "秩序", "基督教民主"],
+        &["conservative", "conservatism", "traditional", "order"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["法西斯", "纳粹", "极右", "黑衫", "国家社会主义"],
+        &[
+            "fascist",
+            "fascism",
+            "nazi",
+            "national_socialist",
+            "blackshirt",
+        ],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["民族主义", "民族", "国家主义"],
+        &["national", "nationalism", "nationalist"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["君主", "王室", "国王", "皇帝", "帝制", "复辟", "保皇"],
+        &[
+            "monarchist",
+            "monarchy",
+            "royal",
+            "king",
+            "emperor",
+            "kaiser",
+            "tsar",
+        ],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["无政府", "安那其", "工团", "工团主义"],
+        &["anarchist", "anarchism", "syndicalist", "syndicalism"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["不结盟", "中立", "军政府", "威权", "独裁"],
+        &[
+            "non_aligned",
+            "neutrality",
+            "junta",
+            "authoritarian",
+            "dictatorship",
+        ],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["中共", "中国共产党"],
+        &[
+            "chi",
+            "china",
+            "chinese",
+            "prc",
+            "cpc",
+            "communist",
+            "communists",
+        ],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["苏维埃", "苏联"],
+        &["soviet", "sov"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["俄罗斯", "俄国", "沙俄"],
+        &["sov", "russia", "russian", "tsar"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["中国", "中华", "国民党", "南京"],
+        &["chi", "china", "chinese", "prc", "kuomintang", "kmt"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["德国", "德意志", "普鲁士", "第三帝国"],
+        &["ger", "germany", "german", "reich", "kaiser"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["日本", "大和", "东京"],
+        &["jap", "japan", "japanese"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["美国", "美利坚", "华盛顿"],
+        &["usa", "america", "american"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["英国", "英格兰", "不列颠", "伦敦"],
+        &["eng", "britain", "british", "uk"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["法国", "法兰西", "巴黎"],
+        &["fra", "france", "french"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["意大利", "罗马"],
+        &["ita", "italy", "italian"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["韩国", "朝鲜", "高丽", "汉城", "首尔", "平壤"],
+        &["kor", "korea", "korean"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["西班牙", "马德里"],
+        &["spr", "spain", "spanish"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["波兰", "华沙"],
+        &["pol", "poland", "polish"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["印度", "德里"],
+        &["raj", "india", "indian"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["墨西哥"],
+        &["mex", "mexico", "mexican"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["巴西"],
+        &["bra", "brazil", "brazilian"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["土耳其", "安卡拉"],
+        &["tur", "turkey", "turkish"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["工人", "工农", "无产"],
+        &["worker", "workers", "proletarian", "proletariat"],
+    );
+    add_keywords_if(&mut keywords, title, &["人民"], &["people", "peoples"]);
+    add_keywords_if(&mut keywords, title, &["革命"], &["revolution"]);
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["红军"],
+        &["red", "red_army", "army"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["起义", "暴动", "起事"],
+        &["uprising", "revolt", "revolution"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["领袖", "领导人"],
+        &["leader", "portrait"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["主席"],
+        &["chairman", "leader", "portrait"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["总统"],
+        &[
+            "president",
+            "leader",
+            "portrait",
+            "election",
+            "vote",
+            "voter",
+            "registration",
+            "act",
+        ],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["总理", "首相"],
+        &["prime_minister", "minister", "leader", "portrait"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["国王"],
+        &["king", "royal", "leader", "portrait"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["皇帝"],
+        &["emperor", "kaiser", "royal", "leader", "portrait"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["元帅"],
+        &["marshal", "field_marshal", "leader", "portrait"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["将军"],
+        &["general", "leader", "portrait"],
+    );
+    add_keywords_if(
+        &mut keywords,
+        title,
+        &["部长", "顾问"],
+        &["minister", "advisor", "leader", "portrait"],
+    );
+    if title.contains("海军") || title.contains("舰") || title.contains("港口") {
+        keywords.extend(["navy", "naval", "fleet", "dockyard", "ship"]);
     }
-    if title.contains("共产")
-        || title.contains("左翼")
-        || title.contains("马克思")
-        || title.contains("列宁")
-        || title.contains("布尔什维克")
-    {
-        political.extend(["communist", "communism", "prc"]);
+    if title.contains("空军") || title.contains("航空") || title.contains("飞机") {
+        keywords.extend(["air", "airforce", "aviation", "plane"]);
     }
-    if title.contains("中共") || title.contains("中国共产党") {
-        political.extend(["chi", "china", "chinese", "prc", "communist", "communists"]);
+    if title.contains("军") || title.contains("战争") || title.contains("武装") {
+        keywords.extend(["army", "military", "war", "doctrine"]);
     }
-    if title.contains("苏维埃") {
-        political.extend(["soviet"]);
+    if title.contains("游击队") || title.contains("游击") {
+        keywords.extend(["partisan", "partisans", "guerrilla", "resistance"]);
     }
-    if title.contains("苏联") {
-        political.extend(["soviet"]);
+    if title.contains("动员") || title.contains("市民") || title.contains("群众") {
+        keywords.extend(["mobilization", "mobilize", "social", "people"]);
     }
-    if title.contains("工人") || title.contains("工农") || title.contains("无产") {
-        political.extend(["worker", "workers", "proletarian", "proletariat"]);
-    }
-    if title.contains("人民") {
-        political.extend(["people", "peoples"]);
-    }
-    if title.contains("革命") {
-        political.extend(["revolution"]);
-    }
-    if title.contains("红军") {
-        political.extend(["red", "red_army", "army"]);
-    }
-    if title.contains("起义") || title.contains("暴动") || title.contains("起事") {
-        political.extend(["uprising", "revolt", "revolution"]);
-    }
-    if !political.is_empty() {
-        political.sort();
-        political.dedup();
-        political
-    } else if title.contains("海军") || title.contains("舰") || title.contains("港口") {
-        vec!["navy", "naval", "fleet", "dockyard", "ship"]
-    } else if title.contains("空军") || title.contains("航空") || title.contains("飞机") {
-        vec!["air", "airforce", "aviation", "plane"]
-    } else if title.contains("军") || title.contains("战争") || title.contains("武装") {
-        vec!["army", "military", "war", "doctrine"]
-    } else if title.contains("游击队") || title.contains("游击") {
-        vec!["partisan", "partisans", "guerrilla", "resistance"]
-    } else if title.contains("动员") || title.contains("市民") || title.contains("群众") {
-        vec!["mobilization", "mobilize", "social", "people"]
-    } else if title.contains("夺回") || title.contains("光复") || title.contains("解放") {
-        vec![
+    if title.contains("夺回") || title.contains("光复") || title.contains("解放") {
+        keywords.extend([
             "liberation",
             "liberate",
             "reclaim",
             "recapture",
             "independence",
-        ]
-    } else if title.contains("调停")
+        ]);
+    }
+    if title.contains("调停")
         || title.contains("邀请")
         || title.contains("联系")
         || title.contains("联合")
     {
-        vec!["diplomacy", "alliance", "cooperation", "befriend"]
-    } else if title.contains("支持") || title.contains("援助") {
-        vec!["support", "aid", "assistance"]
-    } else if title.contains("政府") || title.contains("共和国") {
-        vec!["government", "republic", "political"]
-    } else if title.contains("民族") || title.contains("独立") {
-        vec!["national", "nationalism", "independence"]
-    } else if title.contains("工业")
+        keywords.extend(["diplomacy", "alliance", "cooperation", "befriend"]);
+    }
+    if title.contains("支持") || title.contains("援助") {
+        keywords.extend(["support", "aid", "assistance"]);
+    }
+    if (title.contains("政府") && !title.contains("无政府")) || title.contains("共和国") {
+        keywords.extend(["government", "republic", "political"]);
+    }
+    if title.contains("改革") || title.contains("改组") || title.contains("整顿") {
+        keywords.extend(["reform", "political"]);
+    }
+    if title.contains("法案") || title.contains("立法") {
+        keywords.extend(["act", "law"]);
+    }
+    if title.contains("独立") {
+        keywords.extend(["independence"]);
+    }
+    if title.contains("工业")
         || title.contains("工厂")
         || title.contains("五年")
         || title.contains("建设")
         || title.contains("生产")
     {
-        vec![
+        keywords.extend([
             "factory",
             "industry",
             "industrial",
             "construct",
             "construction",
             "production",
-        ]
-    } else if title.contains("农业") || title.contains("农民") || title.contains("土地") {
-        vec!["agriculture", "farm", "peasant", "consumer"]
-    } else if title.contains("铁路") || title.contains("交通") || title.contains("运输") {
-        vec!["rail", "railway", "infrastructure", "transport"]
-    } else if title.contains("经济") || title.contains("市场") || title.contains("贸易") {
-        vec![
+        ]);
+    }
+    if title.contains("农业") || title.contains("农民") || title.contains("土地") {
+        keywords.extend(["agriculture", "farm", "peasant", "consumer"]);
+    }
+    if title.contains("铁路") || title.contains("交通") || title.contains("运输") {
+        keywords.extend(["rail", "railway", "infrastructure", "transport"]);
+    }
+    if title.contains("经济") || title.contains("市场") || title.contains("贸易") {
+        keywords.extend([
             "trade", "market", "economic", "economy", "planned", "consumer",
-        ]
-    } else {
-        vec!["political", "reform"]
+        ]);
+    }
+    if keywords.is_empty() {
+        keywords.extend(["political", "reform"]);
+    }
+    keywords.sort();
+    keywords.dedup();
+    keywords
+}
+
+fn add_keywords_if(
+    keywords: &mut Vec<&'static str>,
+    title: &str,
+    needles: &[&str],
+    additions: &[&'static str],
+) {
+    if contains_text_any(title, needles) {
+        keywords.extend(additions);
     }
 }
+
+fn contains_text_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+pub(crate) fn contains_ascii_any(text: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| text.contains(needle))
+}
+
+fn reference_contains_semantic_any(reference: &str, terms: &[&str]) -> bool {
+    terms
+        .iter()
+        .any(|term| reference_contains_semantic_term(reference, term))
+}
+
+fn reference_contains_semantic_term(reference: &str, term: &str) -> bool {
+    if term.len() <= 4 {
+        return reference
+            .split(|c: char| !c.is_ascii_alphanumeric())
+            .any(|token| token == term);
+    }
+    reference.contains(term)
+}
+
+fn reference_contains_primary_country_token(reference: &str, country: &SemanticFamily) -> bool {
+    country
+        .reference_terms
+        .first()
+        .is_some_and(|tag| reference_contains_semantic_term(reference, tag))
+}
+
+fn title_has_country_context(title: &str) -> bool {
+    SEMANTIC_COUNTRY_FAMILIES
+        .iter()
+        .any(|country| contains_text_any(title, country.title_terms))
+}
+
+fn is_country_reference_term(term: &str) -> bool {
+    SEMANTIC_COUNTRY_FAMILIES
+        .iter()
+        .any(|family| family.reference_terms.contains(&term))
+}
+
+struct SemanticFamily {
+    title_terms: &'static [&'static str],
+    reference_terms: &'static [&'static str],
+    mismatch_penalty: i32,
+}
+
+const SEMANTIC_IDEOLOGY_FAMILIES: &[SemanticFamily] = &[
+    SemanticFamily {
+        title_terms: &[
+            "共产",
+            "社会主义",
+            "社民",
+            "马克思",
+            "列宁",
+            "布尔什维克",
+            "苏维埃",
+            "工人",
+            "无产",
+        ],
+        reference_terms: &["communist", "communism", "socialist", "socialism"],
+        mismatch_penalty: 10,
+    },
+    SemanticFamily {
+        title_terms: &["民主", "选举", "议会", "宪政", "自由", "共和"],
+        reference_terms: &[
+            "democratic",
+            "democracy",
+            "liberal",
+            "election",
+            "parliament",
+        ],
+        mismatch_penalty: 8,
+    },
+    SemanticFamily {
+        title_terms: &["法西斯", "纳粹", "极右", "黑衫", "国家社会主义"],
+        reference_terms: &["fascist", "fascism", "nazi", "blackshirt"],
+        mismatch_penalty: 12,
+    },
+    SemanticFamily {
+        title_terms: &["君主", "王室", "国王", "皇帝", "帝制", "复辟", "保皇"],
+        reference_terms: &["monarchist", "monarchy", "royal", "kaiser", "tsar"],
+        mismatch_penalty: 10,
+    },
+    SemanticFamily {
+        title_terms: &["无政府", "安那其", "工团"],
+        reference_terms: &["anarchist", "anarchism", "syndicalist", "syndicalism"],
+        mismatch_penalty: 10,
+    },
+];
+
+const SEMANTIC_COUNTRY_FAMILIES: &[SemanticFamily] = &[
+    SemanticFamily {
+        title_terms: &["CHI", "PRC", "中国", "中华", "中共", "国民党", "南京"],
+        reference_terms: &["chi", "china", "chinese", "prc", "cpc", "kuomintang", "kmt"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["SOV", "RUS", "苏联", "苏维埃", "俄罗斯", "俄国", "沙俄"],
+        reference_terms: &["sov", "soviet", "russia", "russian"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["GER", "德国", "德意志", "普鲁士", "第三帝国"],
+        reference_terms: &["ger", "germany", "german", "reich"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["JAP", "日本", "大和", "东京"],
+        reference_terms: &["jap", "japan", "japanese"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["USA", "美国", "美利坚", "华盛顿"],
+        reference_terms: &["usa", "america", "american"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["ENG", "UK", "英国", "英格兰", "不列颠", "伦敦"],
+        reference_terms: &["eng", "britain", "british", "uk"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["FRA", "法国", "法兰西", "巴黎"],
+        reference_terms: &["fra", "france", "french"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["ITA", "意大利", "罗马"],
+        reference_terms: &["ita", "italy", "italian"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["KOR", "韩国", "朝鲜", "高丽", "汉城", "首尔", "平壤"],
+        reference_terms: &["kor", "korea", "korean"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["SPR", "SPA", "西班牙", "马德里"],
+        reference_terms: &["spr", "spain", "spanish"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["POL", "波兰", "华沙"],
+        reference_terms: &["pol", "poland", "polish"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["RAJ", "IND", "印度", "德里"],
+        reference_terms: &["raj", "india", "indian"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["MEX", "墨西哥"],
+        reference_terms: &["mex", "mexico", "mexican"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["BRA", "巴西"],
+        reference_terms: &["bra", "brazil", "brazilian"],
+        mismatch_penalty: 5,
+    },
+    SemanticFamily {
+        title_terms: &["TUR", "土耳其", "安卡拉"],
+        reference_terms: &["tur", "turkey", "turkish"],
+        mismatch_penalty: 5,
+    },
+];
 
 pub(crate) fn link_mutual(focuses: &mut [FocusNode], left: &str, right: &str) {
     for f in focuses {

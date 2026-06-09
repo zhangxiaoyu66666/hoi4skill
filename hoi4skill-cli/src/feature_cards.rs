@@ -938,22 +938,24 @@ pub(crate) fn choose_idea_picture_from_catalog(
     title: &str,
     catalog: &BTreeSet<String>,
 ) -> Option<String> {
-    let keywords = focus_icon_keywords(title);
-    let mut best: Option<(i32, String)> = None;
+    let mut best: Option<(i32, bool, String)> = None;
     for picture in catalog {
-        let lower = picture.to_ascii_lowercase();
-        let score = 1 + keywords
-            .iter()
-            .filter(|keyword| lower.contains(**keyword))
-            .count() as i32
-            * 10;
-        if best.as_ref().is_none_or(|(best_score, best_picture)| {
-            score > *best_score || (score == *best_score && picture < best_picture)
-        }) {
-            best = Some((score, picture.clone()));
+        let score = semantic_reference_score(title, picture, 8);
+        let country_match = semantic_reference_country_match(title, picture);
+        if best
+            .as_ref()
+            .is_none_or(|(best_score, best_country_match, best_picture)| {
+                score > *best_score
+                    || (score == *best_score && country_match && !*best_country_match)
+                    || (score == *best_score
+                        && country_match == *best_country_match
+                        && picture < best_picture)
+            })
+        {
+            best = Some((score, country_match, picture.clone()));
         }
     }
-    best.map(|(_, picture)| picture)
+    best.map(|(_, _, picture)| picture)
 }
 
 pub(crate) fn resolve_decision_icon(card: &Card, catalog: &BTreeSet<String>) -> String {
@@ -994,67 +996,24 @@ pub(crate) fn choose_semantic_reference_from_catalog(
     title: &str,
     catalog: &BTreeSet<String>,
 ) -> Option<String> {
-    let keywords = focus_icon_keywords(title);
-    let mut best: Option<(i32, String)> = None;
+    let mut best: Option<(i32, bool, String)> = None;
     for item in catalog {
-        let lower = item.to_ascii_lowercase();
-        let mut score = 1;
-        for keyword in &keywords {
-            if lower.contains(keyword) {
-                score += 10;
-            }
-        }
-        if lower.contains("_generic_") {
-            score += 1;
-        }
-        if lower.contains("attack_")
-            || lower.contains("crush_")
-            || lower.contains("counter_")
-            || lower.contains("anti_")
-            || lower.contains("ban_")
+        let score = semantic_reference_score(title, item, 8);
+        let country_match = semantic_reference_country_match(title, item);
+        if best
+            .as_ref()
+            .is_none_or(|(best_score, best_country_match, best_item)| {
+                score > *best_score
+                    || (score == *best_score && country_match && !*best_country_match)
+                    || (score == *best_score
+                        && country_match == *best_country_match
+                        && item < best_item)
+            })
         {
-            score -= 4;
-        }
-        if lower.contains("fascist") || lower.contains("fascism") {
-            score -= 12;
-        }
-        if (lower.contains("monarchist") || lower.contains("monarchy")) && !title.contains("君主")
-        {
-            score -= 12;
-        }
-        if lower.contains("africa") && !title.contains("非洲") {
-            score -= 6;
-        }
-        if (lower.contains("armor")
-            || lower.contains("armored")
-            || lower.contains("air")
-            || lower.contains("naval")
-            || lower.contains("tank")
-            || lower.contains("fleet"))
-            && !(title.contains("军")
-                || title.contains("武装")
-                || title.contains("战争")
-                || title.contains("空军")
-                || title.contains("海军")
-                || title.contains("坦克")
-                || title.contains("装甲")
-                || title.contains("舰"))
-        {
-            score -= 6;
-        }
-        if lower.contains("spain") && !title.contains("西班牙") {
-            score -= 4;
-        }
-        if lower.contains("unknown") || lower.contains("placeholder") {
-            score -= 8;
-        }
-        if best.as_ref().is_none_or(|(best_score, best_item)| {
-            score > *best_score || (score == *best_score && item < best_item)
-        }) {
-            best = Some((score, item.clone()));
+            best = Some((score, country_match, item.clone()));
         }
     }
-    best.map(|(_, item)| item)
+    best.map(|(_, _, item)| item)
 }
 
 pub(crate) fn render_technology_inner_block(
