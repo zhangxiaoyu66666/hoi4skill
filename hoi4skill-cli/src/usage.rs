@@ -28,7 +28,7 @@ Usage:
   hoi4skill apply-focus-excel --input tree.xlsx --mod-root "M:\path\mod" --tag SOV --prefix sov_alt [--sheet FocusTree]
   hoi4skill parse-focus-copy-cards --input focus_copy.txt [--output focus_prompts.md]
   hoi4skill parse-feature-cards --input cards.txt --tag SOV --prefix sov_nep [--output plan.json]
-  hoi4skill apply-feature-cards --input cards.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep
+  hoi4skill apply-feature-cards --input cards.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"]
   hoi4skill parse-event-cards --input events.txt --tag SOV --prefix sov_nep [--output plan.json]
   hoi4skill apply-event-cards --input events.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep
   hoi4skill emit-hoi4yaml --input cards.txt --kind feature-cards|event-cards|focus-layout --tag SOV --prefix sov_nep [--output mod.yaml]

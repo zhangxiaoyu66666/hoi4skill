@@ -348,10 +348,12 @@ pub(crate) fn parse_focus_layout_json(text: &str, tag: &str, prefix: &str) -> St
     for (i, f) in layout.focuses.iter().enumerate() {
         comma(&mut out, i, "    ");
         out.push_str(&format!(
-            "{{\"title\": {}, \"id\": {}, \"icon\": {}, \"x\": {}, \"y\": {}, \"relative_position_id\": {}, \"row\": {}, \"column\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}}}",
+            "{{\"title\": {}, \"id\": {}, \"icon\": {}, \"x\": {}, \"y\": {}, \"worksheet_x\": {}, \"worksheet_y\": {}, \"relative_position_id\": {}, \"row\": {}, \"column\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}}}",
             json_str(&f.title),
             json_str(&f.id),
             json_optional_str(f.icon.as_deref()),
+            f.relative_x.unwrap_or(f.x),
+            f.relative_y.unwrap_or(f.y),
             f.x,
             f.y,
             json_optional_str(f.relative_position_id.as_deref()),
@@ -1013,7 +1015,9 @@ pub(crate) fn focus_icon_keywords(title: &str) -> Vec<&'static str> {
     } else if title.contains("铁路") || title.contains("交通") || title.contains("运输") {
         vec!["rail", "railway", "infrastructure", "transport"]
     } else if title.contains("经济") || title.contains("市场") || title.contains("贸易") {
-        vec!["trade", "market", "economic", "consumer"]
+        vec![
+            "trade", "market", "economic", "economy", "planned", "consumer",
+        ]
     } else {
         vec!["political", "reform", "focus"]
     }

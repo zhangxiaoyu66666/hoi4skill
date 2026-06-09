@@ -1111,6 +1111,58 @@ fn apply_focus_layout_uses_indexed_goal_icons() {
 }
 
 #[test]
+fn apply_feature_cards_uses_registered_idea_picture_without_gfx_prefix() {
+    let root = unique_temp_dir("apply-feature-cards-idea-picture");
+    let game = unique_temp_dir("game-index-idea-picture");
+    fs::create_dir_all(root.join("common").join("ideas")).unwrap();
+    fs::create_dir_all(root.join("interface")).unwrap();
+    fs::create_dir_all(game.join("interface")).unwrap();
+    fs::write(
+        root.join("interface").join("local_ideas.gfx"),
+        r#"spriteType = { name = "GFX_idea_local_naval_reform" texturefile = "gfx/interface/ideas/naval.dds" }"#,
+    )
+    .unwrap();
+    fs::write(
+        game.join("interface").join("ideas.gfx"),
+        r#"spriteType = { name = "GFX_idea_democratic_planned_economy" texturefile = "gfx//interface//ideas//democratic_planned_economy.dds" }"#,
+    )
+    .unwrap();
+    let index = build_game_index(&game).unwrap();
+    let cards = parse_cards(
+        "民族精神：民主计划经济\n目标：SOV\n效果：稳定度+5%",
+        FEATURE_CARD_HEADERS,
+    );
+
+    apply_feature_cards_to_mod_with_index(&root, &cards, "SOV", "sov_reform", Some(&index))
+        .unwrap();
+
+    let ideas = fs::read_to_string(
+        root.join("common")
+            .join("ideas")
+            .join("sov_reform_ideas.txt"),
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&game).unwrap();
+
+    assert!(index.idea_pictures.contains("democratic_planned_economy"));
+    assert!(ideas.contains("picture = democratic_planned_economy"));
+    assert!(!ideas.contains("picture = GFX_idea_democratic_planned_economy"));
+}
+
+#[test]
+fn explicit_idea_gfx_sprite_is_normalized_to_picture_name() {
+    let cards = parse_cards(
+        "民族精神：民主计划经济\n图标：GFX_idea_democratic_planned_economy\n效果：稳定度+5%",
+        FEATURE_CARD_HEADERS,
+    );
+    let rendered = render_idea_block(&cards[0], "sov_planned_economy_idea");
+
+    assert!(rendered.contains("picture = democratic_planned_economy"));
+    assert!(!rendered.contains("picture = GFX_idea_democratic_planned_economy"));
+}
+
+#[test]
 fn scaffold_writes_mod_names_only_to_descriptors() {
     let root = unique_temp_dir("scaffold-no-mod-name-loc");
     let created = scaffold_mod(
@@ -2163,22 +2215,46 @@ fn parse_focus_excel_can_render_markdown_table() {
 }
 
 #[test]
-fn workflow_input_text_from_xlsx_contains_markdown_and_focus_sketch() {
+fn workflow_input_from_xlsx_preserves_structured_layout_without_text_round_trip() {
     let root = unique_temp_dir("workflow-xlsx-input");
     fs::create_dir_all(&root).unwrap();
     let xlsx = root.join("tree.xlsx");
     write_minimal_focus_xlsx(&xlsx);
 
-    let text = workflow_input_text_from_path(&xlsx, Some("FocusTree"), "SOV", "sov_excel").unwrap();
-    let workflow = run_workflow_json(&text, None, "SOV", "sov_excel", None, true, None).unwrap();
+    let input = workflow_input_from_path(&xlsx, Some("FocusTree"), "SOV", "sov_excel").unwrap();
+    let layout = input.focus_layout.as_ref().unwrap();
+    let workflow = run_workflow_json_with_focus_layout(
+        &input.text,
+        Some(layout),
+        None,
+        "SOV",
+        "sov_excel",
+        None,
+        true,
+        None,
+    )
+    .unwrap();
     fs::remove_dir_all(&root).unwrap();
 
-    assert!(text.contains("# Worksheet: FocusTree"));
-    assert!(text.contains("## Simulated HOI4 x/y Grid"));
-    assert!(text.contains("国策树："));
-    assert!(text.contains("工业复兴 | industrial_revival"));
+    assert!(input.text.contains("# Worksheet: FocusTree"));
+    assert!(input.text.contains("## Simulated HOI4 x/y Grid"));
+    assert!(input.text.contains("## Immutable Excel Import Contract"));
+    assert!(!input.text.contains("\n国策树："));
+    assert_eq!(layout.focuses.len(), 3);
+    assert_eq!(layout.focuses[0].title, "重建中央委员会");
+    assert_eq!(layout.focuses[1].title, "工业复兴");
+    assert_eq!(layout.focuses[2].title, "整顿军队");
+    assert_eq!(
+        layout.focuses[1].relative_position_id.as_deref(),
+        Some("SOV_rebuild_committee")
+    );
+    assert_eq!(layout.focuses[1].relative_x, Some(-2));
+    assert_eq!(layout.focuses[2].relative_x, Some(2));
     assert!(workflow.contains("\"focus_layout\": true"));
     assert!(workflow.contains("SOV_industrial_revival"));
+    assert!(workflow.contains(
+        "\"id\": \"SOV_industrial_revival\", \"icon\": \"GFX_goal_generic_construct_civ_factory\", \"x\": -2, \"y\": 2, \"worksheet_x\": 0, \"worksheet_y\": 2, \"relative_position_id\": \"SOV_rebuild_committee\""
+    ));
 }
 
 #[test]
@@ -2911,6 +2987,40 @@ fn render_focus_tree_uses_unknown_icon_and_empty_reward_by_default() {
 }
 
 #[test]
+fn validator_requires_bare_idea_picture_reference_and_registered_sprite() {
+    let root = unique_temp_dir("validate-idea-picture");
+    fs::create_dir_all(root.join("common").join("ideas")).unwrap();
+    fs::create_dir_all(root.join("interface")).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Idea Picture Test\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("interface").join("ideas.gfx"),
+        r#"spriteType = { name = "GFX_idea_democratic_planned_economy" texturefile = "gfx/interface/ideas/democratic_planned_economy.dds" }"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("common").join("ideas").join("ideas.txt"),
+        "ideas = { country = { good_idea = { picture = democratic_planned_economy } bad_idea = { picture = GFX_idea_democratic_planned_economy } } }\n",
+    )
+    .unwrap();
+
+    let report = validate_mod(&root, None).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(report.errors.iter().any(|error| {
+        error.contains("idea picture must omit the GFX_idea_ prefix")
+            && error.contains("picture = democratic_planned_economy")
+    }));
+    assert!(!report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("idea picture democratic_planned_economy requires")));
+}
+
+#[test]
 fn validator_errors_for_incomplete_focus_template() {
     let path = Path::new("M:\\mod\\common\\national_focus\\bad_focus.txt");
     let text = r#"
@@ -3412,7 +3522,7 @@ fn emit_hoi4yaml_from_focus_layout_uses_full_chinese_localisation() {
 #[test]
 fn emit_hoi4yaml_from_feature_cards_outputs_decisions_ideas_and_loc() {
     let yaml = emit_hoi4yaml(
-        "决议：鼓励投资\n目标：SOV\n分类：经济政策\n效果：政治点+50\n\n民族精神：新经济政策\n效果：稳定度+5%，消费品工厂-3%\n移除：不可手动移除\n",
+        "决议：鼓励投资\n目标：SOV\n分类：经济政策\n效果：政治点+50\n\n民族精神：新经济政策\n图标：GFX_idea_democratic_planned_economy\n效果：稳定度+5%，消费品工厂-3%\n移除：不可手动移除\n",
         EmitHoi4YamlKind::FeatureCards,
         "SOV",
         "sov_nep",
@@ -3425,6 +3535,8 @@ fn emit_hoi4yaml_from_feature_cards_outputs_decisions_ideas_and_loc() {
     assert!(yaml.contains("stability_factor: 0.05"));
     assert!(yaml.contains("consumer_goods_factor: -0.03"));
     assert!(yaml.contains("removal_cost: -1"));
+    assert!(yaml.contains("picture: \"democratic_planned_economy\""));
+    assert!(!yaml.contains("picture: \"GFX_idea_democratic_planned_economy\""));
     assert!(yaml.contains("localisation:\n  simp_chinese:"));
 }
 
@@ -3703,10 +3815,10 @@ fn focus_layout_infers_branch_parents_before_mutation() {
     );
 
     assert!(json.contains(
-        "\"title\": \"快速工业化\", \"id\": \"SOV_rapid_industry\", \"icon\": null, \"x\": -3, \"y\": 2, \"relative_position_id\": \"SOV_stalin_constitution\", \"row\": 2, \"column\": 0, \"prerequisite\": [\"SOV_first_five_year_plan\"]"
+        "\"title\": \"快速工业化\", \"id\": \"SOV_rapid_industry\", \"icon\": null, \"x\": -3, \"y\": 2, \"worksheet_x\": -3, \"worksheet_y\": 2, \"relative_position_id\": \"SOV_stalin_constitution\", \"row\": 2, \"column\": 0, \"prerequisite\": [\"SOV_first_five_year_plan\"]"
     ));
     assert!(json.contains(
-        "\"title\": \"发财吧农民\", \"id\": \"SOV_prosper_peasants\", \"icon\": null, \"x\": 1, \"y\": 2, \"relative_position_id\": \"SOV_stalin_constitution\", \"row\": 2, \"column\": 2, \"prerequisite\": [\"SOV_continue_new_economic_policy\"]"
+        "\"title\": \"发财吧农民\", \"id\": \"SOV_prosper_peasants\", \"icon\": null, \"x\": 1, \"y\": 2, \"worksheet_x\": 1, \"worksheet_y\": 2, \"relative_position_id\": \"SOV_stalin_constitution\", \"row\": 2, \"column\": 2, \"prerequisite\": [\"SOV_continue_new_economic_policy\"]"
     ));
     assert!(json.contains(
         "\"title\": \"奈普曼入党\", \"id\": \"SOV_nepman_join_party\", \"icon\": null, \"x\": 3, \"y\": 2"

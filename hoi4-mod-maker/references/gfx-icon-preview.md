@@ -27,7 +27,7 @@ When generating or changing icons:
 2. Resolve `texturefile` to `gfx/interface/...`.
 3. Reuse an existing sprite when it matches the feature.
 4. If adding a new PNG, DDS, or TGA, add a matching `spriteType`.
-5. Update focus `icon`, idea `picture`, decision `icon`, or category `picture` with the sprite key expected by that system.
+5. Update focus `icon`, idea `picture`, decision `icon`, or category `picture` with the reference expected by that system. For ideas, a registered `GFX_idea_<name>` sprite is referenced as `picture = <name>`.
 
 ## Batch Registration Command
 
@@ -48,7 +48,7 @@ Categories:
 
 - `dynamic`: writes `GFX_<prefix>_<asset>` into `interface/<prefix>_dynamic_icons.gfx` for scripted GUI and localisation icon control codes.
 - `focus`: writes `GFX_goal_<prefix>_<asset>` into `interface/<prefix>_goals.gfx` and also writes the matching `_shine` sprite into `interface/<prefix>_goals_shine.gfx`.
-- `idea`: writes `GFX_idea_<prefix>_<asset>` into `interface/<prefix>_focus_idea_icons.gfx`.
+- `idea`: writes `GFX_idea_<prefix>_<asset>` into `interface/<prefix>_focus_idea_icons.gfx`; use only `<prefix>_<asset>` in `common/ideas` `picture =`.
 - `event`: writes `GFX_report_event_<prefix>_<asset>` into `interface/<prefix>_event_pictures.gfx`.
 - `decision`: writes both `GFX_decision_<prefix>_<asset>` and `GFX_decision_category_<prefix>_<asset>` into `interface/<prefix>_decision_pictures.gfx`.
 - `focus-idea`: shorthand for both focus and idea.

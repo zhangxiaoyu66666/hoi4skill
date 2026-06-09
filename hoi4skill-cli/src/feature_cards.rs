@@ -154,9 +154,19 @@ pub(crate) fn cmd_apply_feature_cards(args: &[String]) -> Result<(), String> {
     let mod_root = normalize_path(&require_value(&map, "mod-root")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("mod");
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+        .transpose()?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err("--mod-path requires --game-root during feature-card generation".to_string());
+    }
     let text = read_utf8_lossy(&normalize_path(&input)?)?;
     let cards = parse_cards(&text, FEATURE_CARD_HEADERS);
-    let changed = apply_feature_cards_to_mod(&mod_root, &cards, tag, prefix)?;
+    let changed =
+        apply_feature_cards_to_mod_with_index(&mod_root, &cards, tag, prefix, game_index.as_ref())?;
 
     println!("Applied feature cards: {}", cards.len());
     if changed.is_empty() {
@@ -170,14 +180,26 @@ pub(crate) fn cmd_apply_feature_cards(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn apply_feature_cards_to_mod(
     mod_root: &Path,
     cards: &[Card],
     tag: &str,
     prefix: &str,
 ) -> Result<Vec<PathBuf>, String> {
+    apply_feature_cards_to_mod_with_index(mod_root, cards, tag, prefix, None)
+}
+
+pub(crate) fn apply_feature_cards_to_mod_with_index(
+    mod_root: &Path,
+    cards: &[Card],
+    tag: &str,
+    prefix: &str,
+    game_index: Option<&GameIndex>,
+) -> Result<Vec<PathBuf>, String> {
     let decision_targets = scan_decision_category_targets(mod_root)?;
     let idea_targets = scan_idea_file_targets(mod_root)?;
+    let idea_picture_catalog = collect_idea_picture_catalog(mod_root, game_index)?;
     let mut categories: BTreeMap<String, (String, String)> = BTreeMap::new();
     let mut decision_blocks: Vec<(String, String)> = Vec::new();
     let mut existing_decision_appends: BTreeMap<PathBuf, BTreeMap<String, Vec<(String, String)>>> =
@@ -244,13 +266,20 @@ pub(crate) fn apply_feature_cards_to_mod(
             "民族精神" => {
                 let target = card.fields.get("目标").map(String::as_str).unwrap_or(tag);
                 let idea_id = feature_card_id(card, prefix, "idea", idx);
+                let picture = resolve_idea_picture(card, &idea_picture_catalog);
                 if let Some(existing) = select_idea_file_target(&idea_targets, target) {
                     existing_idea_appends
                         .entry(existing.path.clone())
                         .or_default()
-                        .push((idea_id.clone(), render_idea_inner_block(card, &idea_id)));
+                        .push((
+                            idea_id.clone(),
+                            render_idea_inner_block_with_picture(card, &idea_id, &picture),
+                        ));
                 } else {
-                    idea_blocks.push((idea_id.clone(), render_idea_block(card, &idea_id)));
+                    idea_blocks.push((
+                        idea_id.clone(),
+                        render_idea_block_with_picture(card, &idea_id, &picture),
+                    ));
                 }
                 loc_entries.insert(idea_id.clone(), card.title.clone());
                 loc_entries.insert(
@@ -754,20 +783,27 @@ pub(crate) fn render_decision_inner_block(
     out
 }
 
+#[cfg(test)]
 pub(crate) fn render_idea_block(card: &Card, idea_id: &str) -> String {
+    let picture = resolve_idea_picture(card, &BTreeSet::new());
+    render_idea_block_with_picture(card, idea_id, &picture)
+}
+
+pub(crate) fn render_idea_block_with_picture(card: &Card, idea_id: &str, picture: &str) -> String {
     let mut out = String::new();
     out.push_str("ideas = {\n\tcountry = {\n");
-    out.push_str(&render_idea_inner_block(card, idea_id));
+    out.push_str(&render_idea_inner_block_with_picture(
+        card, idea_id, picture,
+    ));
     out.push_str("\t}\n}\n");
     out
 }
 
-pub(crate) fn render_idea_inner_block(card: &Card, idea_id: &str) -> String {
-    let picture = card
-        .fields
-        .get("图标")
-        .map(String::as_str)
-        .unwrap_or("generic_production_bonus");
+pub(crate) fn render_idea_inner_block_with_picture(
+    card: &Card,
+    idea_id: &str,
+    picture: &str,
+) -> String {
     let suggestions = suggest_common(
         "idea",
         card.fields.get("效果").map(String::as_str).unwrap_or(""),
@@ -796,6 +832,62 @@ pub(crate) fn render_idea_inner_block(card: &Card, idea_id: &str) -> String {
     out.push_str("\t\t\t}\n");
     out.push_str("\t\t}\n");
     out
+}
+
+pub(crate) fn collect_idea_picture_catalog(
+    mod_root: &Path,
+    game_index: Option<&GameIndex>,
+) -> Result<BTreeSet<String>, String> {
+    let mut pictures = BTreeSet::new();
+    let interface_root = mod_root.join("interface");
+    if interface_root.exists() {
+        for file in collect_files(&interface_root)? {
+            if file.extension().and_then(OsStr::to_str).unwrap_or("") != "gfx" {
+                continue;
+            }
+            collect_idea_pictures(&read_utf8_lossy(&file)?, &mut pictures);
+        }
+    }
+    if let Some(index) = game_index {
+        pictures.extend(index.idea_pictures.iter().cloned());
+    }
+    Ok(pictures)
+}
+
+pub(crate) fn resolve_idea_picture(card: &Card, catalog: &BTreeSet<String>) -> String {
+    if let Some(explicit) = card.fields.get("图标").map(|value| value.trim_matches('"')) {
+        let normalized = explicit.strip_prefix("GFX_idea_").unwrap_or(explicit);
+        if is_reference_identifier(normalized) {
+            return normalized.to_string();
+        }
+        let semantic_title = format!("{} {explicit}", card.title);
+        return choose_idea_picture_from_catalog(&semantic_title, catalog)
+            .unwrap_or_else(|| "generic_production_bonus".to_string());
+    }
+    choose_idea_picture_from_catalog(&card.title, catalog)
+        .unwrap_or_else(|| "generic_production_bonus".to_string())
+}
+
+pub(crate) fn choose_idea_picture_from_catalog(
+    title: &str,
+    catalog: &BTreeSet<String>,
+) -> Option<String> {
+    let keywords = focus_icon_keywords(title);
+    let mut best: Option<(i32, String)> = None;
+    for picture in catalog {
+        let lower = picture.to_ascii_lowercase();
+        let score = 1 + keywords
+            .iter()
+            .filter(|keyword| lower.contains(**keyword))
+            .count() as i32
+            * 10;
+        if best.as_ref().is_none_or(|(best_score, best_picture)| {
+            score > *best_score || (score == *best_score && picture < best_picture)
+        }) {
+            best = Some((score, picture.clone()));
+        }
+    }
+    best.map(|(_, picture)| picture)
 }
 
 pub(crate) fn render_technology_inner_block(

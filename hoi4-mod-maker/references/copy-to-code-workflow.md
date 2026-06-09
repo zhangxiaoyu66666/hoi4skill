@@ -38,6 +38,8 @@ hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag
 hoi4skill run-workflow --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_nep --sheet FocusTree --dry-run --output workflow_plan.json
 ```
 
+For spreadsheet input, the workbook is the layout authority. Cell titles and occupied coordinates are immutable: do not rewrite focus names, split or merge cells, invent extra focuses, remove focuses, or aesthetically recenter rows. Use the structured layout carried by `run-workflow` or call `apply-focus-excel`; do not rebuild the tree manually from the Markdown preview. The generated layout anchors every later focus to the opening focus with an offset. Never use a parent as `relative_position_id` while also copying the worksheet's absolute `x/y`, because HOI4 will compound the offset and spread deeper branches apart.
+
 `mod-knowledge` creates the pre-edit dossier: standalone/submod classification, descriptor/launcher metadata, dependency names, dependency roots supplied with `--mod-path`, observed tags, focus trees, namespaces, localisation style, decision categories, idea pictures, GFX sprites, and model-readable `markdown_summary`. Treat missing facts as unknown, not as permission to invent.
 
 `prepare-edit-context` creates the model-facing preflight context. It combines the user's request, a `Write Gate`, the `mod-knowledge` `markdown_summary`, a dry-run plan, validation status, local file excerpts, an `Unknown Facts` section, and a `Blocked Until Verified` section. Read the `Write Gate` before code generation: `BLOCKED` means do not write; `VERIFY_FIRST` means run the listed verification steps before final script; `READY_FOR_NARROW_WRITE` means write only inside the allowed edit surface and the dry-run plan.
@@ -177,6 +179,7 @@ Create new files when:
 - National-spirit IDs must end with `_idea`; keep their localisation in the national-spirit section, not the focus-tree section.
 - If the user asks for a national focus tree or route but gives no visual layout, use the default five-stage x/y template: one opening focus, two to four expansion focuses, one phase result, two to four expansion focuses, and one closing result. Keep same-row `x` values spaced by 2.
 - National-focus icons must be chosen from verified `GFX_goal*` sprites read from target/dependency/game `interface/*.gfx` via `mod-knowledge`, `build-game-index`, or `run-workflow/apply-focus-layout --game-root`; do not invent icon sprite names.
+- National-spirit pictures must be chosen from verified `GFX_idea_<name>` registrations. The sprite registration keeps the full `GFX_idea_` prefix, while the idea block uses `picture = <name>` without that prefix.
 - Unique-technology IDs generated from cards end with `_tech`.
 - Special-GUI IDs generated from cards end with `_gui`.
 - Scripted-effect IDs generated from cards end with `_effect`.

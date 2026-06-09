@@ -113,12 +113,14 @@ Use Excel when the author or AI draws the focus tree visually as a worksheet gri
 Rules:
 
 - Every non-empty non-connector cell is a focus.
+- Focus titles and occupied cells are immutable input. Do not rename, paraphrase, split, merge, add, remove, or recenter them.
 - Blank cells preserve horizontal spacing.
 - Connector-only cells such as `│`, `─`, arrows, or header cells such as `国策树` are ignored.
 - Worksheet columns become HOI4 `x` coordinates with a same-row minimum gap of 2.
 - Worksheet rows become HOI4 `y` coordinates.
 - The importer infers a parent from the nearest focus in the closest non-empty row above.
 - Child focuses keep their real `prerequisite` chain, but layout should usually anchor to the opening focus: later focuses use `relative_position_id = <start_focus_id>` plus relative `x/y` offsets so whole branches can be moved without rewriting every node.
+- Never set `relative_position_id` to each focus's parent while copying absolute worksheet `x/y` values. HOI4 interprets those values as parent-relative offsets, which compounds horizontal drift on deeper rows.
 - Cell text may include multiple lines:
 
 ```text

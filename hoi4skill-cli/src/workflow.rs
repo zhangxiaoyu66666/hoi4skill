@@ -3,6 +3,11 @@
 #[allow(unused_imports)]
 use crate::*;
 
+pub(crate) struct WorkflowInput {
+    pub(crate) text: String,
+    pub(crate) focus_layout: Option<FocusLayout>,
+}
+
 pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let input = normalize_path(&require_value(&map, "input")?)?;
@@ -21,9 +26,10 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during workflow generation".to_string());
     }
-    let text = workflow_input_text_from_path(&input, sheet, tag, prefix)?;
-    let json = run_workflow_json(
-        &text,
+    let workflow_input = workflow_input_from_path(&input, sheet, tag, prefix)?;
+    let json = run_workflow_json_with_focus_layout(
+        &workflow_input.text,
+        workflow_input.focus_layout.as_ref(),
         mod_root.as_deref(),
         tag,
         prefix,
@@ -34,73 +40,36 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     write_or_print(&json, value(&map, "output"))
 }
 
-pub(crate) fn workflow_input_text_from_path(
+pub(crate) fn workflow_input_from_path(
     input: &Path,
     sheet: Option<&str>,
     tag: &str,
     prefix: &str,
-) -> Result<String, String> {
+) -> Result<WorkflowInput, String> {
     let extension = input
         .extension()
         .and_then(OsStr::to_str)
         .unwrap_or("")
         .to_ascii_lowercase();
     if matches!(extension.as_str(), "xlsx" | "xls" | "xlsm" | "xlsb" | "ods") {
-        return render_focus_excel_workflow_input(input, sheet, tag, prefix);
+        let markdown = render_focus_excel_markdown(input, sheet, tag, prefix)?;
+        let text = format!(
+            "{markdown}\n\n## Immutable Excel Import Contract\n\n\
+- Every imported focus title is a literal value. Do not rename, paraphrase, split, merge, add, or remove focuses.\n\
+- Preserve worksheet rows, columns, blank-column spacing, and explicit mutual-exclusion markers.\n\
+- Do not reconstruct coordinates from prose. Apply the structured focus layout supplied by the workflow.\n\
+- All non-opening focuses are anchored to the opening focus with relative offsets. Never combine parent-relative anchors with absolute worksheet x/y coordinates.\n"
+        );
+        let focus_layout = read_focus_excel_layout(input, sheet, tag, prefix)?;
+        return Ok(WorkflowInput {
+            text,
+            focus_layout: Some(focus_layout),
+        });
     }
-    read_utf8_lossy(input)
-}
-
-pub(crate) fn render_focus_excel_workflow_input(
-    input: &Path,
-    sheet: Option<&str>,
-    tag: &str,
-    prefix: &str,
-) -> Result<String, String> {
-    let markdown = render_focus_excel_markdown(input, sheet, tag, prefix)?;
-    let (_sheet_name, imported) = read_focus_excel_import(input, sheet)?;
-    let sketch = render_excel_focus_import_sketch(&imported)?;
-    Ok(format!("{markdown}\n\n国策树：\n{sketch}"))
-}
-
-pub(crate) fn render_excel_focus_import_sketch(
-    imported: &ExcelFocusImport,
-) -> Result<String, String> {
-    let mut row_tokens: BTreeMap<usize, BTreeMap<usize, String>> = BTreeMap::new();
-    for cell in &imported.cells {
-        let token = cell
-            .id_hint
-            .as_deref()
-            .map(|hint| format!("{} | {}", cell.title, hint))
-            .unwrap_or_else(|| cell.title.clone());
-        row_tokens
-            .entry(cell.row)
-            .or_default()
-            .insert(cell.column, token);
-    }
-    for (row, column) in &imported.mutual_markers {
-        row_tokens
-            .entry(*row)
-            .or_default()
-            .insert(*column, "互斥".to_string());
-    }
-    if row_tokens.is_empty() {
-        return Err("worksheet did not contain any focus cells".to_string());
-    }
-
-    let mut out = String::new();
-    for columns in row_tokens.values() {
-        let line = columns
-            .values()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .join("    ");
-        if !line.trim().is_empty() {
-            out.push_str(&line);
-            out.push('\n');
-        }
-    }
-    Ok(out)
+    Ok(WorkflowInput {
+        text: read_utf8_lossy(input)?,
+        focus_layout: None,
+    })
 }
 
 pub(crate) fn cmd_generate_mod(args: &[String]) -> Result<(), String> {
@@ -1054,19 +1023,40 @@ pub(crate) fn run_workflow_json(
     dry_run: bool,
     game_index: Option<&GameIndex>,
 ) -> Result<String, String> {
+    run_workflow_json_with_focus_layout(
+        text, None, mod_root, tag, prefix, tree_id, dry_run, game_index,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_workflow_json_with_focus_layout(
+    text: &str,
+    supplied_focus_layout: Option<&FocusLayout>,
+    mod_root: Option<&Path>,
+    tag: &str,
+    prefix: &str,
+    tree_id: Option<&str>,
+    dry_run: bool,
+    game_index: Option<&GameIndex>,
+) -> Result<String, String> {
     let feature_text = extract_card_text(text, FEATURE_CARD_HEADERS);
     let event_text = extract_card_text(text, &["事件"]);
     let focus_text = extract_focus_layout_text(text);
     let feature_cards = parse_cards(&feature_text, FEATURE_CARD_HEADERS);
     let event_cards = parse_cards(&event_text, &["事件"]);
-    let has_focus_layout = !focus_text.trim().is_empty();
-    let focus_plan = has_focus_layout.then(|| {
-        let mut layout = parse_focus_layout_with_rewards(&focus_text, tag, prefix);
+    let mut focus_layout = supplied_focus_layout.cloned().or_else(|| {
+        (!focus_text.trim().is_empty())
+            .then(|| parse_focus_layout_with_rewards(&focus_text, tag, prefix))
+    });
+    if let Some(layout) = &mut focus_layout {
         if let Some(tree_id) = tree_id {
             layout.tree_id = tree_id.to_string();
         }
-        focus_layout_json(&layout, tag, prefix)
-    });
+    }
+    let has_focus_layout = focus_layout.is_some();
+    let focus_plan = focus_layout
+        .as_ref()
+        .map(|layout| focus_layout_json(layout, tag, prefix));
     let feature_plan = (!feature_cards.is_empty())
         .then(|| parse_decision_idea_cards_json(&feature_text, tag, prefix));
     let event_plan =
@@ -1075,21 +1065,18 @@ pub(crate) fn run_workflow_json(
     let mut changed = Vec::new();
     if let Some(root) = mod_root {
         if !dry_run {
-            if has_focus_layout {
-                let mut layout = parse_focus_layout_with_rewards(&focus_text, tag, prefix);
-                if let Some(tree_id) = tree_id {
-                    layout.tree_id = tree_id.to_string();
-                }
+            if let Some(layout) = &focus_layout {
                 changed.extend(apply_focus_layout_to_mod_with_index(
-                    root, &layout, tag, prefix, game_index,
+                    root, layout, tag, prefix, game_index,
                 )?);
             }
             if !feature_cards.is_empty() {
-                changed.extend(apply_feature_cards_to_mod(
+                changed.extend(apply_feature_cards_to_mod_with_index(
                     root,
                     &feature_cards,
                     tag,
                     prefix,
+                    game_index,
                 )?);
             }
             if !event_cards.is_empty() {
@@ -1171,10 +1158,12 @@ pub(crate) fn focus_layout_json(layout: &FocusLayout, tag: &str, prefix: &str) -
     for (i, f) in layout.focuses.iter().enumerate() {
         comma(&mut out, i, "    ");
         out.push_str(&format!(
-            "{{\"title\": {}, \"id\": {}, \"icon\": {}, \"x\": {}, \"y\": {}, \"relative_position_id\": {}, \"row\": {}, \"column\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}, \"completion_reward\": {}}}",
+            "{{\"title\": {}, \"id\": {}, \"icon\": {}, \"x\": {}, \"y\": {}, \"worksheet_x\": {}, \"worksheet_y\": {}, \"relative_position_id\": {}, \"row\": {}, \"column\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}, \"completion_reward\": {}}}",
             json_str(&f.title),
             json_str(&f.id),
             json_optional_str(f.icon.as_deref()),
+            f.relative_x.unwrap_or(f.x),
+            f.relative_y.unwrap_or(f.y),
             f.x,
             f.y,
             json_optional_str(f.relative_position_id.as_deref()),

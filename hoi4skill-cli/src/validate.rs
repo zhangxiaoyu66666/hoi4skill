@@ -41,6 +41,7 @@ pub(crate) fn validate_mod(
     let mut localisation_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut sprite_names: BTreeSet<String> = BTreeSet::new();
     let mut gfx_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
+    let mut idea_picture_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut tag_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut focus_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut local_focus_ids: BTreeSet<String> = BTreeSet::new();
@@ -70,6 +71,7 @@ pub(crate) fn validate_mod(
                 } else {
                     collect_gfx_refs(&file, &text, &mut gfx_refs);
                 }
+                collect_idea_picture_refs(&file, &text, &mut idea_picture_refs, &mut reporter);
                 collect_country_tag_refs(&file, &text, &mut tag_refs);
                 collect_focus_refs(&file, &text, &mut focus_refs, &mut local_focus_ids);
                 collect_game_data_refs(&file, &text, &mut game_data_refs);
@@ -132,6 +134,25 @@ pub(crate) fn validate_mod(
                 game_index.is_some(),
                 format!(
                     "GFX key {sprite} is referenced but not defined in this mod or indexed roots"
+                ),
+                &paths,
+            );
+        }
+    }
+    let local_idea_pictures = sprite_names
+        .iter()
+        .filter_map(|sprite| sprite.strip_prefix("GFX_idea_").map(str::to_string))
+        .collect::<BTreeSet<_>>();
+    for (picture, paths) in idea_picture_refs {
+        let known = local_idea_pictures.contains(&picture)
+            || game_index.is_some_and(|index| index.idea_pictures.contains(&picture))
+            || picture == "generic_production_bonus";
+        if !known {
+            report_paths(
+                &mut reporter,
+                game_index.is_some(),
+                format!(
+                    "idea picture {picture} requires a registered GFX_idea_{picture} sprite in this mod or indexed roots"
                 ),
                 &paths,
             );
@@ -781,6 +802,33 @@ pub(crate) fn collect_gfx_refs(
     for token in token_candidates(&strip_comments(text)) {
         if token.starts_with("GFX_") {
             refs.entry(token.to_string())
+                .or_default()
+                .insert(path.to_path_buf());
+        }
+    }
+}
+
+pub(crate) fn collect_idea_picture_refs(
+    path: &Path,
+    text: &str,
+    refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+    reporter: &mut Reporter,
+) {
+    if !slash_path(path).contains("/common/ideas/") {
+        return;
+    }
+    for picture in assignment_values_in_text(&strip_comments(text), "picture") {
+        let picture = picture.trim_matches('"');
+        if picture.starts_with("GFX_idea_") {
+            reporter.error(format!(
+                "{}: idea picture must omit the GFX_idea_ prefix; use `picture = {}`",
+                path.display(),
+                picture.trim_start_matches("GFX_idea_")
+            ));
+            continue;
+        }
+        if is_reference_identifier(picture) {
+            refs.entry(picture.to_string())
                 .or_default()
                 .insert(path.to_path_buf());
         }

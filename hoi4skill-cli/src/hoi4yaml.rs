@@ -387,11 +387,7 @@ pub(crate) fn emit_decision_card_hoi4yaml(
 }
 
 pub(crate) fn emit_idea_card_hoi4yaml(out: &mut String, card: &Card, idea_id: &str) {
-    let picture = card
-        .fields
-        .get("图标")
-        .map(String::as_str)
-        .unwrap_or("generic_production_bonus");
+    let picture = resolve_idea_picture(card, &BTreeSet::new());
     let suggestions = suggest_common(
         "idea",
         card.fields.get("效果").map(String::as_str).unwrap_or(""),
@@ -404,7 +400,7 @@ pub(crate) fn emit_idea_card_hoi4yaml(out: &mut String, card: &Card, idea_id: &s
     let modifier_lines =
         concrete_suggestion_lines(&suggestions, &["idea_modifier", "idea_modifier_candidate"]);
     out.push_str(&format!("    {}:\n", yaml_key(idea_id)));
-    out.push_str(&format!("      picture: {}\n", yaml_string(picture)));
+    out.push_str(&format!("      picture: {}\n", yaml_string(&picture)));
     emit_hoi4_assignment_lines_as_yaml(out, "      ", &field_lines);
     out.push_str("      modifier:\n");
     if modifier_lines.is_empty() {

@@ -47,7 +47,7 @@ National focuses do not carry long-term modifiers directly. If a focus creates a
 目标：SOV
 效果：稳定度+5%，建造速度+5%，消费品工厂-3%
 移除：不可手动移除
-图标：GFX_idea_nep_revival
+图标：nep_revival
 描述：市场活力重新回到苏维埃经济之中。
 ```
 

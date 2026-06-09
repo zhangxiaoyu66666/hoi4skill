@@ -52,10 +52,12 @@ pub(crate) fn prepare_edit_context_markdown(
     max_context_files: usize,
 ) -> Result<String, String> {
     let resolved = resolve_mod_root(mod_input)?;
-    let request_text = workflow_input_text_from_path(input, sheet, tag, prefix)?;
+    let workflow_input = workflow_input_from_path(input, sheet, tag, prefix)?;
+    let request_text = &workflow_input.text;
     let knowledge_json = mod_knowledge_json(&resolved, max_items, max_sprites, dependency_roots)?;
-    let workflow_json = run_workflow_json(
-        &request_text,
+    let workflow_json = run_workflow_json_with_focus_layout(
+        request_text,
+        workflow_input.focus_layout.as_ref(),
         Some(&resolved.root),
         tag,
         prefix,
@@ -68,10 +70,10 @@ pub(crate) fn prepare_edit_context_markdown(
     let anti_hallucination_rules =
         json_string_array_field(&knowledge_json, "anti_hallucination_rules");
     let unknown_facts =
-        edit_context_unknown_facts(&request_text, &knowledge_json, dependency_roots, game_index);
+        edit_context_unknown_facts(request_text, &knowledge_json, dependency_roots, game_index);
     let blocked = edit_context_blocked_until_verified(&unknown_facts, &workflow_json);
     let write_gate = edit_context_write_gate(
-        &request_text,
+        request_text,
         &knowledge_json,
         dependency_roots,
         game_index,
@@ -105,7 +107,7 @@ pub(crate) fn prepare_edit_context_markdown(
     out.push('\n');
     out.push_str(&markdown_fence(
         "text",
-        truncate_chars(&request_text, 18_000).as_str(),
+        truncate_chars(request_text, 18_000).as_str(),
     ));
 
     out.push_str("\n## Write Gate\n\n");
@@ -456,7 +458,7 @@ pub(crate) fn edit_context_unknown_facts(
         facts.push("history/state/province/capital facts require `plan-history-edit`, indexed game/dependency roots, or explicit user-provided IDs before direct history writes".to_string());
     }
     if mentions_icons && game_index.is_none() {
-        facts.push("game/dependency icon index was not built; focus icons may use only locally observed sprites or `GFX_goal_unknown`".to_string());
+        facts.push("game/dependency icon index was not built; focus icons and idea pictures may use only locally observed registrations, with `GFX_goal_unknown` as the focus fallback".to_string());
     }
     if mentions_country_or_leader && no_dependency_roots {
         facts.push("country/leader syntax for dependency-provided content is unknown until dependency roots are indexed".to_string());
@@ -480,7 +482,7 @@ fn edit_context_verification_steps(missing_evidence: &[String]) -> Vec<String> {
         } else if fact.contains("submod dependencies") || fact.contains("country/leader syntax") {
             steps.push("rerun `prepare-edit-context` with each dependency launcher/root supplied through `--mod-path`".to_string());
         } else if fact.contains("icon index") {
-            steps.push("supply `--game-root` or verify the exact `GFX_goal*` sprite in local/dependency `interface/*.gfx`; otherwise keep `GFX_goal_unknown`".to_string());
+            steps.push("supply `--game-root` or verify the exact `GFX_goal*` / `GFX_idea_*` registration in local/dependency `interface/*.gfx`; idea blocks must omit the `GFX_idea_` prefix".to_string());
         } else if fact.contains("technology") {
             steps.push("supply `--game-root` so technologies, categories, equipment, and modifiers are checked against an index".to_string());
         } else if fact.contains("descriptor.mod") {
@@ -507,7 +509,7 @@ pub(crate) fn edit_context_blocked_until_verified(
         } else if fact.contains("submod dependencies") {
             blocked.push("Do not reference inherited dependency tags, sprites, scripted values, technologies, or state/province IDs until dependency roots are indexed.".to_string());
         } else if fact.contains("icon index") {
-            blocked.push("Do not invent `GFX_goal*` icon names; use verified local/indexed sprites or `GFX_goal_unknown`.".to_string());
+            blocked.push("Do not invent `GFX_goal*` or `GFX_idea_*` names; use verified local/indexed registrations, reference ideas without the `GFX_idea_` prefix, or use `GFX_goal_unknown` for an unresolved focus icon.".to_string());
         } else if fact.contains("technology") {
             blocked.push("Do not use unindexed technology/equipment/category/modifier IDs as confirmed facts.".to_string());
         } else if fact.contains("descriptor.mod") {
