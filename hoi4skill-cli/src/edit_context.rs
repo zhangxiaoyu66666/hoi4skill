@@ -28,6 +28,7 @@ pub(crate) fn cmd_prepare_edit_context(args: &[String]) -> Result<(), String> {
         prefix,
         sheet,
         tree_id,
+        value(&map, "request"),
         &dependency_roots,
         game_index.as_ref(),
         max_items,
@@ -45,6 +46,7 @@ pub(crate) fn prepare_edit_context_markdown(
     prefix: &str,
     sheet: Option<&str>,
     tree_id: Option<&str>,
+    explicit_request: Option<&str>,
     dependency_roots: &[PathBuf],
     game_index: Option<&GameIndex>,
     max_items: usize,
@@ -52,7 +54,8 @@ pub(crate) fn prepare_edit_context_markdown(
     max_context_files: usize,
 ) -> Result<String, String> {
     let resolved = resolve_mod_root(mod_input)?;
-    let workflow_input = workflow_input_from_path(input, sheet, tag, prefix)?;
+    let mut workflow_input = workflow_input_from_path(input, sheet, tag, prefix)?;
+    append_explicit_request(&mut workflow_input, explicit_request);
     let request_text = &workflow_input.text;
     let knowledge_json = mod_knowledge_json(&resolved, max_items, max_sprites, dependency_roots)?;
     let workflow_json = run_workflow_json_with_focus_layout(
@@ -74,11 +77,18 @@ pub(crate) fn prepare_edit_context_markdown(
     let blocked = edit_context_blocked_until_verified(&unknown_facts, &workflow_json);
     let write_gate = edit_context_write_gate(
         request_text,
+        workflow_input.focus_layout.is_some(),
         &knowledge_json,
         dependency_roots,
         game_index,
         &unknown_facts,
         &workflow_json,
+    );
+    let scope_contract = requirement_scope_contract(
+        request_text,
+        workflow_input.focus_layout.is_some(),
+        tag,
+        prefix,
     );
     let excerpts = edit_context_file_excerpts(&resolved.root, max_context_files)?;
 
@@ -109,6 +119,33 @@ pub(crate) fn prepare_edit_context_markdown(
         "text",
         truncate_chars(request_text, 18_000).as_str(),
     ));
+
+    out.push_str("\n## Requirement Scope Contract\n\n");
+    out.push_str("- rule: this section is the complete file-creation boundary; a new mod does not authorize unrelated systems.\n");
+    out.push_str(&format!(
+        "- authorized_systems: {}\n",
+        list_or_none(&scope_contract.authorized_systems, 50)
+    ));
+    out.push_str(&format!(
+        "- minimum_events: {}\n",
+        scope_contract
+            .minimum_events
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "not requested".to_string())
+    ));
+    out.push_str(&format!(
+        "- minimum_national_spirits: {}\n",
+        scope_contract
+            .minimum_ideas
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "not requested".to_string())
+    ));
+    out.push_str("\n### Planned Files\n\n");
+    push_markdown_list(&mut out, &scope_contract.planned_files);
+    out.push_str("\n### Forbidden Without Explicit Request\n\n");
+    push_markdown_list(&mut out, &scope_contract.forbidden_without_explicit_request);
+    out.push_str("\n### Scope Rules\n\n");
+    push_markdown_list(&mut out, &scope_contract.rules);
 
     out.push_str("\n## Write Gate\n\n");
     out.push_str(&format!("- status: `{}`\n", write_gate.status));
@@ -279,6 +316,7 @@ pub(crate) fn edit_context_file_excerpts(
 
 pub(crate) fn edit_context_write_gate(
     request_text: &str,
+    supplied_focus_layout: bool,
     knowledge_json: &str,
     dependency_roots: &[PathBuf],
     game_index: Option<&GameIndex>,
@@ -290,8 +328,20 @@ pub(crate) fn edit_context_write_gate(
     let event_text = extract_card_text(request_text, &["事件"]);
     let feature_cards = parse_cards(&feature_text, FEATURE_CARD_HEADERS);
     let event_cards = parse_cards(&event_text, &["事件"]);
-    let has_focus_layout = !focus_text.trim().is_empty();
-    let detected_sections = usize::from(has_focus_layout) + feature_cards.len() + event_cards.len();
+    let has_focus_layout = supplied_focus_layout || !focus_text.trim().is_empty();
+    let scope_contract =
+        requirement_scope_contract(request_text, has_focus_layout, "TAG", "feature");
+    let scope_wants_ideas = scope_contract
+        .authorized_systems
+        .iter()
+        .any(|system| system == "national_spirits");
+    let scope_wants_events = scope_contract
+        .authorized_systems
+        .iter()
+        .any(|system| system == "events");
+    let detected_sections = usize::from(has_focus_layout)
+        + usize::from(scope_wants_ideas || !feature_cards.is_empty())
+        + usize::from(scope_wants_events || !event_cards.is_empty());
     let is_submod = knowledge_json.contains("\"kind\": \"submod\"");
     let unknown_descriptor = knowledge_json.contains("\"kind\": \"unknown_no_descriptor\"");
 
@@ -375,9 +425,19 @@ pub(crate) fn edit_context_write_gate(
             _ => {}
         }
     }
-    if !event_cards.is_empty() {
+    if scope_wants_ideas
+        && !allowed_edit_surface
+            .iter()
+            .any(|surface| surface.starts_with("common/ideas"))
+    {
         allowed_edit_surface.push(
-            "events and localisation for parsed event cards and verified namespaces only"
+            "common/ideas and Simplified Chinese localisation for explicitly requested national spirits only"
+                .to_string(),
+        );
+    }
+    if scope_wants_events || !event_cards.is_empty() {
+        allowed_edit_surface.push(
+            "events and Simplified Chinese localisation for explicitly requested events and verified namespaces only"
                 .to_string(),
         );
     }

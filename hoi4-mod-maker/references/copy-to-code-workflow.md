@@ -40,6 +40,8 @@ hoi4skill run-workflow --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_
 
 For spreadsheet input, the workbook is the layout authority. Cell titles and occupied coordinates are immutable: do not rewrite focus names, split or merge cells, invent extra focuses, remove focuses, or aesthetically recenter rows. Use the structured layout carried by `run-workflow` or call `apply-focus-excel`; do not rebuild the tree manually from the Markdown preview. The generated layout anchors every later focus to the opening focus with an offset. Never use a parent as `relative_position_id` while also copying the worksheet's absolute `x/y`, because HOI4 will compound the offset and spread deeper branches apart.
 
+The national-focus tree header is fixed: `country = { factor = 0 modifier = { add = 10 tag = <TAG> } }`. Do not simplify it to `country = <TAG>` and do not add `default_focus`; those forms prevent this generated tree from being selected correctly.
+
 `mod-knowledge` creates the pre-edit dossier: standalone/submod classification, descriptor/launcher metadata, dependency names, dependency roots supplied with `--mod-path`, observed tags, focus trees, namespaces, localisation style, decision categories, idea pictures, GFX sprites, and model-readable `markdown_summary`. Treat missing facts as unknown, not as permission to invent.
 
 When `--game-root` is supplied, `prepare-edit-context` also includes indexed game/dependency resources: focus goal sprites, national-spirit idea pictures, event pictures, decision icons, decision-category pictures, leader portraits, country tags, and ideologies. Use these lists as the verified art/source catalog before writing. Match icons and portraits by the feature meaning, not by a fixed demo list: ideology families include communist/socialist/soviet, democratic/liberal/parliament/election, fascist/nazi, monarchist/royal/kaiser/tsar, non-aligned/neutral/junta, anarchist/syndicalist; country and region words should bias toward matching tags/names; leader portraits should also match leader role words such as president, chairman, king, emperor, general, marshal, minister, or advisor.
@@ -146,7 +148,9 @@ Persistent-effect routing rule:
 
 ## File Plan Rules
 
-Prefer adding small files over editing large copied vanilla files.
+Prefer the smallest requirement-complete file set. Reuse an existing canonical file when safe; in a new mod, create only the systems explicitly requested plus descriptors, required localisation, and unavoidable runtime wiring.
+
+Before writing, freeze an exact file manifest. "Create a new mod" does not authorize country definitions, country history, initial units, characters, English localisation, states, decisions, technologies, GUI, or empty placeholder files. These require explicit user wording or verified runtime necessity.
 
 For country and leader work, standalone mods default to modern `common/characters` plus `recruit_character`; submods follow the dependency mod's observed syntax from `mod_knowledge.json` and `--mod-path`.
 
@@ -165,9 +169,11 @@ Use existing files when:
 
 Create new files when:
 
+- the file's system is explicitly authorized by the requirement scope,
 - no safe existing file matches,
-- the feature is independent,
-- editing a huge inherited file would make review risky.
+- the file is required for runtime wiring or requested localisation.
+
+Do not create a file solely because it is common in a generic "full mod structure".
 
 ## ID And Localisation Rules
 

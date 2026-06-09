@@ -8,6 +8,16 @@ pub(crate) struct WorkflowInput {
     pub(crate) focus_layout: Option<FocusLayout>,
 }
 
+#[derive(Clone)]
+pub(crate) struct RequirementScopeContract {
+    pub(crate) authorized_systems: Vec<String>,
+    pub(crate) minimum_events: Option<usize>,
+    pub(crate) minimum_ideas: Option<usize>,
+    pub(crate) planned_files: Vec<String>,
+    pub(crate) forbidden_without_explicit_request: Vec<String>,
+    pub(crate) rules: Vec<String>,
+}
+
 pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let input = normalize_path(&require_value(&map, "input")?)?;
@@ -26,7 +36,8 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during workflow generation".to_string());
     }
-    let workflow_input = workflow_input_from_path(&input, sheet, tag, prefix)?;
+    let mut workflow_input = workflow_input_from_path(&input, sheet, tag, prefix)?;
+    append_explicit_request(&mut workflow_input, value(&map, "request"));
     let json = run_workflow_json_with_focus_layout(
         &workflow_input.text,
         workflow_input.focus_layout.as_ref(),
@@ -38,6 +49,18 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
         game_index.as_ref(),
     )?;
     write_or_print(&json, value(&map, "output"))
+}
+
+pub(crate) fn append_explicit_request(input: &mut WorkflowInput, request: Option<&str>) {
+    let Some(request) = request.map(str::trim).filter(|value| !value.is_empty()) else {
+        return;
+    };
+    input.text.push_str(
+        "\n\n## Explicit User Requirement Contract\n\n\
+The following text is the user's literal scope. It may authorize additional systems, but it does not authorize unrelated systems.\n\n",
+    );
+    input.text.push_str(request);
+    input.text.push('\n');
 }
 
 pub(crate) fn workflow_input_from_path(
@@ -1065,6 +1088,7 @@ pub(crate) fn run_workflow_json_with_focus_layout(
         }
     }
     let has_focus_layout = focus_layout.is_some();
+    let scope_contract = requirement_scope_contract(text, has_focus_layout, tag, prefix);
     let focus_plan = focus_layout
         .as_ref()
         .map(|layout| focus_layout_json(layout, tag, prefix));
@@ -1137,6 +1161,10 @@ pub(crate) fn run_workflow_json_with_focus_layout(
         event_cards.len()
     ));
     out.push_str(&format!(
+        "  \"scope_contract\": {},\n",
+        requirement_scope_contract_json(&scope_contract)
+    ));
+    out.push_str(&format!(
         "  \"plans\": {{\"focus_layout\": {}, \"feature_cards\": {}, \"event_cards\": {}}},\n",
         json_optional_raw(focus_plan.as_deref()),
         json_optional_raw(feature_plan.as_deref()),
@@ -1153,6 +1181,209 @@ pub(crate) fn run_workflow_json_with_focus_layout(
     out.push_str(&format!("  \"next_steps\": {}\n", json_array(&next_steps)));
     out.push_str("}\n");
     Ok(out)
+}
+
+pub(crate) fn requirement_scope_contract(
+    text: &str,
+    has_focus_layout: bool,
+    tag: &str,
+    prefix: &str,
+) -> RequirementScopeContract {
+    let lower = text.to_ascii_lowercase();
+    let wants_focus = has_focus_layout || text.contains("国策") || lower.contains("focus");
+    let wants_events = text.contains("事件") || lower.contains("event");
+    let wants_ideas =
+        text.contains("民族精神") || lower.contains("national spirit") || lower.contains("idea");
+    let wants_country_creation = contains_any(
+        text,
+        &["创建国家", "新国家", "国家TAG", "国家tag", "country tag"],
+    );
+    let wants_country_history = contains_any(text, &["国家历史", "history/countries", "开局政治"]);
+    let wants_units = contains_any(
+        text,
+        &["初始军队", "初始部队", "部队编制", "history/units", "oob"],
+    );
+    let wants_characters = contains_any(
+        text,
+        &["创建领袖", "创建领导人", "创建人物", "common/characters"],
+    );
+    let wants_english = contains_any(text, &["英文本地化", "英文翻译", "localisation/english"]);
+    let wants_states = contains_any(text, &["history/states", "州历史", "修改州", "修改省份"]);
+    let wants_decisions = text.contains("决议") || lower.contains("decision");
+    let wants_technology = text.contains("科技") || lower.contains("technology");
+    let wants_gui = lower.contains("gui") || text.contains("特殊界面");
+
+    let mut authorized_systems = Vec::new();
+    let mut planned_files = Vec::new();
+    if text.contains("mod") || text.contains("MOD") || text.contains("模组") {
+        authorized_systems.push("new_mod_descriptor".to_string());
+        planned_files.push("descriptor.mod (and launcher-side .mod when requested)".to_string());
+    }
+    if wants_focus {
+        authorized_systems.push("national_focus".to_string());
+        planned_files.push(format!("common/national_focus/{prefix}_focus.txt"));
+    }
+    if wants_ideas {
+        authorized_systems.push("national_spirits".to_string());
+        planned_files.push(format!("common/ideas/{prefix}_ideas.txt"));
+    }
+    if wants_events {
+        authorized_systems.push("events".to_string());
+        planned_files.push(format!("events/{prefix}_events.txt"));
+    }
+    if wants_focus || wants_ideas || wants_events {
+        authorized_systems.push("simplified_chinese_localisation".to_string());
+        planned_files.push(format!(
+            "localisation/simp_chinese/{}_l_simp_chinese.yml",
+            tag.to_ascii_uppercase()
+        ));
+    }
+    for (wanted, system, file) in [
+        (
+            wants_country_creation,
+            "country_definition",
+            "common/country_tags and common/countries",
+        ),
+        (
+            wants_country_history,
+            "country_history",
+            "history/countries",
+        ),
+        (wants_units, "initial_units", "history/units"),
+        (wants_characters, "characters", "common/characters"),
+        (
+            wants_english,
+            "english_localisation",
+            "localisation/english",
+        ),
+        (wants_states, "state_history", "history/states"),
+        (wants_decisions, "decisions", "common/decisions"),
+        (wants_technology, "technologies", "common/technologies"),
+        (
+            wants_gui,
+            "custom_gui",
+            "common/scripted_guis and interface",
+        ),
+    ] {
+        if wanted {
+            authorized_systems.push(system.to_string());
+            planned_files.push(file.to_string());
+        }
+    }
+
+    let mut forbidden_without_explicit_request = Vec::new();
+    for (wanted, path) in [
+        (
+            wants_country_creation,
+            "common/country_tags and common/countries (do not redefine an existing vanilla tag)",
+        ),
+        (wants_country_history, "history/countries"),
+        (wants_units, "history/units"),
+        (wants_characters, "common/characters"),
+        (wants_english, "localisation/english"),
+        (wants_states, "history/states"),
+        (wants_decisions, "common/decisions"),
+        (wants_technology, "common/technologies"),
+        (wants_gui, "common/scripted_guis and interface/*.gui"),
+    ] {
+        if !wanted {
+            forbidden_without_explicit_request.push(path.to_string());
+        }
+    }
+
+    authorized_systems.sort();
+    authorized_systems.dedup();
+    planned_files.sort();
+    planned_files.dedup();
+    forbidden_without_explicit_request.sort();
+    forbidden_without_explicit_request.dedup();
+
+    RequirementScopeContract {
+        authorized_systems,
+        minimum_events: requested_minimum(text, &["事件", "event", "events"]),
+        minimum_ideas: requested_minimum(
+            text,
+            &[
+                "民族精神",
+                "national spirit",
+                "national spirits",
+                "idea",
+                "ideas",
+            ],
+        ),
+        planned_files,
+        forbidden_without_explicit_request,
+        rules: vec![
+            "A new mod authorizes a new folder, not every HOI4 subsystem.".to_string(),
+            "Create only files required by explicit requirements or unavoidable runtime wiring."
+                .to_string(),
+            "Do not create empty placeholder files or speculative country/history/unit/character files."
+                .to_string(),
+            "Do not rename, paraphrase, add, remove, or aesthetically rearrange spreadsheet focuses."
+                .to_string(),
+            "Every referenced sprite, modifier, technology, equipment, sub-unit, state, and province must be locally observed or game/dependency indexed."
+                .to_string(),
+            "Warnings about unresolved game resources are unfinished work; do not report validation success until indexed validation is clean."
+                .to_string(),
+        ],
+    }
+}
+
+fn requested_minimum(text: &str, nouns: &[&str]) -> Option<usize> {
+    let lower = text.to_ascii_lowercase();
+    for noun in nouns {
+        let noun = noun.to_ascii_lowercase();
+        let Some(position) = lower.find(&noun) else {
+            continue;
+        };
+        let before = lower[..position]
+            .chars()
+            .rev()
+            .take(16)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect::<String>();
+        let after = lower[position + noun.len()..]
+            .chars()
+            .take(24)
+            .collect::<String>();
+        let after_digits = after
+            .split(|ch: char| !ch.is_ascii_digit())
+            .filter(|part| !part.is_empty())
+            .filter_map(|part| part.parse::<usize>().ok())
+            .collect::<Vec<_>>();
+        if let Some(value) = after_digits.first() {
+            return Some(*value);
+        }
+        let before_digits = before
+            .split(|ch: char| !ch.is_ascii_digit())
+            .filter(|part| !part.is_empty())
+            .filter_map(|part| part.parse::<usize>().ok())
+            .collect::<Vec<_>>();
+        if let Some(value) = before_digits.last() {
+            return Some(*value);
+        }
+    }
+    None
+}
+
+pub(crate) fn requirement_scope_contract_json(scope: &RequirementScopeContract) -> String {
+    format!(
+        "{{\"minimal_modification\": true, \"authorized_systems\": {}, \"minimums\": {{\"events\": {}, \"national_spirits\": {}}}, \"planned_files\": {}, \"forbidden_without_explicit_request\": {}, \"rules\": {}}}",
+        json_array(&scope.authorized_systems),
+        scope
+            .minimum_events
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        scope
+            .minimum_ideas
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "null".to_string()),
+        json_array(&scope.planned_files),
+        json_array(&scope.forbidden_without_explicit_request),
+        json_array(&scope.rules)
+    )
 }
 
 pub(crate) fn focus_layout_json(layout: &FocusLayout, tag: &str, prefix: &str) -> String {

@@ -1264,6 +1264,8 @@ pub(crate) fn check_national_focus_fields(path: &Path, text: &str, reporter: &mu
         "dynamic",
     ];
 
+    check_focus_tree_country_selectors(path, text, reporter);
+
     for block in blocks_named(text, "focus") {
         let focus_id = block_assignment(&block, "id").unwrap_or_else(|| "<unknown>".to_string());
         if is_position_fallback_focus_id(&focus_id) {
@@ -1285,6 +1287,58 @@ pub(crate) fn check_national_focus_fields(path: &Path, text: &str, reporter: &mu
                     path.display()
                 ));
             }
+        }
+    }
+}
+
+pub(crate) fn check_focus_tree_country_selectors(path: &Path, text: &str, reporter: &mut Reporter) {
+    for tree in blocks_named(text, "focus_tree") {
+        let tree_id = block_assignment(&tree, "id").unwrap_or_else(|| "<unknown>".to_string());
+        if block_assignment(&tree, "default_focus").is_some() {
+            reporter.error(format!(
+                "{}: focus_tree {tree_id} uses unsupported `default_focus`; remove it",
+                path.display()
+            ));
+        }
+
+        let scalar_country = direct_assignment_value(&tree, "country")
+            .filter(|value| *value != "{")
+            .map(str::to_string);
+        if let Some(value) = scalar_country {
+            reporter.error(format!(
+                "{}: focus_tree {tree_id} must use `country = {{ factor = 0 modifier = {{ add = 10 tag = <TAG> }} }}`; scalar `country = {value}` is not loadable",
+                path.display()
+            ));
+            continue;
+        }
+
+        let countries = blocks_named(&tree, "country");
+        if countries.len() != 1 {
+            reporter.error(format!(
+                "{}: focus_tree {tree_id} must use exactly one `country = {{ factor = 0 modifier = {{ add = 10 tag = <TAG> }} }}` selector",
+                path.display()
+            ));
+            continue;
+        }
+
+        let country = &countries[0];
+        let modifiers = blocks_named(country, "modifier");
+        let factor = block_assignment(country, "factor");
+        let add = modifiers
+            .first()
+            .and_then(|modifier| block_assignment(modifier, "add"));
+        let tag = modifiers
+            .first()
+            .and_then(|modifier| block_assignment(modifier, "tag"));
+        if factor.as_deref() != Some("0")
+            || modifiers.len() != 1
+            || add.as_deref() != Some("10")
+            || !tag.as_deref().is_some_and(looks_like_tag)
+        {
+            reporter.error(format!(
+                "{}: focus_tree {tree_id} has an invalid country selector; use exactly `country = {{ factor = 0 modifier = {{ add = 10 tag = <TAG> }} }}`",
+                path.display()
+            ));
         }
     }
 }

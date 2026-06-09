@@ -43,14 +43,6 @@ pub(crate) fn scaffold_mod(
     fs::create_dir_all(mod_root).map_err(|e| format!("create {}: {e}", mod_root.display()))?;
 
     let mut created = Vec::new();
-    for rel in HOI4_PROFILE.default_mod_dirs {
-        let path = mod_root.join(rel);
-        if !path.exists() {
-            fs::create_dir_all(&path).map_err(|e| format!("create {}: {e}", path.display()))?;
-            created.push(path);
-        }
-    }
-
     let tag_values: Vec<String> = tags
         .split(',')
         .map(|s| s.trim().to_string())

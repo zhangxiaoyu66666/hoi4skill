@@ -10,33 +10,15 @@ pub struct ClausewitzGameProfile {
     pub id: &'static str,
     /// Human-readable game name for diagnostics.
     pub display_name: &'static str,
-    /// Directories created by a blank mod scaffold.
-    pub default_mod_dirs: &'static [&'static str],
     /// Event id limit when the game uses namespace-number event ids.
     pub event_id_max: Option<i64>,
 }
-
-pub const HOI4_DEFAULT_DIRS: &[&str] = &[
-    "common/decisions",
-    "common/decisions/categories",
-    "common/ideas",
-    "common/national_focus",
-    "common/scripted_effects",
-    "common/scripted_triggers",
-    "events",
-    "gfx/interface",
-    "history/countries",
-    "history/states",
-    "interface",
-    "localisation/simp_chinese",
-];
 
 pub const HOI4_EVENT_ID_MAX: i64 = 200_000;
 
 pub const HOI4_PROFILE: ClausewitzGameProfile = ClausewitzGameProfile {
     id: "hoi4",
     display_name: "Hearts of Iron IV",
-    default_mod_dirs: HOI4_DEFAULT_DIRS,
     event_id_max: Some(HOI4_EVENT_ID_MAX),
 };
 

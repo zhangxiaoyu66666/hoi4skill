@@ -5,13 +5,26 @@ description: Build, extend, and validate Hearts of Iron IV mod files from natura
 
 # HOI4 Mod Maker
 
+## Requirement Scope Contract
+
+Before planning files, copy the user's literal request into a scope contract. A request to create a new mod authorizes a new mod folder, not every HOI4 subsystem.
+
+- Authorize only systems named by the user or strictly required to wire those systems at runtime.
+- Print the exact planned file list before writing. Do not add a file that is absent from that list without new user authorization or verified runtime necessity.
+- Do not create empty placeholder files.
+- Do not redefine an existing vanilla country tag, create country history, initial units, characters/leaders, state history, decisions, technologies, GUI, or extra localisation languages merely because a new mod is being created.
+- A Chinese request authorizes Simplified Chinese localisation. English localisation requires an explicit request or an existing target-mod convention.
+- Counts such as "事件不少于4个" and "民族精神不少于5个" authorize those systems and set minimum counts; they do not authorize unrelated systems.
+- Spreadsheet focus titles and positions are immutable. Preserve names and geometry exactly; never "improve" them by renaming or aesthetic rearrangement.
+- Validation warnings about unresolved sprites, modifiers, technologies, equipment, sub-units, states, or provinces are unfinished work. Do not call them harmless and do not report success.
+
 ## Core Workflow
 
 Turn the user's mod idea into concrete HOI4 files, using the existing mod's style when a mod folder is present.
 
 1. Locate the target mod root.
    - Prefer the user's provided folder.
-   - If no folder exists, create a skeleton with `hoi4skill scaffold`.
+   - If no folder exists, create a minimal descriptor-only skeleton with `hoi4skill scaffold`; content writers create only the directories required by authorized systems.
    - Treat the folder containing `descriptor.mod` as the mod root.
 2. For existing mods, build a modification knowledge base before editing.
    - Run `hoi4skill mod-knowledge <mod-root-or-launcher.mod> --output mod_knowledge.json`.
@@ -19,10 +32,10 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - If it is a submod, pass available dependency roots with `--mod-path` before claiming inherited tags, sprites, technologies, scripted values, state/province IDs, or localisation exist.
    - Use `knowledge_base` and `markdown_summary` as the source of truth for ID prefixes, localisation languages, namespace names, focus tree style, decision category style, state/province facts, scripted helper files, and icon/GFX sprite style.
    - If the request says "一句话", infer sensible defaults instead of asking, unless the country/tag or feature target is impossible to infer.
-   - For any multi-system edit, also run `hoi4skill prepare-edit-context --input <copy.txt> --mod-root <mod-root> --tag <TAG> --prefix <prefix> --output edit_context.md` and read its `Write Gate` as the first model context block before writing code.
+   - For any multi-system edit, also run `hoi4skill prepare-edit-context --input <copy-or-workbook> --request "<literal user request>" --mod-root <mod-root> --tag <TAG> --prefix <prefix> --game-root <hoi4-root> --output edit_context.md` and read `Requirement Scope Contract` and `Write Gate` as the first model context blocks before writing code.
 3. Convert the request into a small implementation plan.
    - Name the feature.
-   - List touched systems such as focus, idea, event, decision, state, country history, technology, or localisation.
+   - List authorized systems and the exact planned files. Systems absent from the literal request are forbidden by default.
    - Pick stable IDs with a unique mod prefix.
    - For narrative or promotional prose, follow `references/copy-to-code-workflow.md` and translate the prose into a Feature Plan before writing files.
    - For plain-text national focus tree sketches, follow `references/focus-tree-layout.md`.
@@ -45,7 +58,8 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - For national-focus icons, first read the target mod/dependencies/game `interface/goals*.gfx` sprites through `mod-knowledge`, `build-game-index --game-root`, or `run-workflow/apply-focus-layout --game-root`; choose only verified focus icon sprite names such as `GFX_goal...` or `GFX_focus...` by matching the focus meaning. For national spirits, decisions, decision categories, events, and leader portraits, use the same verified-resource rule with `GFX_idea_*`, `GFX_decision_*`, `GFX_decision_category_*`, `GFX_report_event_*`, and `GFX_portrait_*` registrations. Match by ideology, country/region, role, and feature meaning; if no verified resource is available, use the documented fallback or report missing indexing instead of inventing a sprite key.
    - When `register-gfx-icons` sees a non-English/non-ASCII image filename, it automatically translates the local filename into a semantic English filename, renames the asset, updates matching `interface/*.gfx` texturefile references, and then registers sprites. If the filename is already English/ASCII, it is left unchanged. If the filename cannot be translated semantically, skip that image and report it in `skipped_assets` for the AI/user summary; never invent random names such as `SOV_12347.png`.
 6. Validate.
-   - Run `hoi4skill validate <mod-root>` after edits.
+   - Run `hoi4skill validate <mod-root> --game-root <hoi4-root>` after edits whenever the game installation is available.
+   - Treat unresolved-resource warnings as failures to finish, not as permission to claim success.
    - Also run any repo-specific checks if the mod provides them.
 7. After the mod is launched in HOI4, analyze `error.log`.
    - Run `hoi4skill analyze-error-log --input "<HOI4 user folder>\\logs\\error.log" --mod-root <mod-root> --output error_report.json`.
@@ -57,6 +71,7 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
 These are non-negotiable for AI-generated HOI4 content:
 
 - Generated focus IDs must use only ASCII letters, digits, and underscores. Before writing focuses, scan existing `common/national_focus/*.txt`; do not collide with any existing `focus = { id = ... }`. If an ID is taken, rename the generated focus with a stable numeric suffix and update prerequisites, mutual exclusions, and localisation keys to match.
+- Every `focus_tree` must use exactly `country = { factor = 0 modifier = { add = 10 tag = <TAG> } }`. Scalar forms such as `country = KOR` are not loadable here. Never emit `default_focus`; it is not part of this national-focus tree template.
 - National-focus mutual exclusion uses exactly `mutually_exclusive = { focus = <id> }`. Never write `mutual_exclusion`, `mutual_exclusive`, `mutually_exclusion`, or other approximate spellings.
 - All national-focus keys must use exact HOI4 field names. Never pluralize, shorten, translate, or approximate fields such as `prerequisite`, `relative_position_id`, `completion_reward`, `ai_will_do`, `cancel_if_invalid`, `continue_if_invalid`, or `available_if_capitulated`.
 - Event files must use exact structural fields too: top-level `add_namespace`, event `is_triggered_only`, `fire_only_once`, `mean_time_to_happen`, `immediate`, and `option`. Near-match spellings are fatal validation errors.

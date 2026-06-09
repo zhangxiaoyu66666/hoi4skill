@@ -785,6 +785,8 @@ pub(crate) fn mod_knowledge_rules(
     let mut rules = vec![
         "Before editing, read this knowledge_base and only use observed tags, namespaces, IDs, sprites, folders, and file conventions unless the user explicitly asks to create new ones.".to_string(),
         "If a fact is absent from the knowledge_base, report it as unknown instead of inventing it.".to_string(),
+        "A new mod authorizes a new folder, not every HOI4 subsystem; create only files directly required by the user's request or unavoidable runtime wiring.".to_string(),
+        "Do not create empty placeholder files, speculative country definitions, country history, initial units, characters, extra localisation languages, states, decisions, technologies, or GUI files unless explicitly requested.".to_string(),
         "Mod display names belong in descriptor.mod and the launcher-side .mod file; never create *_mod_name localisation keys.".to_string(),
         "Generated content must preserve nearby file style and must not overwrite unrelated existing files.".to_string(),
         "When creating a standalone mod country or country leader, prefer modern common/characters plus history recruit_character unless the user explicitly requests legacy create_country_leader.".to_string(),

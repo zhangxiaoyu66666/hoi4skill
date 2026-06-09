@@ -804,6 +804,86 @@ fn workflow_dry_run_detects_mixed_copy() {
 }
 
 #[test]
+fn requirement_scope_keeps_korean_revolution_prompt_narrow() {
+    let text = "依据钢铁雄心4技能去按照韩国之春.xlsx生成一个韩国革命的mod，事件不少于4个，民族精神不少于5个（不准用python），游戏时间是1936，是反抗日本的起义以后的国策";
+    let scope = requirement_scope_contract(text, true, "KOR", "kor_spring");
+    let json = requirement_scope_contract_json(&scope);
+
+    assert_eq!(scope.minimum_events, Some(4));
+    assert_eq!(scope.minimum_ideas, Some(5));
+    assert!(scope
+        .authorized_systems
+        .contains(&"national_focus".to_string()));
+    assert!(scope.authorized_systems.contains(&"events".to_string()));
+    assert!(scope
+        .authorized_systems
+        .contains(&"national_spirits".to_string()));
+    assert!(scope
+        .planned_files
+        .contains(&"common/national_focus/kor_spring_focus.txt".to_string()));
+    assert!(scope
+        .planned_files
+        .contains(&"common/ideas/kor_spring_ideas.txt".to_string()));
+    assert!(scope
+        .planned_files
+        .contains(&"events/kor_spring_events.txt".to_string()));
+    assert!(scope
+        .forbidden_without_explicit_request
+        .iter()
+        .any(|path| path.contains("common/country_tags")));
+    assert!(scope
+        .forbidden_without_explicit_request
+        .contains(&"history/countries".to_string()));
+    assert!(scope
+        .forbidden_without_explicit_request
+        .contains(&"history/units".to_string()));
+    assert!(scope
+        .forbidden_without_explicit_request
+        .contains(&"common/characters".to_string()));
+    assert!(scope
+        .forbidden_without_explicit_request
+        .contains(&"localisation/english".to_string()));
+    assert!(json.contains("\"events\": 4"));
+    assert!(json.contains("\"national_spirits\": 5"));
+}
+
+#[test]
+fn explicit_request_is_combined_with_structured_workbook_input() {
+    let layout = parse_focus_layout(
+        "朝鲜民族起义\n联络游击队   动员市民   工人起义\n",
+        "KOR",
+        "kor_spring",
+    );
+    let mut input = WorkflowInput {
+        text: "# Worksheet: Sheet1\n".to_string(),
+        focus_layout: Some(layout),
+    };
+    append_explicit_request(
+        &mut input,
+        Some("事件不少于4个，民族精神不少于5个，是反抗日本的起义以后的国策"),
+    );
+
+    let json = run_workflow_json_with_focus_layout(
+        &input.text,
+        input.focus_layout.as_ref(),
+        None,
+        "KOR",
+        "kor_spring",
+        None,
+        true,
+        None,
+    )
+    .unwrap();
+
+    assert!(input.text.contains("## Explicit User Requirement Contract"));
+    assert!(json.contains("\"focus_layout\": true"));
+    assert!(json.contains("\"events\": 4"));
+    assert!(json.contains("\"national_spirits\": 5"));
+    assert!(json.contains("history/countries"));
+    assert!(json.contains("localisation/english"));
+}
+
+#[test]
 fn prepare_edit_context_packages_model_preflight_context() {
     let root = unique_temp_dir("edit-context");
     fs::create_dir_all(root.join("common").join("national_focus")).unwrap();
@@ -844,6 +924,7 @@ fn prepare_edit_context_packages_model_preflight_context() {
         &root,
         "SOV",
         "sov_ctx",
+        None,
         None,
         None,
         &[],
@@ -1365,23 +1446,28 @@ fn scaffold_writes_mod_names_only_to_descriptors() {
         .join(format!("{mod_id}.mod"));
     let descriptor = fs::read_to_string(root.join("descriptor.mod")).unwrap();
     let launcher = fs::read_to_string(&launcher_path).unwrap();
-    let localisation_files = collect_files(&root.join("localisation")).unwrap();
-    let localisation_contains_mod_name = localisation_files.iter().any(|path| {
-        read_utf8_lossy(path)
-            .map(|text| text.contains("_mod_name"))
-            .unwrap_or(false)
-    });
     fs::remove_file(&launcher_path).unwrap();
-    fs::remove_dir_all(&root).unwrap();
 
     assert!(descriptor.contains("name=\"共和国一九七九：委员会民主\""));
     assert!(launcher.contains("name=\"共和国一九七九：委员会民主\""));
     assert!(launcher.contains("path="));
+    assert_eq!(
+        collect_files(&root)
+            .unwrap()
+            .iter()
+            .filter(|path| path.is_file())
+            .count(),
+        1
+    );
+    assert!(!root.join("common").exists());
+    assert!(!root.join("history").exists());
+    assert!(!root.join("interface").exists());
     assert!(!created.iter().any(|path| path
         .file_name()
         .and_then(OsStr::to_str)
         .is_some_and(|name| name.ends_with("_l_simp_chinese.yml"))));
-    assert!(!localisation_contains_mod_name);
+    assert!(!root.join("localisation").exists());
+    fs::remove_dir_all(&root).unwrap();
 }
 
 #[test]
@@ -4001,6 +4087,66 @@ focus = {
             && error.contains("unknown near-match field `mutual_exclusion`")
             && error.contains("exact HOI4 field `mutually_exclusive`")
     }));
+}
+
+#[test]
+fn validator_rejects_scalar_focus_country_and_default_focus() {
+    let path = Path::new("M:\\mod\\common\\national_focus\\bad_focus_tree.txt");
+    let text = r#"
+focus_tree = {
+	id = kor_spring_focus
+	country = KOR
+	default_focus = KOR_people_uprising
+	focus = {
+		id = KOR_people_uprising
+		icon = GFX_goal_unknown
+		x = 0
+		y = 0
+		cost = 10
+		ai_will_do = { factor = 100 }
+		available = { }
+		bypass = { }
+		cancel_if_invalid = yes
+		continue_if_invalid = no
+		available_if_capitulated = no
+		completion_reward = { }
+	}
+}
+"#;
+    let mut reporter = Reporter::default();
+
+    check_script_semantics(path, text, None, &mut reporter);
+
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|error| error.contains("scalar `country = KOR` is not loadable")));
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|error| error.contains("unsupported `default_focus`")));
+}
+
+#[test]
+fn validator_accepts_fixed_focus_country_selector() {
+    let path = Path::new("M:\\mod\\common\\national_focus\\good_focus_tree.txt");
+    let text = r#"
+focus_tree = {
+	id = kor_spring_focus
+	country = {
+		factor = 0
+		modifier = {
+			add = 10
+			tag = KOR
+		}
+	}
+}
+"#;
+    let mut reporter = Reporter::default();
+
+    check_script_semantics(path, text, None, &mut reporter);
+
+    assert!(reporter.errors.is_empty(), "{:?}", reporter.errors);
 }
 
 #[test]
