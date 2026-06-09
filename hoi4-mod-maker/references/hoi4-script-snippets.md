@@ -87,7 +87,7 @@ focus_tree = {
 		x = 0
 		y = 0
 		# relative_position_id = TAG_parent_focus
-		cost = 2.5
+		cost = <required 1..10; only exceed 10 when the user explicitly asked for a longer focus>
 		ai_will_do = {
 			factor = 10
 		}

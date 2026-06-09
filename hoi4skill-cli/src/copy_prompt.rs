@@ -958,7 +958,7 @@ pub(crate) fn render_focus_copy_card_prompts(cards: &[FocusCopyCard]) -> String 
         out.push_str("y = <use default template or user sketch>\n");
         out.push_str("prerequisite = {focus = }\n");
         out.push_str("relative_position_id =  #基于某个国策位置的相对位置\n");
-        out.push_str("cost = 2.5\n");
+        out.push_str("cost = <required 1..10; only exceed 10 when the user explicitly asked for a longer focus>\n");
         out.push_str("\t\tai_will_do = {\n");
         out.push_str("\t\t\tfactor = 100\n");
         out.push_str("\t\t}\n\n");

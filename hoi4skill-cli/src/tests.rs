@@ -1258,25 +1258,46 @@ fn register_gfx_icons_writes_all_ui_sprite_categories() {
     let categories = parse_gfx_registration_categories(Some("all")).unwrap();
     let report = register_gfx_icons(&root, "sov_nep", &categories).unwrap();
     let dynamic = root.join("interface").join("sov_nep_dynamic_icons.gfx");
+    let goals = root.join("interface").join("sov_nep_goals.gfx");
+    let goals_shine = root.join("interface").join("sov_nep_goals_shine.gfx");
     let focus_idea = root.join("interface").join("sov_nep_focus_idea_icons.gfx");
     let event = root.join("interface").join("sov_nep_event_pictures.gfx");
     let decision = root.join("interface").join("sov_nep_decision_pictures.gfx");
 
     assert_eq!(report.assets_scanned, 2);
-    assert_eq!(report.entries.len(), 12);
-    assert_eq!(report.changed_files.len(), 5);
+    assert_eq!(report.entries.len(), 14);
+    assert_eq!(report.changed_files.len(), 7);
     assert!(read_utf8_lossy(&dynamic)
         .unwrap()
         .contains(r#"name = "GFX_sov_nep_goals_sov_factory""#));
     assert!(read_utf8_lossy(&dynamic)
         .unwrap()
         .contains(r#"name = "GFX_sov_nep_goals_rebuild_southeast""#));
-    assert!(read_utf8_lossy(&focus_idea)
+    assert!(read_utf8_lossy(&goals).unwrap().contains("SpriteType = {"));
+    assert!(read_utf8_lossy(&goals)
         .unwrap()
         .contains(r#"name = "GFX_goal_sov_nep_goals_sov_factory""#));
+    assert!(read_utf8_lossy(&goals_shine)
+        .unwrap()
+        .contains(r#"name = "GFX_goal_sov_nep_goals_sov_factory_shine""#));
+    assert!(read_utf8_lossy(&goals_shine)
+        .unwrap()
+        .contains(r#"effectFile = "gfx/FX/buttonstate.lua""#));
+    assert!(read_utf8_lossy(&goals_shine)
+        .unwrap()
+        .contains("legacy_lazy_load = no"));
+    assert!(read_utf8_lossy(&goals_shine)
+        .unwrap()
+        .contains("animationrotation = -90.0"));
+    assert!(read_utf8_lossy(&goals_shine)
+        .unwrap()
+        .contains("animationrotation = 90.0"));
     assert!(read_utf8_lossy(&focus_idea)
         .unwrap()
         .contains(r#"name = "GFX_idea_sov_nep_goals_sov_factory""#));
+    assert!(read_utf8_lossy(&focus_idea)
+        .unwrap()
+        .contains("spriteType = {"));
     assert!(read_utf8_lossy(&event)
         .unwrap()
         .contains(r#"name = "GFX_report_event_sov_nep_goals_sov_factory""#));
@@ -1341,10 +1362,7 @@ fn register_gfx_icons_skips_untranslated_chinese_filename() {
     assert!(json.contains("\"assets_skipped\": 1"));
     assert!(json.contains("\"skipped_assets\""));
     assert!(unknown.exists());
-    assert!(!root
-        .join("interface")
-        .join("sov_nep_focus_idea_icons.gfx")
-        .exists());
+    assert!(!root.join("interface").join("sov_nep_goals.gfx").exists());
 
     fs::remove_dir_all(&root).unwrap();
 }
@@ -1391,7 +1409,7 @@ fn register_gfx_icons_reverse_lookups_and_renames_name_conflicts() {
         .unwrap_or("")
         .contains("other.png"));
     assert!(
-        read_utf8_lossy(&root.join("interface").join("sov_nep_focus_idea_icons.gfx"))
+        read_utf8_lossy(&root.join("interface").join("sov_nep_goals.gfx"))
             .unwrap()
             .contains(r#"name = "GFX_goal_sov_nep_goals_factory_2""#)
     );
@@ -1425,6 +1443,37 @@ fn block_scanner_handles_multibyte_text_before_closing_brace() {
         block_assignment(&blocks[1], "id").as_deref(),
         Some("CPC_next")
     );
+}
+
+#[test]
+fn sprite_type_blocks_accept_uppercase_and_lowercase_forms() {
+    let text = "spriteType = { name = \"GFX_lower\" texturefile = \"gfx/interface/lower.png\" }\nSpriteType = { name = \"GFX_upper\" texturefile = \"gfx/interface/upper.png\" }\n";
+    let blocks = sprite_type_blocks(text);
+    let mut names = blocks
+        .iter()
+        .filter_map(|block| block_assignment(block, "name"))
+        .collect::<Vec<_>>();
+    names.sort();
+
+    assert_eq!(
+        names,
+        vec!["GFX_lower".to_string(), "GFX_upper".to_string()]
+    );
+}
+
+#[test]
+fn render_sprite_type_block_uses_dynamic_gui_meter_template() {
+    let block = render_sprite_type_block(
+        "GFX_CPC_KMT_paranoia_meter",
+        "gfx/interface/paranoia/CPC_KMT_paranoia_meter.dds",
+        "paranoia meter",
+        GfxSpriteRenderKind::DynamicGui,
+    );
+
+    assert!(block.contains("spriteType = {"));
+    assert!(block.contains("legacy_lazy_load = no"));
+    assert!(block.contains("noOfFrames = 21"));
+    assert!(block.contains(r#"name = "GFX_CPC_KMT_paranoia_meter""#));
 }
 
 #[test]
@@ -1907,7 +1956,7 @@ fn apply_focus_layout_writes_focus_tree_and_localisation() {
     assert!(focus_file.contains("focus = {"));
     assert!(focus_file.contains("id = SOV_first_five_year_plan"));
     assert!(focus_file.contains("prerequisite = { focus = SOV_stalin_constitution }"));
-    assert!(focus_file.contains("cost = 2.5"));
+    assert!(focus_file.contains("cost = 10"));
     assert!(focus_file.contains("ai_will_do = {\n\t\t\tfactor = 100\n\t\t}"));
     assert!(focus_file.contains("available = {\n\t\t}"));
     assert!(focus_file.contains("bypass = {\n\t\t}"));
@@ -1967,7 +2016,7 @@ fn focus_excel_reads_drawn_tree_and_renders_standard_skeleton() {
     assert!(tree.contains("icon = GFX_goal_generic_construct_civ_factory"));
     assert!(tree.contains("x = -2"));
     assert!(tree.contains("relative_position_id = SOV_rebuild_committee"));
-    assert!(tree.contains("cost = 2.5"));
+    assert!(tree.contains("cost = 10"));
     assert!(tree.contains("factor = 100"));
     assert!(tree.contains("available = {\n\t\t}"));
     assert!(tree.contains("bypass = {\n\t\t}"));
@@ -2687,7 +2736,7 @@ fn validator_errors_for_unknown_indexed_focus_and_symbols() {
     .unwrap();
     fs::write(
         focus_dir.join("bad_focus.txt"),
-        "focus_tree = {\n\tid = bad_tree\n\tcountry = { factor = 0 modifier = { add = 10 tag = SOV } }\n\tfocus = {\n\t\tid = SOV_real_focus\n\t\ticon = GFX_missing_icon\n\t\tx = 0\n\t\ty = 0\n\t\tprerequisite = { focus = SOV_missing_parent }\n\t\trelative_position_id = SOV_missing_relative\n\t\tcost = 2.5\n\t\tai_will_do = { factor = 100 }\n\t\tavailable = { ideology = mystery_ideology }\n\t\tbypass = { has_idea = mystery_idea }\n\t\tcancel_if_invalid = yes\n\t\tcontinue_if_invalid = no\n\t\tavailable_if_capitulated = no\n\t\tcompletion_reward = { set_technology = { mystery_tech = 1 } }\n\t}\n}\n",
+        "focus_tree = {\n\tid = bad_tree\n\tcountry = { factor = 0 modifier = { add = 10 tag = SOV } }\n\tfocus = {\n\t\tid = SOV_real_focus\n\t\ticon = GFX_missing_icon\n\t\tx = 0\n\t\ty = 0\n\t\tprerequisite = { focus = SOV_missing_parent }\n\t\trelative_position_id = SOV_missing_relative\n\t\tcost = 10\n\t\tai_will_do = { factor = 100 }\n\t\tavailable = { ideology = mystery_ideology }\n\t\tbypass = { has_idea = mystery_idea }\n\t\tcancel_if_invalid = yes\n\t\tcontinue_if_invalid = no\n\t\tavailable_if_capitulated = no\n\t\tcompletion_reward = { set_technology = { mystery_tech = 1 } }\n\t}\n}\n",
     )
     .unwrap();
     let mut index = GameIndex::default();

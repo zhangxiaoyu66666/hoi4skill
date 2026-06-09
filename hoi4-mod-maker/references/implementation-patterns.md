@@ -43,8 +43,8 @@ Minimal pieces:
     `y = ...`
     `prerequisite = { focus = ... }`
     `relative_position_id = ...`
-    `cost = 2.5`
-    `ai_will_do = { factor = 10 }`
+    `cost = <required 1..10; only exceed 10 when the user explicitly asked for a longer focus>`
+    `ai_will_do = { factor = 100 }`
     `available = { }`
     `bypass = { }`
     `cancel_if_invalid = yes`

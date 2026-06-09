@@ -904,7 +904,7 @@ pub(crate) fn render_focus_block(focus: &FocusNode) -> String {
     } else {
         out.push_str("\t\t# relative_position_id = <focus id for relative placement>\n");
     }
-    out.push_str("\t\tcost = 2.5\n");
+    out.push_str("\t\tcost = 10\n");
     out.push_str("\t\tai_will_do = {\n\t\t\tfactor = 100\n\t\t}\n\n");
     out.push_str("\t\tavailable = {\n\t\t}\n\n");
     out.push_str("\t\tbypass = {\n\t\t}\n");

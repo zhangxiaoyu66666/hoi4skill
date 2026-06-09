@@ -192,7 +192,7 @@ focus = {
 	y = 0
 	# prerequisite = { focus = <parent focus id> }
 	# relative_position_id = <focus id for relative placement>
-	cost = 2.5
+	cost = <required 1..10; only exceed 10 when the user explicitly asked for a longer focus>
 	ai_will_do = {
 		factor = 100
 	}
@@ -218,7 +218,7 @@ focus = {
 	prerequisite = { focus = SOV_stalin_constitution }
 	mutually_exclusive = { focus = SOV_continue_nep }
 	relative_position_id = SOV_stalin_constitution
-	cost = 2.5
+	cost = <required 1..10; only exceed 10 when the user explicitly asked for a longer focus>
 	ai_will_do = {
 		factor = 100
 	}

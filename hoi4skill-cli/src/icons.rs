@@ -151,6 +151,15 @@ pub(crate) struct GfxSpriteTarget<'a> {
     pub(crate) category: &'a str,
     pub(crate) name_prefix: &'a str,
     pub(crate) file_suffix: &'a str,
+    pub(crate) render_kind: GfxSpriteRenderKind,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum GfxSpriteRenderKind {
+    DynamicGui,
+    StandardLower,
+    GoalUpper,
+    GoalShine,
 }
 
 pub(crate) const GFX_SPRITE_TARGETS: &[GfxSpriteTarget<'static>] = &[
@@ -158,31 +167,43 @@ pub(crate) const GFX_SPRITE_TARGETS: &[GfxSpriteTarget<'static>] = &[
         category: "dynamic_gui",
         name_prefix: "GFX",
         file_suffix: "dynamic_icons",
+        render_kind: GfxSpriteRenderKind::DynamicGui,
     },
     GfxSpriteTarget {
         category: "focus",
         name_prefix: "GFX_goal",
-        file_suffix: "focus_idea_icons",
+        file_suffix: "goals",
+        render_kind: GfxSpriteRenderKind::GoalUpper,
+    },
+    GfxSpriteTarget {
+        category: "focus_shine",
+        name_prefix: "GFX_goal",
+        file_suffix: "goals_shine",
+        render_kind: GfxSpriteRenderKind::GoalShine,
     },
     GfxSpriteTarget {
         category: "idea",
         name_prefix: "GFX_idea",
         file_suffix: "focus_idea_icons",
+        render_kind: GfxSpriteRenderKind::StandardLower,
     },
     GfxSpriteTarget {
         category: "event",
         name_prefix: "GFX_report_event",
         file_suffix: "event_pictures",
+        render_kind: GfxSpriteRenderKind::StandardLower,
     },
     GfxSpriteTarget {
         category: "decision",
         name_prefix: "GFX_decision",
         file_suffix: "decision_pictures",
+        render_kind: GfxSpriteRenderKind::StandardLower,
     },
     GfxSpriteTarget {
         category: "decision_category",
         name_prefix: "GFX_decision_category",
         file_suffix: "decision_pictures",
+        render_kind: GfxSpriteRenderKind::StandardLower,
     },
 ];
 
@@ -263,7 +284,12 @@ pub(crate) fn register_gfx_icons(
             if !target_enabled(target.category, categories) {
                 continue;
             }
-            let candidate = compose_sprite_name(target.name_prefix, prefix, &asset.base);
+            let base_name = compose_sprite_name(target.name_prefix, prefix, &asset.base);
+            let candidate = if matches!(target.render_kind, GfxSpriteRenderKind::GoalShine) {
+                format!("{base_name}_shine")
+            } else {
+                base_name
+            };
             let (sprite_name, status, conflict) =
                 reserve_sprite_name(&candidate, &texture_key, &lookup, &mut used_names);
             let file = root
@@ -272,7 +298,12 @@ pub(crate) fn register_gfx_icons(
             if status != "existing" {
                 blocks_by_file.entry(file.clone()).or_default().push((
                     sprite_name.clone(),
-                    render_sprite_type_block(&sprite_name, &asset.texturefile, &asset.remark),
+                    render_sprite_type_block(
+                        &sprite_name,
+                        &asset.texturefile,
+                        &asset.remark,
+                        target.render_kind,
+                    ),
                 ));
             }
             entries.push(GfxRegistrationEntry {
@@ -317,7 +348,7 @@ pub(crate) fn target_enabled(
 ) -> bool {
     match category {
         "dynamic_gui" => categories.contains(&GfxRegistrationCategory::Dynamic),
-        "focus" => categories.contains(&GfxRegistrationCategory::Focus),
+        "focus" | "focus_shine" => categories.contains(&GfxRegistrationCategory::Focus),
         "idea" => categories.contains(&GfxRegistrationCategory::Idea),
         "event" => categories.contains(&GfxRegistrationCategory::Event),
         "decision" | "decision_category" => categories.contains(&GfxRegistrationCategory::Decision),
@@ -925,14 +956,59 @@ pub(crate) fn reserve_sprite_name(
     }
 }
 
-pub(crate) fn render_sprite_type_block(name: &str, texturefile: &str, remark: &str) -> String {
-    format!(
-        "\t# source_texturefile = {}\n\t# {}\n\tspriteType = {{\n\t\tname = {}\n\t\ttexturefile = {}\n\t}}\n",
-        texturefile,
-        remark.replace('\n', " "),
-        hoi4_quote(name),
-        hoi4_quote(texturefile)
-    )
+pub(crate) fn render_sprite_type_block(
+    name: &str,
+    texturefile: &str,
+    remark: &str,
+    render_kind: GfxSpriteRenderKind,
+) -> String {
+    match render_kind {
+        GfxSpriteRenderKind::DynamicGui => {
+            let no_of_frames = dynamic_gui_frame_count(name, texturefile)
+                .map(|count| format!("\n\t\tnoOfFrames = {count}"))
+                .unwrap_or_default();
+            format!(
+                "\t# source_texturefile = {}\n\t# {}\n\tspriteType = {{\n\t\tname = {}\n\t\ttexturefile = {}\n\t\tlegacy_lazy_load = no{}\n\t}}\n",
+                texturefile,
+                remark.replace('\n', " "),
+                hoi4_quote(name),
+                hoi4_quote(texturefile),
+                no_of_frames
+            )
+        }
+        GfxSpriteRenderKind::StandardLower => format!(
+            "\t# source_texturefile = {}\n\t# {}\n\tspriteType = {{\n\t\tname = {}\n\t\ttexturefile = {}\n\t}}\n",
+            texturefile,
+            remark.replace('\n', " "),
+            hoi4_quote(name),
+            hoi4_quote(texturefile)
+        ),
+        GfxSpriteRenderKind::GoalUpper => format!(
+            "\t# source_texturefile = {}\n\t# {}\n\tSpriteType = {{\n\t\tname = {}\n\t\ttexturefile = {}\n\t}}\n",
+            texturefile,
+            remark.replace('\n', " "),
+            hoi4_quote(name),
+            hoi4_quote(texturefile)
+        ),
+        GfxSpriteRenderKind::GoalShine => format!(
+            "\t# source_texturefile = {}\n\t# {}\n\tspriteType = {{\n\t\tname = {}\n\t\ttexturefile = {}\n\t\teffectFile = \"gfx/FX/buttonstate.lua\"\n\t\tanimation = {{\n\t\t\tanimationmaskfile = {}\n\t\t\tanimationtexturefile = \"gfx/interface/goals/shine_overlay.dds\"\n\t\t\tanimationrotation = -90.0\n\t\t\tanimationlooping = no\n\t\t\tanimationtime = 0.75\n\t\t\tanimationdelay = 0\n\t\t\tanimationblendmode = \"add\"\n\t\t\tanimationtype = \"scrolling\"\n\t\t\tanimationrotationoffset = {{ x = 0.0 y = 0.0 }}\n\t\t\tanimationtexturescale = {{ x = 1.0 y = 1.0 }}\n\t\t}}\n\t\tanimation = {{\n\t\t\tanimationmaskfile = {}\n\t\t\tanimationtexturefile = \"gfx/interface/goals/shine_overlay.dds\"\n\t\t\tanimationrotation = 90.0\n\t\t\tanimationlooping = no\n\t\t\tanimationtime = 0.75\n\t\t\tanimationdelay = 0\n\t\t\tanimationblendmode = \"add\"\n\t\t\tanimationtype = \"scrolling\"\n\t\t\tanimationrotationoffset = {{ x = 0.0 y = 0.0 }}\n\t\t\tanimationtexturescale = {{ x = 1.0 y = 1.0 }}\n\t\t}}\n\t\tlegacy_lazy_load = no\n\t}}\n",
+            texturefile,
+            remark.replace('\n', " "),
+            hoi4_quote(name),
+            hoi4_quote(texturefile),
+            hoi4_quote(texturefile),
+            hoi4_quote(texturefile)
+        ),
+    }
+}
+
+pub(crate) fn dynamic_gui_frame_count(name: &str, texturefile: &str) -> Option<usize> {
+    let probe = format!(
+        "{} {}",
+        name.to_ascii_lowercase(),
+        texturefile.to_ascii_lowercase()
+    );
+    (probe.contains("meter") || probe.contains("paranoia")).then_some(21)
 }
 
 pub(crate) fn gfx_registration_report_json(report: &GfxRegistrationReport) -> String {
@@ -1106,7 +1182,7 @@ pub(crate) fn scan_interface_sprites(root: &Path) -> Result<Vec<Sprite>, String>
         for file in collect_files(&interface)? {
             if file.extension().and_then(OsStr::to_str).unwrap_or("") == "gfx" {
                 let text = read_utf8_lossy(&file)?;
-                for block in blocks_named(&text, "spriteType") {
+                for block in sprite_type_blocks(&text) {
                     let name = block_assignment(&block, "name").unwrap_or_default();
                     let texturefile = block_assignment(&block, "texturefile").unwrap_or_default();
                     if !name.is_empty() || !texturefile.is_empty() {
@@ -1117,4 +1193,10 @@ pub(crate) fn scan_interface_sprites(root: &Path) -> Result<Vec<Sprite>, String>
         }
     }
     Ok(sprites)
+}
+
+pub(crate) fn sprite_type_blocks(text: &str) -> Vec<String> {
+    let mut blocks = blocks_named(text, "spriteType");
+    blocks.extend(blocks_named(text, "SpriteType"));
+    blocks
 }

@@ -752,7 +752,7 @@ pub(crate) fn event_blocks(text: &str) -> Vec<String> {
 }
 
 pub(crate) fn check_sprite_textures(root: &Path, path: &Path, text: &str, reporter: &mut Reporter) {
-    for block in blocks_named(text, "spriteType") {
+    for block in sprite_type_blocks(text) {
         if let Some(texturefile) = block_assignment(&block, "texturefile") {
             if resolve_texture(root, &texturefile).is_none() {
                 reporter.warn(format!(
@@ -766,7 +766,7 @@ pub(crate) fn check_sprite_textures(root: &Path, path: &Path, text: &str, report
 }
 
 pub(crate) fn collect_sprite_names(text: &str, sprite_names: &mut BTreeSet<String>) {
-    for block in blocks_named(text, "spriteType") {
+    for block in sprite_type_blocks(text) {
         if let Some(name) = block_assignment(&block, "name") {
             sprite_names.insert(name);
         }

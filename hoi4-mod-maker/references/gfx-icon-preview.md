@@ -47,7 +47,7 @@ Before writing sprite registrations, the command normalizes image filenames:
 Categories:
 
 - `dynamic`: writes `GFX_<prefix>_<asset>` into `interface/<prefix>_dynamic_icons.gfx` for scripted GUI and localisation icon control codes.
-- `focus`: writes `GFX_goal_<prefix>_<asset>` into `interface/<prefix>_focus_idea_icons.gfx`.
+- `focus`: writes `GFX_goal_<prefix>_<asset>` into `interface/<prefix>_goals.gfx` and also writes the matching `_shine` sprite into `interface/<prefix>_goals_shine.gfx`.
 - `idea`: writes `GFX_idea_<prefix>_<asset>` into `interface/<prefix>_focus_idea_icons.gfx`.
 - `event`: writes `GFX_report_event_<prefix>_<asset>` into `interface/<prefix>_event_pictures.gfx`.
 - `decision`: writes both `GFX_decision_<prefix>_<asset>` and `GFX_decision_category_<prefix>_<asset>` into `interface/<prefix>_decision_pictures.gfx`.
@@ -55,6 +55,13 @@ Categories:
 - `all`: default full set.
 
 The command scans existing `interface/*.gfx` first. If the desired sprite name already points to the same `texturefile`, it is reported as `existing` and not written again. If the desired sprite name points to a different `texturefile`, the command appends a stable numeric suffix such as `_2` and reports the avoided conflict. This suffix is only for sprite-name collisions after a semantic English base name exists; it is not a random replacement for translation. The JSON report also lists `existing_names_for_texture` so an author can reverse-check which sprite names already point at the same image. When `assets_skipped` is non-zero, the AI-facing final output must tell the user which files were skipped and ask for a semantic English filename or dictionary expansion.
+
+For focus icons, registration is two-part by default:
+
+- `goals`: `SpriteType = { name = "GFX_goal_<prefix>_<asset>" texturefile = "..." }`
+- `goals_shine`: matching `spriteType = { name = "GFX_goal_<prefix>_<asset>_shine" ... }` with `effectFile = "gfx/FX/buttonstate.lua"`, the standard double scrolling `shine_overlay.dds` animations, and `legacy_lazy_load = no`
+
+The scanner accepts both `spriteType` and `SpriteType` when reading existing files.
 
 ## Preview Command
 
