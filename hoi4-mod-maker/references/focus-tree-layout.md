@@ -142,8 +142,11 @@ Commands:
 ```text
 hoi4skill parse-focus-excel --input focus_tree.xlsx --tag SOV --prefix sov_alt --sheet FocusTree --format focus-tree --output focus_tree.txt
 hoi4skill parse-focus-excel --input focus_tree.xlsx --tag SOV --prefix sov_alt --format json --output focus_excel_plan.json
+hoi4skill parse-focus-excel --input focus_tree.xlsx --tag SOV --prefix sov_alt --format markdown --output focus_excel_table.md
 hoi4skill apply-focus-excel --input focus_tree.xlsx --mod-root "M:\path\mod" --tag SOV --prefix sov_alt --sheet FocusTree
 ```
+
+Use `--format markdown` when the worksheet should be shown to a model first as a human-readable grid. The output preserves the Excel row/column layout as a Markdown table, keeps merged cell/drawing text in one cell, and adds a second Markdown table that simulates the normalized HOI4 `x/y` layout so the model can read both the original worksheet and the eventual focus coordinates.
 
 Focus IDs must stay ASCII. For AI-generated sketches, prefer giving an explicit English ID hint after the Chinese title:
 

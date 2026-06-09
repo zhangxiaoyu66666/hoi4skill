@@ -991,8 +991,23 @@ fn apply_focus_layout_uses_indexed_goal_icons() {
     )
     .unwrap();
     fs::write(
+        root.join("interface").join("local_random.gfx"),
+        r#"spriteType = { name = "GFX_goal_aaa_factory" texturefile = "gfx/interface/goals/decoy.dds" }"#,
+    )
+    .unwrap();
+    fs::write(
         game.join("interface").join("game_goals.gfx"),
         r#"spriteType = { name = "GFX_goal_game_factory" texturefile = "gfx/interface/goals/factory.dds" }"#,
+    )
+    .unwrap();
+    fs::write(
+        game.join("interface").join("game_goals_shine.gfx"),
+        r#"spriteType = { name = "GFX_goal_game_factory_shine" texturefile = "gfx/interface/goals/factory.dds" }"#,
+    )
+    .unwrap();
+    fs::write(
+        game.join("interface").join("game_random.gfx"),
+        r#"spriteType = { name = "GFX_goal_aaa_factory" texturefile = "gfx/interface/goals/decoy.dds" }"#,
     )
     .unwrap();
     let index = build_game_index(&game).unwrap();
@@ -1009,8 +1024,11 @@ fn apply_focus_layout_uses_indexed_goal_icons() {
     fs::remove_dir_all(&root).unwrap();
     fs::remove_dir_all(&game).unwrap();
 
+    assert!(index.focus_goal_sprites.contains("GFX_goal_game_factory"));
+    assert!(!index.focus_goal_sprites.contains("GFX_goal_aaa_factory"));
     assert!(focus_file.contains("id = SOV_industry_revival"));
     assert!(focus_file.contains("icon = GFX_goal_game_factory"));
+    assert!(!focus_file.contains("icon = GFX_goal_aaa_factory"));
     assert!(focus_file.contains("id = SOV_political_reform"));
     assert!(focus_file.contains("icon = GFX_goal_local_political_reform"));
 }
@@ -2045,6 +2063,48 @@ fn focus_excel_merges_drawing_chinese_title_with_cell_english_id() {
 }
 
 #[test]
+fn parse_focus_excel_can_render_markdown_table() {
+    let root = unique_temp_dir("focus-excel-markdown");
+    fs::create_dir_all(&root).unwrap();
+    let xlsx = root.join("tree.xlsx");
+    write_minimal_focus_xlsx(&xlsx);
+
+    let markdown =
+        render_focus_excel_markdown(&xlsx, Some("FocusTree"), "SOV", "sov_excel").unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(markdown.contains("# Worksheet: FocusTree"));
+    assert!(markdown.contains("## Original Worksheet Grid"));
+    assert!(markdown.contains("## Simulated HOI4 x/y Grid"));
+    assert!(markdown.contains("| Row | A | B | C | D |"));
+    assert!(markdown.contains("| 1 | 国策树 |  | 重建中央委员会\\|rebuild_committee |  |"));
+    assert!(markdown.contains(
+        "工业复兴<br>ID: industrial_revival<br>icon: GFX_goal_generic_construct_civ_factory"
+    ));
+    assert!(markdown.contains("| y\\\\x | 0 | 2 | 4 |"));
+    assert!(markdown.contains("重建中央委员会<br><sub>id: SOV_rebuild_committee</sub>"));
+}
+
+#[test]
+fn workflow_input_text_from_xlsx_contains_markdown_and_focus_sketch() {
+    let root = unique_temp_dir("workflow-xlsx-input");
+    fs::create_dir_all(&root).unwrap();
+    let xlsx = root.join("tree.xlsx");
+    write_minimal_focus_xlsx(&xlsx);
+
+    let text = workflow_input_text_from_path(&xlsx, Some("FocusTree"), "SOV", "sov_excel").unwrap();
+    let workflow = run_workflow_json(&text, None, "SOV", "sov_excel", None, true, None).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(text.contains("# Worksheet: FocusTree"));
+    assert!(text.contains("## Simulated HOI4 x/y Grid"));
+    assert!(text.contains("国策树："));
+    assert!(text.contains("工业复兴 | industrial_revival"));
+    assert!(workflow.contains("\"focus_layout\": true"));
+    assert!(workflow.contains("SOV_industrial_revival"));
+}
+
+#[test]
 fn parse_focus_layout_anchors_positions_to_start_focus() {
     let layout = parse_focus_layout("开端\n左线   中线   右线\n", "CPC", "cpc_demo");
     let root = layout.focuses.iter().find(|focus| focus.row == 0).unwrap();
@@ -2061,6 +2121,65 @@ fn parse_focus_layout_anchors_positions_to_start_focus() {
     );
     assert_eq!(middle.relative_x, Some(0));
     assert_eq!(middle.relative_y, Some(1));
+}
+
+#[test]
+fn parse_focus_layout_replaces_position_fallback_ids() {
+    let layout = parse_focus_layout(
+        "???\n奇怪|focus_3_0\n怪名|abc_focus_3_0\n",
+        "SOV",
+        "sov_demo",
+    );
+    let ids = layout
+        .focuses
+        .iter()
+        .map(|focus| focus.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        ids,
+        vec![
+            "SOV_generated_focus_1",
+            "SOV_generated_focus_2",
+            "SOV_generated_focus_3"
+        ]
+    );
+    assert!(!ids.iter().any(|id| is_position_fallback_focus_id(id)));
+}
+
+#[test]
+fn focus_excel_replaces_position_fallback_ids() {
+    let imported = ExcelFocusImport {
+        cells: vec![
+            ExcelFocusCell {
+                row: 3,
+                column: 0,
+                title: "???".to_string(),
+                id_hint: None,
+                icon: None,
+                completion_reward: Vec::new(),
+            },
+            ExcelFocusCell {
+                row: 3,
+                column: 2,
+                title: "奇怪".to_string(),
+                id_hint: Some("focus_3_0".to_string()),
+                icon: None,
+                completion_reward: Vec::new(),
+            },
+        ],
+        mutual_markers: Vec::new(),
+    };
+
+    let layout = focus_layout_from_excel_cells(imported, "SOV", "sov_demo").unwrap();
+    let ids = layout
+        .focuses
+        .iter()
+        .map(|focus| focus.id.as_str())
+        .collect::<Vec<_>>();
+
+    assert_eq!(ids, vec!["SOV_generated_focus_1", "SOV_generated_focus_2"]);
+    assert!(!ids.iter().any(|id| is_position_fallback_focus_id(id)));
 }
 
 #[test]
@@ -2142,6 +2261,17 @@ fn focus_excel_preserves_only_explicit_mutual_exclusion_pair() {
     ));
     assert!(!json.contains(
         "\"left\": \"KOR_provisional_government_returns\", \"right\": \"KOR_soviet_power\""
+    ));
+}
+
+#[test]
+fn excel_mutual_marker_accepts_descriptive_text() {
+    assert!(is_excel_mutual_marker(
+        "互斥（大韩民国和朝鲜苏维埃政权互斥）"
+    ));
+    assert!(is_excel_mutual_marker("相互排斥：左线和右线"));
+    assert!(!is_excel_mutual_marker(
+        "路线说明：大韩民国和朝鲜苏维埃政权互斥"
     ));
 }
 
@@ -2494,7 +2624,7 @@ fn game_index_collects_tags_states_and_sprites() {
     .unwrap();
     fs::write(
         root.join("interface").join("goals.gfx"),
-        r#"spriteType = { name = "GFX_game_focus_icon" texturefile = "gfx/interface/goals/game.dds" }"#,
+        r#"spriteType = { name = "GFX_goal_game_focus_icon" texturefile = "gfx/interface/goals/game.dds" }"#,
     )
     .unwrap();
 
@@ -2509,7 +2639,10 @@ fn game_index_collects_tags_states_and_sprites() {
     assert!(index.province_ids.contains(&123));
     assert!(index.province_ids.contains(&456));
     assert!(index.province_ids.contains(&789));
-    assert!(index.sprites.contains("GFX_game_focus_icon"));
+    assert!(index.sprites.contains("GFX_goal_game_focus_icon"));
+    assert!(index
+        .focus_goal_sprites
+        .contains("GFX_goal_game_focus_icon"));
     assert!(index.buildings.contains("arms_factory"));
     assert_eq!(index.building_max_levels.get("arms_factory"), Some(&5));
     assert_eq!(
@@ -2529,7 +2662,8 @@ fn game_index_collects_tags_states_and_sprites() {
     assert!(json.contains("\"state_ids\": [64]"));
     assert!(json.contains("\"state_names\": {\"STATE_64\": 64}"));
     assert!(json.contains("\"province_ids\": [123, 456, 789]"));
-    assert!(json.contains("\"sprites\": [\"GFX_game_focus_icon\"]"));
+    assert!(json.contains("\"sprites\": [\"GFX_goal_game_focus_icon\"]"));
+    assert!(json.contains("\"focus_goal_sprites\": [\"GFX_goal_game_focus_icon\"]"));
     assert!(json.contains("\"buildings\": [\"arms_factory\", \"industrial_complex\"]"));
     assert!(
         json.contains("\"building_max_levels\": {\"arms_factory\": 5, \"industrial_complex\": 10}")
@@ -2722,6 +2856,35 @@ focus = {
         .errors
         .iter()
         .any(|msg| msg.contains("missing required template field `completion_reward`")));
+}
+
+#[test]
+fn validator_errors_for_position_fallback_focus_id() {
+    let path = Path::new("M:\\mod\\common\\national_focus\\bad_focus.txt");
+    let text = r#"
+focus = {
+    id = SOV_focus_3_0
+    icon = GFX_goal_unknown
+    x = 0
+    y = 0
+    cost = 10
+    ai_will_do = { factor = 100 }
+    available = { }
+    bypass = { }
+    cancel_if_invalid = yes
+    continue_if_invalid = no
+    available_if_capitulated = no
+    completion_reward = { }
+}
+"#;
+    let mut reporter = Reporter::default();
+
+    check_national_focus_fields(path, &strip_comments(text), &mut reporter);
+
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|msg| { msg.contains("focus SOV_focus_3_0 uses a generated position fallback id") }));
 }
 
 #[test]

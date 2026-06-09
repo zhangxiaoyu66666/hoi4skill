@@ -72,7 +72,7 @@ pub(crate) fn parse_focus_layout(text: &str, tag: &str, prefix: &str) -> FocusLa
                 continue;
             }
             let (title, id_hint) = parse_focus_token(token);
-            let fallback = format!("focus_{row_index}_{col}");
+            let fallback = generated_focus_fallback_fragment(focuses.len());
             let mut id = focus_identifier(&tag_part, &title, id_hint.as_deref(), &fallback);
             let base = id.clone();
             let mut n = 2;
@@ -502,13 +502,7 @@ pub(crate) fn collect_focus_goal_icon_catalog(
     let mut icons = BTreeSet::new();
     collect_focus_goal_icons_from_interface(mod_root, &mut icons)?;
     if let Some(index) = game_index {
-        icons.extend(
-            index
-                .sprites
-                .iter()
-                .filter(|sprite| is_focus_goal_sprite_name(sprite))
-                .cloned(),
-        );
+        icons.extend(index.focus_goal_sprites.iter().cloned());
     }
     Ok(icons)
 }
@@ -526,15 +520,57 @@ pub(crate) fn collect_focus_goal_icons_from_interface(
             continue;
         }
         let text = read_utf8_lossy(&file)?;
-        let mut sprites = BTreeSet::new();
-        collect_sprite_names(&text, &mut sprites);
-        icons.extend(
-            sprites
-                .into_iter()
-                .filter(|sprite| is_focus_goal_sprite_name(sprite)),
-        );
+        collect_focus_goal_icons_from_gfx_file(&file, &text, icons);
     }
     Ok(())
+}
+
+#[derive(Copy, Clone)]
+enum FocusGoalGfxFileKind {
+    Goals,
+    GoalsShine,
+}
+
+pub(crate) fn collect_focus_goal_icons_from_gfx_file(
+    file: &Path,
+    text: &str,
+    icons: &mut BTreeSet<String>,
+) {
+    let Some(kind) = focus_goal_gfx_file_kind(file) else {
+        return;
+    };
+    let mut sprites = BTreeSet::new();
+    collect_sprite_names(text, &mut sprites);
+    for sprite in sprites {
+        if let Some(icon) = focus_goal_catalog_icon_name(&sprite, kind) {
+            icons.insert(icon);
+        }
+    }
+}
+
+fn focus_goal_gfx_file_kind(file: &Path) -> Option<FocusGoalGfxFileKind> {
+    let stem = file.file_stem().and_then(OsStr::to_str)?;
+    let stem = stem.to_ascii_lowercase();
+    if stem == "goals_shine" || stem.ends_with("_goals_shine") {
+        Some(FocusGoalGfxFileKind::GoalsShine)
+    } else if stem == "goals" || stem.ends_with("_goals") {
+        Some(FocusGoalGfxFileKind::Goals)
+    } else {
+        None
+    }
+}
+
+fn focus_goal_catalog_icon_name(sprite: &str, kind: FocusGoalGfxFileKind) -> Option<String> {
+    if sprite == "GFX_goal_unknown" {
+        return Some(sprite.to_string());
+    }
+    if !sprite.starts_with("GFX_goal") {
+        return None;
+    }
+    match kind {
+        FocusGoalGfxFileKind::Goals => (!sprite.ends_with("_shine")).then(|| sprite.to_string()),
+        FocusGoalGfxFileKind::GoalsShine => sprite.strip_suffix("_shine").map(str::to_string),
+    }
 }
 
 #[derive(Clone)]
@@ -983,10 +1019,6 @@ pub(crate) fn focus_icon_keywords(title: &str) -> Vec<&'static str> {
     }
 }
 
-pub(crate) fn is_focus_goal_sprite_name(sprite: &str) -> bool {
-    sprite == "GFX_goal_unknown" || sprite.starts_with("GFX_goal")
-}
-
 pub(crate) fn link_mutual(focuses: &mut [FocusNode], left: &str, right: &str) {
     for f in focuses {
         if f.id == left && !f.mutually_exclusive.iter().any(|x| x == right) {
@@ -1056,7 +1088,58 @@ pub(crate) fn focus_identifier(
     if let Some(stripped) = fragment.strip_prefix(&tag_prefix) {
         fragment = stripped.to_string();
     }
-    format!("{tag}_{fragment}")
+    if is_position_fallback_focus_fragment(&fragment) {
+        fragment = sanitize_identifier_part(fallback, "generated_focus");
+        if is_position_fallback_focus_fragment(&fragment) {
+            fragment = "generated_focus".to_string();
+        }
+    }
+    let mut id = format!("{tag}_{fragment}");
+    if is_position_fallback_focus_id(&id) {
+        fragment = sanitize_identifier_part(fallback, "generated_focus");
+        id = format!("{tag}_{fragment}");
+        if is_position_fallback_focus_id(&id) {
+            id = format!("{tag}_generated_focus");
+        }
+    }
+    id
+}
+
+pub(crate) fn generated_focus_fallback_fragment(index: usize) -> String {
+    format!("generated_focus_{}", index + 1)
+}
+
+pub(crate) fn is_position_fallback_focus_fragment(value: &str) -> bool {
+    let Some(rest) = value.trim().strip_prefix("focus_") else {
+        return false;
+    };
+    let mut parts = rest.split('_');
+    let Some(row) = parts.next() else {
+        return false;
+    };
+    let Some(column) = parts.next() else {
+        return false;
+    };
+    parts.next().is_none()
+        && !row.is_empty()
+        && !column.is_empty()
+        && row.chars().all(|ch| ch.is_ascii_digit())
+        && column.chars().all(|ch| ch.is_ascii_digit())
+}
+
+pub(crate) fn is_position_fallback_focus_id(value: &str) -> bool {
+    let parts = value.split('_').collect::<Vec<_>>();
+    if parts.len() < 3 {
+        return false;
+    }
+    let focus = parts[parts.len() - 3];
+    let row = parts[parts.len() - 2];
+    let column = parts[parts.len() - 1];
+    focus == "focus"
+        && !row.is_empty()
+        && !column.is_empty()
+        && row.chars().all(|ch| ch.is_ascii_digit())
+        && column.chars().all(|ch| ch.is_ascii_digit())
 }
 
 pub(crate) fn english_focus_fragment(title: &str) -> Option<String> {

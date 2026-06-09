@@ -1218,6 +1218,12 @@ pub(crate) fn check_national_focus_fields(path: &Path, text: &str, reporter: &mu
 
     for block in blocks_named(text, "focus") {
         let focus_id = block_assignment(&block, "id").unwrap_or_else(|| "<unknown>".to_string());
+        if is_position_fallback_focus_id(&focus_id) {
+            reporter.error(format!(
+                "{}: focus {focus_id} uses a generated position fallback id; replace it with a semantic focus id",
+                path.display()
+            ));
+        }
         check_required_focus_template_fields(path, &focus_id, &block, reporter);
         for key in direct_assignment_keys(&block) {
             if CRITICAL_FOCUS_FIELDS.contains(&key.as_str()) {

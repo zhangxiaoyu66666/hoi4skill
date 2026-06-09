@@ -9,6 +9,7 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     let mod_root = value(&map, "mod-root").map(normalize_path).transpose()?;
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("mod");
+    let sheet = value(&map, "sheet");
     let tree_id = value(&map, "tree-id");
     let dry_run = map.flags.contains("dry-run") || mod_root.is_none();
     let dependency_mods = dependency_mod_roots(&map)?;
@@ -20,7 +21,7 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during workflow generation".to_string());
     }
-    let text = read_utf8_lossy(&input)?;
+    let text = workflow_input_text_from_path(&input, sheet, tag, prefix)?;
     let json = run_workflow_json(
         &text,
         mod_root.as_deref(),
@@ -31,6 +32,75 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
         game_index.as_ref(),
     )?;
     write_or_print(&json, value(&map, "output"))
+}
+
+pub(crate) fn workflow_input_text_from_path(
+    input: &Path,
+    sheet: Option<&str>,
+    tag: &str,
+    prefix: &str,
+) -> Result<String, String> {
+    let extension = input
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if matches!(extension.as_str(), "xlsx" | "xls" | "xlsm" | "xlsb" | "ods") {
+        return render_focus_excel_workflow_input(input, sheet, tag, prefix);
+    }
+    read_utf8_lossy(input)
+}
+
+pub(crate) fn render_focus_excel_workflow_input(
+    input: &Path,
+    sheet: Option<&str>,
+    tag: &str,
+    prefix: &str,
+) -> Result<String, String> {
+    let markdown = render_focus_excel_markdown(input, sheet, tag, prefix)?;
+    let (_sheet_name, imported) = read_focus_excel_import(input, sheet)?;
+    let sketch = render_excel_focus_import_sketch(&imported)?;
+    Ok(format!("{markdown}\n\n国策树：\n{sketch}"))
+}
+
+pub(crate) fn render_excel_focus_import_sketch(
+    imported: &ExcelFocusImport,
+) -> Result<String, String> {
+    let mut row_tokens: BTreeMap<usize, BTreeMap<usize, String>> = BTreeMap::new();
+    for cell in &imported.cells {
+        let token = cell
+            .id_hint
+            .as_deref()
+            .map(|hint| format!("{} | {}", cell.title, hint))
+            .unwrap_or_else(|| cell.title.clone());
+        row_tokens
+            .entry(cell.row)
+            .or_default()
+            .insert(cell.column, token);
+    }
+    for (row, column) in &imported.mutual_markers {
+        row_tokens
+            .entry(*row)
+            .or_default()
+            .insert(*column, "互斥".to_string());
+    }
+    if row_tokens.is_empty() {
+        return Err("worksheet did not contain any focus cells".to_string());
+    }
+
+    let mut out = String::new();
+    for columns in row_tokens.values() {
+        let line = columns
+            .values()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("    ");
+        if !line.trim().is_empty() {
+            out.push_str(&line);
+            out.push('\n');
+        }
+    }
+    Ok(out)
 }
 
 pub(crate) fn cmd_generate_mod(args: &[String]) -> Result<(), String> {

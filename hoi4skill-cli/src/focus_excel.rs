@@ -36,17 +36,25 @@ pub(crate) fn cmd_parse_focus_excel(args: &[String]) -> Result<(), String> {
     let prefix = value(&map, "prefix").unwrap_or("focus");
     let sheet = value(&map, "sheet");
     let format = value(&map, "format").unwrap_or("focus-tree");
-    let mut layout = read_focus_excel_layout(&input, sheet, tag, prefix)?;
-    if let Some(tree_id) = value(&map, "tree-id") {
-        layout.tree_id = tree_id.to_string();
-    }
-
     let output = match normalise_focus_excel_format(format).as_str() {
-        "json" => focus_excel_layout_json(&layout, &input, sheet, tag, prefix),
-        "focus-tree" => render_focus_tree(&layout, tag),
+        "markdown" => render_focus_excel_markdown(&input, sheet, tag, prefix)?,
+        "json" => {
+            let mut layout = read_focus_excel_layout(&input, sheet, tag, prefix)?;
+            if let Some(tree_id) = value(&map, "tree-id") {
+                layout.tree_id = tree_id.to_string();
+            }
+            focus_excel_layout_json(&layout, &input, sheet, tag, prefix)
+        }
+        "focus-tree" => {
+            let mut layout = read_focus_excel_layout(&input, sheet, tag, prefix)?;
+            if let Some(tree_id) = value(&map, "tree-id") {
+                layout.tree_id = tree_id.to_string();
+            }
+            render_focus_tree(&layout, tag)
+        }
         other => {
             return Err(format!(
-                "unknown --format `{other}`; use focus-tree or json"
+                "unknown --format `{other}`; use focus-tree, json, or markdown"
             ))
         }
     };
@@ -87,6 +95,14 @@ pub(crate) fn read_focus_excel_layout(
     tag: &str,
     prefix: &str,
 ) -> Result<FocusLayout, String> {
+    let (_sheet_name, imported) = read_focus_excel_import(input, sheet)?;
+    focus_layout_from_excel_cells(imported, tag, prefix)
+}
+
+pub(crate) fn read_focus_excel_import(
+    input: &Path,
+    sheet: Option<&str>,
+) -> Result<(String, ExcelFocusImport), String> {
     let mut workbook =
         open_workbook_auto(input).map_err(|e| format!("open workbook {}: {e}", input.display()))?;
     let sheet_name = resolve_excel_sheet_name(&workbook, sheet)?;
@@ -98,7 +114,7 @@ pub(crate) fn read_focus_excel_layout(
     })?;
     let drawing_texts = read_excel_drawing_texts(input, &sheet_name)?;
     let imported = collect_excel_focus_cells_with_drawings(&range, &drawing_texts)?;
-    focus_layout_from_excel_cells(imported, tag, prefix)
+    Ok((sheet_name, imported))
 }
 
 pub(crate) fn resolve_excel_sheet_name<R>(
@@ -128,28 +144,7 @@ pub(crate) fn collect_excel_focus_cells_with_drawings(
     range: &calamine::Range<Data>,
     drawing_texts: &[ExcelDrawingText],
 ) -> Result<ExcelFocusImport, String> {
-    let mut raw_cells = BTreeMap::new();
-    let (range_start_row, range_start_column) = range.start().unwrap_or((0, 0));
-    for (row_index, row) in range.rows().enumerate() {
-        for (column_index, cell) in row.iter().enumerate() {
-            let Some(text) = excel_cell_text(cell) else {
-                continue;
-            };
-            raw_cells.insert(
-                (
-                    range_start_row as usize + row_index,
-                    range_start_column as usize + column_index,
-                ),
-                text,
-            );
-        }
-    }
-    for drawing in drawing_texts {
-        raw_cells
-            .entry((drawing.row, drawing.column))
-            .and_modify(|cell| *cell = merge_excel_cell_and_drawing(cell, &drawing.text))
-            .or_insert_with(|| drawing.text.clone());
-    }
+    let raw_cells = merge_excel_raw_cells(range, drawing_texts);
 
     let mut cells = Vec::new();
     let mut mutual_markers = Vec::new();
@@ -172,13 +167,54 @@ pub(crate) fn collect_excel_focus_cells_with_drawings(
     })
 }
 
+pub(crate) fn merge_excel_raw_cells(
+    range: &calamine::Range<Data>,
+    drawing_texts: &[ExcelDrawingText],
+) -> BTreeMap<(usize, usize), String> {
+    let mut raw_cells = BTreeMap::new();
+    let (range_start_row, range_start_column) = range.start().unwrap_or((0, 0));
+    for (row_index, row) in range.rows().enumerate() {
+        for (column_index, cell) in row.iter().enumerate() {
+            let Some(text) = excel_cell_text(cell) else {
+                continue;
+            };
+            raw_cells.insert(
+                (
+                    range_start_row as usize + row_index,
+                    range_start_column as usize + column_index,
+                ),
+                text,
+            );
+        }
+    }
+    for drawing in drawing_texts {
+        raw_cells
+            .entry((drawing.row, drawing.column))
+            .and_modify(|cell| *cell = merge_excel_cell_and_drawing(cell, &drawing.text))
+            .or_insert_with(|| drawing.text.clone());
+    }
+    raw_cells
+}
+
 pub(crate) fn is_excel_mutual_marker(text: &str) -> bool {
     let value = text.trim();
-    matches!(value, "互斥" | "相互排斥")
-        || matches!(
-            value.to_ascii_lowercase().as_str(),
-            "exclusive" | "mutually exclusive" | "mutual exclusion"
-        )
+    if value.is_empty() {
+        return false;
+    }
+    if matches!(value, "互斥" | "相互排斥") {
+        return true;
+    }
+    if value.starts_with("互斥") || value.starts_with("相互排斥") || value.starts_with("互相排斥")
+    {
+        return true;
+    }
+    let lowered = value.to_ascii_lowercase();
+    matches!(
+        lowered.as_str(),
+        "exclusive" | "mutually exclusive" | "mutual exclusion"
+    ) || lowered.starts_with("exclusive")
+        || lowered.starts_with("mutually exclusive")
+        || lowered.starts_with("mutual exclusion")
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -449,7 +485,7 @@ pub(crate) fn focus_layout_from_excel_cells(
     let mut used = BTreeSet::new();
     let mut focuses = Vec::new();
     for (index, cell) in sorted.iter().enumerate() {
-        let fallback = format!("focus_{}_{}", cell.row - min_row, cell.column - min_col);
+        let fallback = generated_focus_fallback_fragment(index);
         let mut id = focus_identifier(&tag_part, &cell.title, cell.id_hint.as_deref(), &fallback);
         let base = id.clone();
         let mut n = 2;
@@ -765,9 +801,182 @@ pub(crate) fn normalise_focus_excel_format(format: &str) -> String {
         "txt" | "script" | "hoi4" | "focus" | "focus_tree" | "focus-tree" => {
             "focus-tree".to_string()
         }
+        "md" | "markdown" | "table" | "markdown-table" => "markdown".to_string(),
         "json" | "report" => "json".to_string(),
         other => other.to_string(),
     }
+}
+
+pub(crate) fn render_focus_excel_markdown(
+    input: &Path,
+    sheet: Option<&str>,
+    tag: &str,
+    prefix: &str,
+) -> Result<String, String> {
+    let mut workbook =
+        open_workbook_auto(input).map_err(|e| format!("open workbook {}: {e}", input.display()))?;
+    let sheet_name = resolve_excel_sheet_name(&workbook, sheet)?;
+    let range = workbook.worksheet_range(&sheet_name).map_err(|e| {
+        format!(
+            "read worksheet `{sheet_name}` from {}: {e}",
+            input.display()
+        )
+    })?;
+    let drawing_texts = read_excel_drawing_texts(input, &sheet_name)?;
+    let raw_cells = merge_excel_raw_cells(&range, &drawing_texts);
+    let imported = collect_excel_focus_cells_with_drawings(&range, &drawing_texts)?;
+    let layout = focus_layout_from_excel_cells(imported, tag, prefix)?;
+    render_focus_excel_markdown_table(&sheet_name, &raw_cells, &layout)
+}
+
+pub(crate) fn render_focus_excel_markdown_table(
+    sheet_name: &str,
+    raw_cells: &BTreeMap<(usize, usize), String>,
+    layout: &FocusLayout,
+) -> Result<String, String> {
+    if raw_cells.is_empty() {
+        return Err("worksheet did not contain any cells to render".to_string());
+    }
+    let min_row = raw_cells.keys().map(|(row, _)| *row).min().unwrap_or(0);
+    let max_row = raw_cells.keys().map(|(row, _)| *row).max().unwrap_or(0);
+    let min_col = raw_cells.keys().map(|(_, col)| *col).min().unwrap_or(0);
+    let max_col = raw_cells.keys().map(|(_, col)| *col).max().unwrap_or(0);
+
+    let mut out = String::new();
+    out.push_str(&format!("# Worksheet: {sheet_name}\n\n"));
+    out.push_str("## Original Worksheet Grid\n\n");
+    out.push('|');
+    out.push_str(" Row |");
+    for col in min_col..=max_col {
+        out.push_str(&format!(" {} |", excel_column_label(col)));
+    }
+    out.push('\n');
+    out.push('|');
+    out.push_str(" --- |");
+    for _ in min_col..=max_col {
+        out.push_str(" --- |");
+    }
+    out.push('\n');
+    for row in min_row..=max_row {
+        out.push('|');
+        out.push_str(&format!(" {} |", row + 1));
+        for col in min_col..=max_col {
+            let value = raw_cells
+                .get(&(row, col))
+                .map(|text| markdown_table_cell(text))
+                .unwrap_or_default();
+            out.push_str(&format!(" {} |", value));
+        }
+        out.push('\n');
+    }
+    out.push('\n');
+    out.push_str("## Simulated HOI4 x/y Grid\n\n");
+    out.push_str(&render_focus_layout_markdown_grid(layout));
+    Ok(out)
+}
+
+pub(crate) fn render_focus_layout_markdown_grid(layout: &FocusLayout) -> String {
+    let mut x_values = layout
+        .focuses
+        .iter()
+        .map(|focus| focus.x)
+        .collect::<Vec<_>>();
+    for (left, right, row) in &layout.mutuals {
+        let left_focus = layout
+            .focuses
+            .iter()
+            .find(|focus| focus.id == *left && focus.row == *row);
+        let right_focus = layout
+            .focuses
+            .iter()
+            .find(|focus| focus.id == *right && focus.row == *row);
+        if let (Some(left_focus), Some(right_focus)) = (left_focus, right_focus) {
+            x_values.push((left_focus.x + right_focus.x) / 2);
+        }
+    }
+    x_values.sort_unstable();
+    x_values.dedup();
+
+    let mut row_cells: BTreeMap<usize, BTreeMap<i32, String>> = BTreeMap::new();
+    for focus in &layout.focuses {
+        row_cells.entry(focus.row).or_default().insert(
+            focus.x,
+            format!(
+                "{}<br><sub>id: {}</sub>",
+                markdown_table_cell(&focus.title),
+                markdown_table_cell(&focus.id)
+            ),
+        );
+    }
+    for (left, right, row) in &layout.mutuals {
+        let left_focus = layout
+            .focuses
+            .iter()
+            .find(|focus| focus.id == *left && focus.row == *row);
+        let right_focus = layout
+            .focuses
+            .iter()
+            .find(|focus| focus.id == *right && focus.row == *row);
+        if let (Some(left_focus), Some(right_focus)) = (left_focus, right_focus) {
+            let marker_x = (left_focus.x + right_focus.x) / 2;
+            row_cells
+                .entry(*row)
+                .or_default()
+                .insert(marker_x, "互斥".to_string());
+        }
+    }
+
+    let mut out = String::new();
+    out.push('|');
+    out.push_str(" y\\\\x |");
+    for x in &x_values {
+        out.push_str(&format!(" {} |", x));
+    }
+    out.push('\n');
+    out.push('|');
+    out.push_str(" --- |");
+    for _ in &x_values {
+        out.push_str(" --- |");
+    }
+    out.push('\n');
+    let max_row = layout
+        .focuses
+        .iter()
+        .map(|focus| focus.row)
+        .max()
+        .unwrap_or(0);
+    for y in 0..=max_row {
+        out.push('|');
+        out.push_str(&format!(" {} |", y));
+        let row = row_cells.get(&y);
+        for x in &x_values {
+            let value = row
+                .and_then(|cells| cells.get(x))
+                .cloned()
+                .unwrap_or_default();
+            out.push_str(&format!(" {} |", value));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+pub(crate) fn excel_column_label(column: usize) -> String {
+    let mut value = column + 1;
+    let mut out = String::new();
+    while value > 0 {
+        let remainder = (value - 1) % 26;
+        out.insert(0, (b'A' + remainder as u8) as char);
+        value = (value - 1) / 26;
+    }
+    out
+}
+
+pub(crate) fn markdown_table_cell(text: &str) -> String {
+    text.trim()
+        .replace('|', "\\|")
+        .replace('\r', "")
+        .replace('\n', "<br>")
 }
 
 pub(crate) fn focus_excel_layout_json(

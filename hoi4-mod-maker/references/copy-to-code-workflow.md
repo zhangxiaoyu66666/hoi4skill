@@ -34,6 +34,7 @@ hoi4skill mod-knowledge "M:\path\existing_mod_or_launcher.mod" --mod-path "M:\pa
 hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod" --output history_plan.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --tag SOV --prefix sov_nep --dry-run --output workflow_plan.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --output workflow_report.json
+hoi4skill run-workflow --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_nep --sheet FocusTree --dry-run --output workflow_plan.json
 ```
 
 `mod-knowledge` creates the pre-edit dossier: standalone/submod classification, descriptor/launcher metadata, dependency names, dependency roots supplied with `--mod-path`, observed tags, focus trees, namespaces, localisation style, decision categories, idea pictures, GFX sprites, and model-readable `markdown_summary`. Treat missing facts as unknown, not as permission to invent.
