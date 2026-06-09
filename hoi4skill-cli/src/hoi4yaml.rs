@@ -79,7 +79,7 @@ pub(crate) fn emit_focus_layout_hoi4yaml(out: &mut String, text: &str, tag: &str
         out.push_str(&format!("        - id: {}\n", yaml_string(&focus.id)));
         out.push_str(&format!(
             "          icon: {}\n",
-            yaml_string(choose_focus_icon(&focus.title))
+            yaml_string(focus.icon.as_deref().unwrap_or("GFX_goal_unknown"))
         ));
         out.push_str(&format!("          x: {}\n", focus.x));
         out.push_str(&format!("          y: {}\n", focus.y));

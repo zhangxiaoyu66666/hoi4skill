@@ -131,6 +131,7 @@ pub(crate) fn parse_focus_layout(text: &str, tag: &str, prefix: &str) -> FocusLa
             focuses[idx].prerequisite.push(parent_id);
         }
     }
+    anchor_focus_positions_to_start(&mut focuses);
 
     FocusLayout {
         tree_id: format!(
@@ -722,6 +723,27 @@ pub(crate) fn ensure_focus_row_x_spacing(focuses: &mut [FocusNode], min_gap: i32
     }
 }
 
+pub(crate) fn anchor_focus_positions_to_start(focuses: &mut [FocusNode]) {
+    let Some(anchor) = focuses
+        .iter()
+        .min_by_key(|focus| (focus.row, focus.column, focus.y, focus.x))
+        .map(|focus| (focus.id.clone(), focus.x, focus.y))
+    else {
+        return;
+    };
+    for focus in focuses {
+        if focus.id == anchor.0 {
+            focus.relative_position_id = None;
+            focus.relative_x = None;
+            focus.relative_y = None;
+            continue;
+        }
+        focus.relative_position_id = Some(anchor.0.clone());
+        focus.relative_x = Some(focus.x - anchor.1);
+        focus.relative_y = Some(focus.y - anchor.2);
+    }
+}
+
 pub(crate) fn dedupe_layout_focus_ids(layout: &mut FocusLayout, existing_ids: &BTreeSet<String>) {
     let mut used = existing_ids.clone();
     let mut id_map = BTreeMap::new();
@@ -857,10 +879,7 @@ pub(crate) fn render_focus_block(focus: &FocusNode) -> String {
     let mut out = String::new();
     out.push_str("\tfocus = {\n");
     out.push_str(&format!("\t\tid = {}\n", focus.id));
-    let icon = focus
-        .icon
-        .as_deref()
-        .unwrap_or_else(|| choose_focus_icon(&focus.title));
+    let icon = focus.icon.as_deref().unwrap_or("GFX_goal_unknown");
     out.push_str(&format!("\t\ticon = {icon}\n"));
     out.push_str(&format!(
         "\t\tx = {}\n",
@@ -870,8 +889,12 @@ pub(crate) fn render_focus_block(focus: &FocusNode) -> String {
         "\t\ty = {}\n",
         focus.relative_y.unwrap_or(focus.y)
     ));
-    for parent in &focus.prerequisite {
-        out.push_str(&format!("\t\tprerequisite = {{ focus = {parent} }}\n"));
+    if focus.prerequisite.is_empty() {
+        out.push_str("\t\t# prerequisite = { focus = <parent focus id> }\n");
+    } else {
+        for parent in &focus.prerequisite {
+            out.push_str(&format!("\t\tprerequisite = {{ focus = {parent} }}\n"));
+        }
     }
     for other in &focus.mutually_exclusive {
         out.push_str(&format!("\t\tmutually_exclusive = {{ focus = {other} }}\n"));
@@ -882,16 +905,14 @@ pub(crate) fn render_focus_block(focus: &FocusNode) -> String {
         out.push_str("\t\t# relative_position_id = <focus id for relative placement>\n");
     }
     out.push_str("\t\tcost = 2.5\n");
-    out.push_str("\t\tai_will_do = {\n\t\t\tfactor = 10\n\t\t}\n\n");
+    out.push_str("\t\tai_will_do = {\n\t\t\tfactor = 100\n\t\t}\n\n");
     out.push_str("\t\tavailable = {\n\t\t}\n\n");
     out.push_str("\t\tbypass = {\n\t\t}\n");
     out.push_str("\t\tcancel_if_invalid = yes\n");
     out.push_str("\t\tcontinue_if_invalid = no\n");
     out.push_str("\t\tavailable_if_capitulated = no\n\n");
     out.push_str("\t\tcompletion_reward = {\n");
-    if focus.completion_reward.is_empty() {
-        out.push_str("\t\t\tadd_political_power = 50\n");
-    } else {
+    if !focus.completion_reward.is_empty() {
         for line in &focus.completion_reward {
             out.push_str(&indent_lines(line, "\t\t\t"));
         }
@@ -899,24 +920,6 @@ pub(crate) fn render_focus_block(focus: &FocusNode) -> String {
     out.push_str("\t\t}\n");
     out.push_str("\t}\n");
     out
-}
-
-pub(crate) fn choose_focus_icon(title: &str) -> &'static str {
-    if title.contains("海军") || title.contains("舰") {
-        "GFX_goal_generic_navy_doctrines_tactics"
-    } else if title.contains("军") || title.contains("战争") || title.contains("武装") {
-        "GFX_goal_generic_army_doctrines"
-    } else if title.contains("工业")
-        || title.contains("工厂")
-        || title.contains("五年")
-        || title.contains("建设")
-    {
-        "GFX_goal_generic_construct_civ_factory"
-    } else if title.contains("农业") || title.contains("农民") {
-        "GFX_goal_generic_consumer_goods"
-    } else {
-        "GFX_goal_generic_political_reform"
-    }
 }
 
 pub(crate) fn choose_focus_icon_from_catalog(

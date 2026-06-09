@@ -960,7 +960,7 @@ pub(crate) fn render_focus_copy_card_prompts(cards: &[FocusCopyCard]) -> String 
         out.push_str("relative_position_id =  #基于某个国策位置的相对位置\n");
         out.push_str("cost = 2.5\n");
         out.push_str("\t\tai_will_do = {\n");
-        out.push_str("\t\t\tfactor = 10\n");
+        out.push_str("\t\t\tfactor = 100\n");
         out.push_str("\t\t}\n\n");
         out.push_str("\t\tavailable = {\n\n\t\t}\n\n");
         out.push_str("\t\tbypass = {\n\t\t}\n\n");

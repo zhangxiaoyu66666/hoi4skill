@@ -1908,7 +1908,7 @@ fn apply_focus_layout_writes_focus_tree_and_localisation() {
     assert!(focus_file.contains("id = SOV_first_five_year_plan"));
     assert!(focus_file.contains("prerequisite = { focus = SOV_stalin_constitution }"));
     assert!(focus_file.contains("cost = 2.5"));
-    assert!(focus_file.contains("ai_will_do = {\n\t\t\tfactor = 10\n\t\t}"));
+    assert!(focus_file.contains("ai_will_do = {\n\t\t\tfactor = 100\n\t\t}"));
     assert!(focus_file.contains("available = {\n\t\t}"));
     assert!(focus_file.contains("bypass = {\n\t\t}"));
     assert!(focus_file.contains("cancel_if_invalid = yes"));
@@ -1918,7 +1918,6 @@ fn apply_focus_layout_writes_focus_tree_and_localisation() {
         focus_file.contains("mutually_exclusive = { focus = SOV_continue_new_economic_policy }")
     );
     assert!(focus_file.contains("completion_reward = {"));
-    assert!(focus_file.contains("add_political_power = 50"));
     assert!(loc_bytes.starts_with(&[0xef, 0xbb, 0xbf]));
     assert!(loc.contains("SOV_first_five_year_plan:0 \"第一个五年计划\""));
     assert!(loc.contains(
@@ -1969,7 +1968,7 @@ fn focus_excel_reads_drawn_tree_and_renders_standard_skeleton() {
     assert!(tree.contains("x = -2"));
     assert!(tree.contains("relative_position_id = SOV_rebuild_committee"));
     assert!(tree.contains("cost = 2.5"));
-    assert!(tree.contains("factor = 10"));
+    assert!(tree.contains("factor = 100"));
     assert!(tree.contains("available = {\n\t\t}"));
     assert!(tree.contains("bypass = {\n\t\t}"));
     assert!(tree.contains("cancel_if_invalid = yes"));
@@ -1994,6 +1993,25 @@ fn focus_excel_merges_drawing_chinese_title_with_cell_english_id() {
     assert_eq!(layout.focuses[0].id, "KOR_industry_revival");
     assert!(json.contains("\"title\": \"工业复兴\""));
     assert!(json.contains("\"id\": \"KOR_industry_revival\""));
+}
+
+#[test]
+fn parse_focus_layout_anchors_positions_to_start_focus() {
+    let layout = parse_focus_layout("开端\n左线   中线   右线\n", "CPC", "cpc_demo");
+    let root = layout.focuses.iter().find(|focus| focus.row == 0).unwrap();
+    let middle = layout
+        .focuses
+        .iter()
+        .find(|focus| focus.title == "中线")
+        .unwrap();
+
+    assert_eq!(root.relative_position_id, None);
+    assert_eq!(
+        middle.relative_position_id.as_deref(),
+        Some(root.id.as_str())
+    );
+    assert_eq!(middle.relative_x, Some(0));
+    assert_eq!(middle.relative_y, Some(1));
 }
 
 #[test]
@@ -2482,6 +2500,7 @@ fn game_index_collects_tags_states_and_sprites() {
 fn game_index_helpers_distinguish_known_and_unknown_refs() {
     let mut index = GameIndex::default();
     index.country_tags.insert("SOV".to_string());
+    index.focus_ids.insert("SOV_real_focus".to_string());
     index.sprites.insert("GFX_game_focus_icon".to_string());
     index.buildings.insert("arms_factory".to_string());
     index
@@ -2617,6 +2636,91 @@ fn game_index_helpers_distinguish_known_and_unknown_refs() {
         .warnings
         .iter()
         .any(|warning| warning.contains("arms_factory level 6 exceeds game max_level 5")));
+}
+
+#[test]
+fn render_focus_tree_uses_unknown_icon_and_empty_reward_by_default() {
+    let layout = parse_focus_layout("根国策\n子国策\n", "CPC", "cpc_demo");
+    let tree = render_focus_tree(&layout, "CPC");
+
+    assert!(tree.contains("icon = GFX_goal_unknown"));
+    assert!(tree.contains("# prerequisite = { focus = <parent focus id> }"));
+    assert!(tree.contains("ai_will_do = {\n\t\t\tfactor = 100\n\t\t}"));
+    assert!(tree.contains("completion_reward = {\n\t\t}\n"));
+    assert!(!tree.contains("add_political_power = 50"));
+}
+
+#[test]
+fn validator_errors_for_incomplete_focus_template() {
+    let path = Path::new("M:\\mod\\common\\national_focus\\bad_focus.txt");
+    let text = r#"
+focus = {
+    id = BAD_focus
+    icon = GFX_goal_unknown
+    x = 0
+    y = 0
+}
+"#;
+    let mut reporter = Reporter::default();
+
+    check_national_focus_fields(path, &strip_comments(text), &mut reporter);
+
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|msg| msg.contains("missing required template field `cost`")));
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|msg| msg.contains("missing required template field `completion_reward`")));
+}
+
+#[test]
+fn validator_errors_for_unknown_indexed_focus_and_symbols() {
+    let root = unique_temp_dir("validate-indexed-focus-refs");
+    let focus_dir = root.join("common").join("national_focus");
+    fs::create_dir_all(&focus_dir).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Test\"\nsupported_version=\"1.16.*\"\n",
+    )
+    .unwrap();
+    fs::write(
+        focus_dir.join("bad_focus.txt"),
+        "focus_tree = {\n\tid = bad_tree\n\tcountry = { factor = 0 modifier = { add = 10 tag = SOV } }\n\tfocus = {\n\t\tid = SOV_real_focus\n\t\ticon = GFX_missing_icon\n\t\tx = 0\n\t\ty = 0\n\t\tprerequisite = { focus = SOV_missing_parent }\n\t\trelative_position_id = SOV_missing_relative\n\t\tcost = 2.5\n\t\tai_will_do = { factor = 100 }\n\t\tavailable = { ideology = mystery_ideology }\n\t\tbypass = { has_idea = mystery_idea }\n\t\tcancel_if_invalid = yes\n\t\tcontinue_if_invalid = no\n\t\tavailable_if_capitulated = no\n\t\tcompletion_reward = { set_technology = { mystery_tech = 1 } }\n\t}\n}\n",
+    )
+    .unwrap();
+    let mut index = GameIndex::default();
+    index.country_tags.insert("SOV".to_string());
+    index.focus_ids.insert("SOV_dependency_focus".to_string());
+    index.ideologies.insert("democratic".to_string());
+    index.technologies.insert("infantry_weapons".to_string());
+
+    let reporter = validate_mod(&root, Some(&index)).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|msg| msg.contains("GFX key GFX_missing_icon is referenced but not defined")));
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|msg| msg.contains("focus id SOV_missing_parent is referenced but not present")));
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|msg| msg.contains("focus id SOV_missing_relative is referenced but not present")));
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|msg| msg
+            .contains("ideology mystery_ideology is referenced but not present in game index")));
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|msg| msg
+            .contains("technology mystery_tech is referenced but not present in game index")));
 }
 
 #[test]
@@ -3230,10 +3334,11 @@ focus = {
 
     check_script_semantics(path, text, None, &mut reporter);
 
-    assert_eq!(reporter.errors.len(), 1);
-    assert!(reporter.errors[0].contains("focus BAD_left_branch"));
-    assert!(reporter.errors[0].contains("unknown near-match field `mutual_exclusion`"));
-    assert!(reporter.errors[0].contains("exact HOI4 field `mutually_exclusive`"));
+    assert!(reporter.errors.iter().any(|error| {
+        error.contains("focus BAD_left_branch")
+            && error.contains("unknown near-match field `mutual_exclusion`")
+            && error.contains("exact HOI4 field `mutually_exclusive`")
+    }));
 }
 
 #[test]
@@ -3309,10 +3414,10 @@ fn focus_layout_infers_branch_parents_before_mutation() {
     );
 
     assert!(json.contains(
-        "\"title\": \"快速工业化\", \"id\": \"SOV_rapid_industry\", \"icon\": null, \"x\": -3, \"y\": 2, \"relative_position_id\": null, \"row\": 2, \"column\": 0, \"prerequisite\": [\"SOV_first_five_year_plan\"]"
+        "\"title\": \"快速工业化\", \"id\": \"SOV_rapid_industry\", \"icon\": null, \"x\": -3, \"y\": 2, \"relative_position_id\": \"SOV_stalin_constitution\", \"row\": 2, \"column\": 0, \"prerequisite\": [\"SOV_first_five_year_plan\"]"
     ));
     assert!(json.contains(
-        "\"title\": \"发财吧农民\", \"id\": \"SOV_prosper_peasants\", \"icon\": null, \"x\": 1, \"y\": 2, \"relative_position_id\": null, \"row\": 2, \"column\": 2, \"prerequisite\": [\"SOV_continue_new_economic_policy\"]"
+        "\"title\": \"发财吧农民\", \"id\": \"SOV_prosper_peasants\", \"icon\": null, \"x\": 1, \"y\": 2, \"relative_position_id\": \"SOV_stalin_constitution\", \"row\": 2, \"column\": 2, \"prerequisite\": [\"SOV_continue_new_economic_policy\"]"
     ));
     assert!(json.contains(
         "\"title\": \"奈普曼入党\", \"id\": \"SOV_nepman_join_party\", \"icon\": null, \"x\": 3, \"y\": 2"

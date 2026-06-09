@@ -118,7 +118,7 @@ Rules:
 - Worksheet columns become HOI4 `x` coordinates with a same-row minimum gap of 2.
 - Worksheet rows become HOI4 `y` coordinates.
 - The importer infers a parent from the nearest focus in the closest non-empty row above.
-- Child focuses use `relative_position_id = <parent_focus_id>` and relative `x/y` offsets.
+- Child focuses keep their real `prerequisite` chain, but layout should usually anchor to the opening focus: later focuses use `relative_position_id = <start_focus_id>` plus relative `x/y` offsets so whole branches can be moved without rewriting every node.
 - Cell text may include multiple lines:
 
 ```text
@@ -187,13 +187,14 @@ Generated focus blocks should look like:
 ```hoi4
 focus = {
 	id = SOV_stalin_constitution
-	icon = GFX_goal_generic_political_reform
+	icon = GFX_goal_unknown
 	x = 0
 	y = 0
+	# prerequisite = { focus = <parent focus id> }
 	# relative_position_id = <focus id for relative placement>
 	cost = 2.5
 	ai_will_do = {
-		factor = 10
+		factor = 100
 	}
 
 	available = {
@@ -206,13 +207,12 @@ focus = {
 	available_if_capitulated = no
 
 	completion_reward = {
-		add_political_power = 50
 	}
 }
 
 focus = {
 	id = SOV_first_five_year_plan
-	icon = GFX_goal_generic_construct_civ_factory
+	icon = GFX_goal_unknown
 	x = -1
 	y = 1
 	prerequisite = { focus = SOV_stalin_constitution }
@@ -220,7 +220,7 @@ focus = {
 	relative_position_id = SOV_stalin_constitution
 	cost = 2.5
 	ai_will_do = {
-		factor = 10
+		factor = 100
 	}
 
 	available = {

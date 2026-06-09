@@ -10,6 +10,14 @@ hoi4skill validate "<mod-root>"
 
 Fix errors before reporting completion. Warnings can be reported when they need game-side verification.
 
+When the user can supply a real HOI4 install or dependency mod roots, run:
+
+```text
+hoi4skill validate "<mod-root>" --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod"
+```
+
+With an indexed game/mod codebase, invented references are fatal errors instead of soft warnings. That includes unknown focus IDs, country tags, `GFX_goal*` sprites, technologies, equipment types, wargoal types, ideologies, resources, building types, and indexed modifiers.
+
 ## Manual Syntax Checklist
 
 - Braces are balanced in `.txt`, `.mod`, `.gfx`, and `.gui` files.
@@ -20,6 +28,7 @@ Fix errors before reporting completion. Warnings can be reported when they need 
 - New files use unique IDs and do not silently replace vanilla content.
 - National-focus mutual exclusion uses exactly `mutually_exclusive = { focus = <id> }`; approximate spellings such as `mutual_exclusion` are fatal errors.
 - Critical national-focus fields must match exact HOI4 names. Near matches such as `prerequisites`, `completion_rewards`, `relative_position`, `ai_willdo`, or `cancel_if_invald` are fatal errors.
+- Generated national focuses must keep the full house template fields: `icon`, `x`, `y`, `cost`, `ai_will_do`, `available`, `bypass`, `cancel_if_invalid`, `continue_if_invalid`, `available_if_capitulated`, and `completion_reward`. Missing fields are fatal validation errors.
 - Event structure also requires exact names: `add_namespace`, `is_triggered_only`, `fire_only_once`, and `mean_time_to_happen`. `namespace =` and near-match spellings are fatal errors.
 - Effects use valid scopes for the target system.
 - Effect and trigger names are checked against the local game documentation or Wiki index when not already proven by nearby mod code.

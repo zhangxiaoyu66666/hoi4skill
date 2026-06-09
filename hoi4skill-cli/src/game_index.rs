@@ -8,6 +8,7 @@ pub(crate) struct GameIndex {
     pub(crate) game_root: PathBuf,
     pub(crate) indexed_roots: Vec<PathBuf>,
     pub(crate) country_tags: BTreeSet<String>,
+    pub(crate) focus_ids: BTreeSet<String>,
     pub(crate) state_ids: BTreeSet<i64>,
     pub(crate) state_names: BTreeMap<String, i64>,
     pub(crate) province_ids: BTreeSet<i64>,
@@ -89,6 +90,9 @@ pub(crate) fn collect_game_index_root(index: &mut GameIndex, root: &Path) -> Res
         if ext == "txt" && norm.contains("/common/country_tags/") {
             let text = read_utf8_lossy(&file)?;
             collect_country_tags(&text, &mut index.country_tags);
+        } else if ext == "txt" && norm.contains("/common/national_focus/") {
+            let text = read_utf8_lossy(&file)?;
+            index.focus_ids.extend(focus_tree_existing_ids(&text));
         } else if ext == "txt" && norm.contains("/history/states/") {
             let text = read_utf8_lossy(&file)?;
             collect_state_data(

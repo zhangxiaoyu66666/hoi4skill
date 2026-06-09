@@ -483,6 +483,7 @@ pub(crate) fn focus_layout_from_excel_cells(
 
     ensure_focus_row_x_spacing(&mut focuses, 2);
     infer_excel_focus_parents(&mut focuses);
+    anchor_focus_positions_to_start(&mut focuses);
     let mutuals = apply_excel_mutual_markers(&mut focuses, &mutual_markers, min_row, min_col);
     let rows = excel_focus_rows(&focuses);
     Ok(FocusLayout {

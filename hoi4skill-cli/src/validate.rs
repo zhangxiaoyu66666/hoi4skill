@@ -42,6 +42,8 @@ pub(crate) fn validate_mod(
     let mut sprite_names: BTreeSet<String> = BTreeSet::new();
     let mut gfx_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut tag_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
+    let mut focus_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
+    let mut local_focus_ids: BTreeSet<String> = BTreeSet::new();
     let mut game_data_refs = GameDataRefs::default();
 
     if !root.exists() {
@@ -69,6 +71,7 @@ pub(crate) fn validate_mod(
                     collect_gfx_refs(&file, &text, &mut gfx_refs);
                 }
                 collect_country_tag_refs(&file, &text, &mut tag_refs);
+                collect_focus_refs(&file, &text, &mut focus_refs, &mut local_focus_ids);
                 collect_game_data_refs(&file, &text, &mut game_data_refs);
                 check_script_semantics(&file, &text, game_index, &mut reporter);
             } else if matches!(ext.as_str(), "yml" | "yaml") {
@@ -124,90 +127,114 @@ pub(crate) fn validate_mod(
     }
     for (sprite, paths) in gfx_refs {
         if !is_known_sprite(&sprite, &sprite_names, game_index) {
-            reporter.warn(format!(
-                "GFX key {sprite} is referenced but not defined in this mod: {}",
-                paths
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+            report_paths(
+                &mut reporter,
+                game_index.is_some(),
+                format!(
+                    "GFX key {sprite} is referenced but not defined in this mod or indexed roots"
+                ),
+                &paths,
+            );
         }
     }
     if let Some(index) = game_index {
         for (tag, paths) in tag_refs {
             if !index.country_tags.contains(&tag) && !is_dynamic_tag_ref(&tag) {
-                reporter.warn(format!(
-                    "country tag {tag} is referenced but not present in game index: {}",
-                    paths
-                        .iter()
-                        .map(|p| p.display().to_string())
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                ));
+                report_paths(
+                    &mut reporter,
+                    true,
+                    format!("country tag {tag} is referenced but not present in game index"),
+                    &paths,
+                );
             }
         }
-        warn_unknown_index_refs(
+        report_unknown_index_refs(
             "building type",
             &game_data_refs.buildings,
             &index.buildings,
             &mut reporter,
+            true,
         );
         warn_building_levels(&game_data_refs.building_levels, index, &mut reporter);
-        warn_unknown_index_refs(
+        report_unknown_index_refs(
             "resource",
             &game_data_refs.resources,
             &index.resources,
             &mut reporter,
+            true,
         );
-        warn_unknown_index_refs(
+        report_unknown_index_refs(
             "ideology",
             &game_data_refs.ideologies,
             &index.ideologies,
             &mut reporter,
+            true,
         );
-        warn_unknown_index_refs_if_indexed(
+        report_unknown_index_refs_if_indexed(
             "trait",
             &game_data_refs.traits,
             &index.traits,
             &mut reporter,
+            true,
         );
-        warn_unknown_index_refs_if_indexed(
+        report_unknown_index_refs_if_indexed(
             "equipment type",
             &game_data_refs.equipment,
             &index.equipment_types,
             &mut reporter,
+            true,
         );
-        warn_unknown_index_refs_if_indexed(
+        report_unknown_index_refs_if_indexed(
             "technology",
             &game_data_refs.technologies,
             &index.technologies,
             &mut reporter,
+            true,
         );
-        warn_unknown_index_refs_if_indexed(
+        report_unknown_index_refs_if_indexed(
             "technology category",
             &game_data_refs.technology_categories,
             &index.technology_categories,
             &mut reporter,
+            true,
         );
-        warn_unknown_index_refs_if_indexed(
+        report_unknown_index_refs_if_indexed(
             "sub unit",
             &game_data_refs.sub_units,
             &index.sub_units,
             &mut reporter,
+            true,
         );
-        warn_unknown_index_refs_if_indexed(
+        report_unknown_index_refs_if_indexed(
             "wargoal type",
             &game_data_refs.wargoal_types,
             &index.wargoal_types,
             &mut reporter,
+            true,
         );
-        warn_unknown_index_refs_if_indexed(
+        report_unknown_index_refs_if_indexed(
             "modifier",
             &game_data_refs.modifiers,
             &index.modifiers,
             &mut reporter,
+            true,
         );
+    }
+    let mut known_focus_ids = local_focus_ids;
+    if let Some(index) = game_index {
+        known_focus_ids.extend(index.focus_ids.iter().cloned());
+    }
+    for (focus_id, paths) in focus_refs {
+        if !known_focus_ids.contains(&focus_id) {
+            report_paths(
+                &mut reporter,
+                game_index.is_some(),
+                format!(
+                    "focus id {focus_id} is referenced but not present in the indexed focus trees"
+                ),
+                &paths,
+            );
+        }
     }
 
     Ok(reporter)
@@ -791,6 +818,43 @@ pub(crate) fn collect_country_tag_refs(
     }
 }
 
+pub(crate) fn collect_focus_refs(
+    path: &Path,
+    text: &str,
+    refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+    local_ids: &mut BTreeSet<String>,
+) {
+    let norm = slash_path(path);
+    if !norm.contains("/common/national_focus/") {
+        return;
+    }
+    let cleaned = strip_comments(text);
+    for block in blocks_named(&cleaned, "focus") {
+        if let Some(id) = block_assignment(&block, "id") {
+            local_ids.insert(id.clone());
+        }
+        for prerequisite in blocks_named(&block, "prerequisite") {
+            for value in assignment_values_in_text(&prerequisite, "focus") {
+                if is_reference_identifier(&value) {
+                    add_ref(refs, &value, path);
+                }
+            }
+        }
+        for mutual in blocks_named(&block, "mutually_exclusive") {
+            for value in assignment_values_in_text(&mutual, "focus") {
+                if is_reference_identifier(&value) {
+                    add_ref(refs, &value, path);
+                }
+            }
+        }
+        if let Some(relative_id) = direct_assignment_value(&block, "relative_position_id") {
+            if is_reference_identifier(relative_id) {
+                add_ref(refs, relative_id, path);
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 pub(crate) struct GameDataRefs {
     pub(crate) buildings: BTreeMap<String, BTreeSet<PathBuf>>,
@@ -937,36 +1001,57 @@ pub(crate) fn add_ref(refs: &mut BTreeMap<String, BTreeSet<PathBuf>>, key: &str,
         .insert(path.to_path_buf());
 }
 
-pub(crate) fn warn_unknown_index_refs(
+pub(crate) fn report_unknown_index_refs(
     label: &str,
     refs: &BTreeMap<String, BTreeSet<PathBuf>>,
     known: &BTreeSet<String>,
     reporter: &mut Reporter,
+    as_error: bool,
 ) {
     for (key, paths) in refs {
         if !known.contains(key) {
-            reporter.warn(format!(
-                "{label} {key} is referenced but not present in game index: {}",
-                paths
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+            report_paths(
+                reporter,
+                as_error,
+                format!("{label} {key} is referenced but not present in game index"),
+                paths,
+            );
         }
     }
 }
 
-pub(crate) fn warn_unknown_index_refs_if_indexed(
+pub(crate) fn report_unknown_index_refs_if_indexed(
     label: &str,
     refs: &BTreeMap<String, BTreeSet<PathBuf>>,
     known: &BTreeSet<String>,
     reporter: &mut Reporter,
+    as_error: bool,
 ) {
     if known.is_empty() {
         return;
     }
-    warn_unknown_index_refs(label, refs, known, reporter);
+    report_unknown_index_refs(label, refs, known, reporter, as_error);
+}
+
+pub(crate) fn report_paths(
+    reporter: &mut Reporter,
+    as_error: bool,
+    message: String,
+    paths: &BTreeSet<PathBuf>,
+) {
+    let rendered = format!(
+        "{message}: {}",
+        paths
+            .iter()
+            .map(|p| p.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    if as_error {
+        reporter.error(rendered);
+    } else {
+        reporter.warn(rendered);
+    }
 }
 
 pub(crate) fn warn_building_levels(
@@ -1133,6 +1218,7 @@ pub(crate) fn check_national_focus_fields(path: &Path, text: &str, reporter: &mu
 
     for block in blocks_named(text, "focus") {
         let focus_id = block_assignment(&block, "id").unwrap_or_else(|| "<unknown>".to_string());
+        check_required_focus_template_fields(path, &focus_id, &block, reporter);
         for key in direct_assignment_keys(&block) {
             if CRITICAL_FOCUS_FIELDS.contains(&key.as_str()) {
                 continue;
@@ -1145,6 +1231,34 @@ pub(crate) fn check_national_focus_fields(path: &Path, text: &str, reporter: &mu
                     path.display()
                 ));
             }
+        }
+    }
+}
+
+pub(crate) fn check_required_focus_template_fields(
+    path: &Path,
+    focus_id: &str,
+    block: &str,
+    reporter: &mut Reporter,
+) {
+    for key in [
+        "icon",
+        "x",
+        "y",
+        "cost",
+        "ai_will_do",
+        "available",
+        "bypass",
+        "cancel_if_invalid",
+        "continue_if_invalid",
+        "available_if_capitulated",
+        "completion_reward",
+    ] {
+        if direct_assignment_value(block, key).is_none() {
+            reporter.error(format!(
+                "{}: focus {focus_id} is missing required template field `{key}`",
+                path.display()
+            ));
         }
     }
 }
