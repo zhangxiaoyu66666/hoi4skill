@@ -566,7 +566,7 @@ fn focus_goal_catalog_icon_name(sprite: &str, kind: FocusGoalGfxFileKind) -> Opt
     if sprite == "GFX_goal_unknown" {
         return Some(sprite.to_string());
     }
-    if !sprite.starts_with("GFX_goal") {
+    if !sprite.starts_with("GFX_") {
         return None;
     }
     match kind {
@@ -977,6 +977,47 @@ pub(crate) fn choose_focus_icon_from_catalog(
                 score += 10;
             }
         }
+        if lower.contains("_generic_") {
+            score += 1;
+        }
+        if lower.contains("attack_")
+            || lower.contains("crush_")
+            || lower.contains("counter_")
+            || lower.contains("anti_")
+            || lower.contains("ban_")
+        {
+            score -= 4;
+        }
+        if lower.contains("fascist") || lower.contains("fascism") {
+            score -= 12;
+        }
+        if (lower.contains("monarchist") || lower.contains("monarchy")) && !title.contains("君主")
+        {
+            score -= 12;
+        }
+        if lower.contains("africa") && !title.contains("非洲") {
+            score -= 6;
+        }
+        if (lower.contains("armor")
+            || lower.contains("armored")
+            || lower.contains("air")
+            || lower.contains("naval")
+            || lower.contains("tank")
+            || lower.contains("fleet"))
+            && !(title.contains("军")
+                || title.contains("武装")
+                || title.contains("战争")
+                || title.contains("空军")
+                || title.contains("海军")
+                || title.contains("坦克")
+                || title.contains("装甲")
+                || title.contains("舰"))
+        {
+            score -= 6;
+        }
+        if lower.contains("spain") && !title.contains("西班牙") {
+            score -= 4;
+        }
         if lower.contains("unknown") {
             score -= 5;
         }
@@ -990,12 +1031,76 @@ pub(crate) fn choose_focus_icon_from_catalog(
 }
 
 pub(crate) fn focus_icon_keywords(title: &str) -> Vec<&'static str> {
-    if title.contains("海军") || title.contains("舰") || title.contains("港口") {
+    let mut political = Vec::new();
+    if title.contains("社会主义") {
+        political.extend(["socialism", "socialist"]);
+    }
+    if title.contains("共产")
+        || title.contains("左翼")
+        || title.contains("马克思")
+        || title.contains("列宁")
+        || title.contains("布尔什维克")
+    {
+        political.extend(["communist", "communism", "prc"]);
+    }
+    if title.contains("中共") || title.contains("中国共产党") {
+        political.extend(["chi", "china", "chinese", "prc", "communist", "communists"]);
+    }
+    if title.contains("苏维埃") {
+        political.extend(["soviet"]);
+    }
+    if title.contains("苏联") {
+        political.extend(["soviet"]);
+    }
+    if title.contains("工人") || title.contains("工农") || title.contains("无产") {
+        political.extend(["worker", "workers", "proletarian", "proletariat"]);
+    }
+    if title.contains("人民") {
+        political.extend(["people", "peoples"]);
+    }
+    if title.contains("革命") {
+        political.extend(["revolution"]);
+    }
+    if title.contains("红军") {
+        political.extend(["red", "red_army", "army"]);
+    }
+    if title.contains("起义") || title.contains("暴动") || title.contains("起事") {
+        political.extend(["uprising", "revolt", "revolution"]);
+    }
+    if !political.is_empty() {
+        political.sort();
+        political.dedup();
+        political
+    } else if title.contains("海军") || title.contains("舰") || title.contains("港口") {
         vec!["navy", "naval", "fleet", "dockyard", "ship"]
     } else if title.contains("空军") || title.contains("航空") || title.contains("飞机") {
         vec!["air", "airforce", "aviation", "plane"]
     } else if title.contains("军") || title.contains("战争") || title.contains("武装") {
         vec!["army", "military", "war", "doctrine"]
+    } else if title.contains("游击队") || title.contains("游击") {
+        vec!["partisan", "partisans", "guerrilla", "resistance"]
+    } else if title.contains("动员") || title.contains("市民") || title.contains("群众") {
+        vec!["mobilization", "mobilize", "social", "people"]
+    } else if title.contains("夺回") || title.contains("光复") || title.contains("解放") {
+        vec![
+            "liberation",
+            "liberate",
+            "reclaim",
+            "recapture",
+            "independence",
+        ]
+    } else if title.contains("调停")
+        || title.contains("邀请")
+        || title.contains("联系")
+        || title.contains("联合")
+    {
+        vec!["diplomacy", "alliance", "cooperation", "befriend"]
+    } else if title.contains("支持") || title.contains("援助") {
+        vec!["support", "aid", "assistance"]
+    } else if title.contains("政府") || title.contains("共和国") {
+        vec!["government", "republic", "political"]
+    } else if title.contains("民族") || title.contains("独立") {
+        vec!["national", "nationalism", "independence"]
     } else if title.contains("工业")
         || title.contains("工厂")
         || title.contains("五年")
@@ -1019,7 +1124,7 @@ pub(crate) fn focus_icon_keywords(title: &str) -> Vec<&'static str> {
             "trade", "market", "economic", "economy", "planned", "consumer",
         ]
     } else {
-        vec!["political", "reform", "focus"]
+        vec!["political", "reform"]
     }
 }
 

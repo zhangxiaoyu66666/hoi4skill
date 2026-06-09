@@ -19,9 +19,19 @@ pub(crate) fn cmd_apply_event_cards(args: &[String]) -> Result<(), String> {
     let mod_root = normalize_path(&require_value(&map, "mod-root")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("mod");
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+        .transpose()?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err("--mod-path requires --game-root during event-card generation".to_string());
+    }
     let text = read_utf8_lossy(&normalize_path(&input)?)?;
     let cards = parse_cards(&text, &["事件"]);
-    let changed = apply_event_cards_to_mod(&mod_root, &cards, tag, prefix)?;
+    let changed =
+        apply_event_cards_to_mod_with_index(&mod_root, &cards, tag, prefix, game_index.as_ref())?;
 
     println!("Applied event cards: {}", cards.len());
     if changed.is_empty() {
@@ -35,14 +45,26 @@ pub(crate) fn cmd_apply_event_cards(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 pub(crate) fn apply_event_cards_to_mod(
     mod_root: &Path,
     cards: &[Card],
     tag: &str,
     prefix: &str,
 ) -> Result<Vec<PathBuf>, String> {
+    apply_event_cards_to_mod_with_index(mod_root, cards, tag, prefix, None)
+}
+
+pub(crate) fn apply_event_cards_to_mod_with_index(
+    mod_root: &Path,
+    cards: &[Card],
+    tag: &str,
+    prefix: &str,
+    game_index: Option<&GameIndex>,
+) -> Result<Vec<PathBuf>, String> {
     let namespace_targets = scan_event_namespace_targets(mod_root)?;
     let existing_fingerprints = scan_existing_event_card_fingerprints(mod_root)?;
+    let picture_catalog = collect_event_picture_catalog(mod_root, game_index)?;
     let mut counters = namespace_targets
         .iter()
         .map(|(namespace, target)| (namespace.clone(), target.max_id))
@@ -71,9 +93,17 @@ pub(crate) fn apply_event_cards_to_mod(
             .unwrap_or_else(|| mod_root.join("events").join(format!("{prefix}_events.txt")));
         let entry = event_files.entry(event_path).or_default();
         entry.namespaces.insert(namespace.clone());
+        let picture = resolve_event_picture(card, &picture_catalog);
         entry.blocks.push((
             event_id.to_string(),
-            render_event_block(card, &event_id, tag, prefix, Some(&fingerprint)),
+            render_event_block_with_picture(
+                card,
+                &event_id,
+                tag,
+                prefix,
+                Some(&fingerprint),
+                &picture,
+            ),
         ));
         insert_event_localisation(card, &event_id, &mut loc_entries);
     }
@@ -94,6 +124,39 @@ pub(crate) fn apply_event_cards_to_mod(
     }
 
     Ok(changed)
+}
+
+pub(crate) fn collect_event_picture_catalog(
+    mod_root: &Path,
+    game_index: Option<&GameIndex>,
+) -> Result<BTreeSet<String>, String> {
+    let mut pictures = BTreeSet::new();
+    let interface_root = mod_root.join("interface");
+    if interface_root.exists() {
+        for file in collect_files(&interface_root)? {
+            if file.extension().and_then(OsStr::to_str).unwrap_or("") != "gfx" {
+                continue;
+            }
+            collect_event_pictures(&read_utf8_lossy(&file)?, &mut pictures);
+        }
+    }
+    if let Some(index) = game_index {
+        pictures.extend(index.event_pictures.iter().cloned());
+    }
+    Ok(pictures)
+}
+
+pub(crate) fn resolve_event_picture(card: &Card, catalog: &BTreeSet<String>) -> String {
+    if let Some(explicit) = card.fields.get("图片").map(|value| value.trim_matches('"')) {
+        if is_reference_identifier(explicit) {
+            return explicit.to_string();
+        }
+        let semantic_title = format!("{} {explicit}", card.title);
+        return choose_semantic_reference_from_catalog(&semantic_title, catalog)
+            .unwrap_or_else(|| "GFX_report_event_generic".to_string());
+    }
+    choose_semantic_reference_from_catalog(&card.title, catalog)
+        .unwrap_or_else(|| "GFX_report_event_generic".to_string())
 }
 
 pub(crate) fn event_card_namespace(card: &Card, prefix: &str) -> String {
@@ -233,19 +296,15 @@ pub(crate) fn event_card_numbered_ids(cards: &[Card], prefix: &str) -> Vec<(Stri
         .collect()
 }
 
-pub(crate) fn render_event_block(
+pub(crate) fn render_event_block_with_picture(
     card: &Card,
     event_id: &str,
     tag: &str,
     prefix: &str,
     fingerprint: Option<&str>,
+    picture: &str,
 ) -> String {
     let event_type = normalize_event_type(card.fields.get("类型").map(String::as_str));
-    let picture = card
-        .fields
-        .get("图片")
-        .map(String::as_str)
-        .unwrap_or("GFX_report_event_generic");
     let trigger = card.fields.get("触发").or_else(|| card.fields.get("条件"));
     let trigger_lines = trigger
         .map(|text| {

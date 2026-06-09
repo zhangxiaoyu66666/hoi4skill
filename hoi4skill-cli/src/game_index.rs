@@ -15,6 +15,9 @@ pub(crate) struct GameIndex {
     pub(crate) sprites: BTreeSet<String>,
     pub(crate) focus_goal_sprites: BTreeSet<String>,
     pub(crate) idea_pictures: BTreeSet<String>,
+    pub(crate) event_pictures: BTreeSet<String>,
+    pub(crate) decision_icons: BTreeSet<String>,
+    pub(crate) decision_category_pictures: BTreeSet<String>,
     pub(crate) buildings: BTreeSet<String>,
     pub(crate) building_max_levels: BTreeMap<String, i64>,
     pub(crate) resources: BTreeSet<String>,
@@ -162,6 +165,9 @@ pub(crate) fn collect_game_index_root(index: &mut GameIndex, root: &Path) -> Res
             collect_sprite_names(&text, &mut index.sprites);
             collect_focus_goal_icons_from_gfx_file(&file, &text, &mut index.focus_goal_sprites);
             collect_idea_pictures(&text, &mut index.idea_pictures);
+            collect_event_pictures(&text, &mut index.event_pictures);
+            collect_decision_icons(&text, &mut index.decision_icons);
+            collect_decision_category_pictures(&text, &mut index.decision_category_pictures);
         }
     }
     Ok(())
@@ -359,6 +365,36 @@ pub(crate) fn collect_idea_pictures(text: &str, pictures: &mut BTreeSet<String>)
     );
 }
 
+pub(crate) fn collect_event_pictures(text: &str, pictures: &mut BTreeSet<String>) {
+    let mut sprites = BTreeSet::new();
+    collect_sprite_names(text, &mut sprites);
+    pictures.extend(
+        sprites
+            .into_iter()
+            .filter(|sprite| sprite.starts_with("GFX_report_event_")),
+    );
+}
+
+pub(crate) fn collect_decision_icons(text: &str, icons: &mut BTreeSet<String>) {
+    let mut sprites = BTreeSet::new();
+    collect_sprite_names(text, &mut sprites);
+    icons.extend(sprites.into_iter().filter_map(|sprite| {
+        sprite
+            .strip_prefix("GFX_decision_")
+            .filter(|name| !name.starts_with("category_"))
+            .map(str::to_string)
+    }));
+}
+
+pub(crate) fn collect_decision_category_pictures(text: &str, pictures: &mut BTreeSet<String>) {
+    let mut sprites = BTreeSet::new();
+    collect_sprite_names(text, &mut sprites);
+    pictures.extend(sprites.into_iter().filter(|sprite| {
+        sprite.starts_with("GFX_decision_category_")
+            || sprite.starts_with("GFX_decision_cat_picture_")
+    }));
+}
+
 pub(crate) fn game_index_json(index: &GameIndex) -> String {
     let indexed_roots = index
         .indexed_roots
@@ -369,6 +405,13 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
     let sprites = index.sprites.iter().cloned().collect::<Vec<_>>();
     let focus_goal_sprites = index.focus_goal_sprites.iter().cloned().collect::<Vec<_>>();
     let idea_pictures = index.idea_pictures.iter().cloned().collect::<Vec<_>>();
+    let event_pictures = index.event_pictures.iter().cloned().collect::<Vec<_>>();
+    let decision_icons = index.decision_icons.iter().cloned().collect::<Vec<_>>();
+    let decision_category_pictures = index
+        .decision_category_pictures
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
     let buildings = index.buildings.iter().cloned().collect::<Vec<_>>();
     let resources = index.resources.iter().cloned().collect::<Vec<_>>();
     let ideologies = index.ideologies.iter().cloned().collect::<Vec<_>>();
@@ -386,7 +429,7 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
     let state_ids = index.state_ids.iter().copied().collect::<Vec<_>>();
     let province_ids = index.province_ids.iter().copied().collect::<Vec<_>>();
     format!(
-        "{{\n  \"game\": {{\"id\": {}, \"display_name\": {}}},\n  \"game_root\": {},\n  \"indexed_roots\": {},\n  \"country_tags\": {},\n  \"state_ids\": {},\n  \"state_names\": {},\n  \"province_ids\": {},\n  \"sprites\": {},\n  \"focus_goal_sprites\": {},\n  \"idea_pictures\": {},\n  \"buildings\": {},\n  \"building_max_levels\": {},\n  \"resources\": {},\n  \"ideologies\": {},\n  \"traits\": {},\n  \"equipment_types\": {},\n  \"technologies\": {},\n  \"technology_categories\": {},\n  \"sub_units\": {},\n  \"wargoal_types\": {},\n  \"modifiers\": {},\n  \"counts\": {{\"indexed_roots\": {}, \"country_tags\": {}, \"state_ids\": {}, \"state_names\": {}, \"province_ids\": {}, \"sprites\": {}, \"focus_goal_sprites\": {}, \"idea_pictures\": {}, \"buildings\": {}, \"building_max_levels\": {}, \"resources\": {}, \"ideologies\": {}, \"traits\": {}, \"equipment_types\": {}, \"technologies\": {}, \"technology_categories\": {}, \"sub_units\": {}, \"wargoal_types\": {}, \"modifiers\": {}}}\n}}\n",
+        "{{\n  \"game\": {{\"id\": {}, \"display_name\": {}}},\n  \"game_root\": {},\n  \"indexed_roots\": {},\n  \"country_tags\": {},\n  \"state_ids\": {},\n  \"state_names\": {},\n  \"province_ids\": {},\n  \"sprites\": {},\n  \"focus_goal_sprites\": {},\n  \"idea_pictures\": {},\n  \"event_pictures\": {},\n  \"decision_icons\": {},\n  \"decision_category_pictures\": {},\n  \"buildings\": {},\n  \"building_max_levels\": {},\n  \"resources\": {},\n  \"ideologies\": {},\n  \"traits\": {},\n  \"equipment_types\": {},\n  \"technologies\": {},\n  \"technology_categories\": {},\n  \"sub_units\": {},\n  \"wargoal_types\": {},\n  \"modifiers\": {},\n  \"counts\": {{\"indexed_roots\": {}, \"country_tags\": {}, \"state_ids\": {}, \"state_names\": {}, \"province_ids\": {}, \"sprites\": {}, \"focus_goal_sprites\": {}, \"idea_pictures\": {}, \"event_pictures\": {}, \"decision_icons\": {}, \"decision_category_pictures\": {}, \"buildings\": {}, \"building_max_levels\": {}, \"resources\": {}, \"ideologies\": {}, \"traits\": {}, \"equipment_types\": {}, \"technologies\": {}, \"technology_categories\": {}, \"sub_units\": {}, \"wargoal_types\": {}, \"modifiers\": {}}}\n}}\n",
         json_str(HOI4_PROFILE.id),
         json_str(HOI4_PROFILE.display_name),
         json_str(&index.game_root.display().to_string()),
@@ -398,6 +441,9 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
         json_array(&sprites),
         json_array(&focus_goal_sprites),
         json_array(&idea_pictures),
+        json_array(&event_pictures),
+        json_array(&decision_icons),
+        json_array(&decision_category_pictures),
         json_array(&buildings),
         json_i64_object(&index.building_max_levels),
         json_array(&resources),
@@ -417,6 +463,9 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
         index.sprites.len(),
         index.focus_goal_sprites.len(),
         index.idea_pictures.len(),
+        index.event_pictures.len(),
+        index.decision_icons.len(),
+        index.decision_category_pictures.len(),
         index.buildings.len(),
         index.building_max_levels.len(),
         index.resources.len(),

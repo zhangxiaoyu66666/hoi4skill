@@ -16,7 +16,7 @@ When the user can supply a real HOI4 install or dependency mod roots, run:
 hoi4skill validate "<mod-root>" --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod"
 ```
 
-With an indexed game/mod codebase, invented references are fatal errors instead of soft warnings. That includes unknown focus IDs, country tags, `GFX_goal*` sprites, technologies, equipment types, wargoal types, ideologies, resources, building types, and indexed modifiers.
+With an indexed game/mod codebase, invented references are fatal errors instead of soft warnings. That includes unknown focus IDs, country tags, focus/idea/decision/event sprites, technologies, equipment types, wargoal types, ideologies, resources, building types, and indexed modifiers.
 
 ## Manual Syntax Checklist
 

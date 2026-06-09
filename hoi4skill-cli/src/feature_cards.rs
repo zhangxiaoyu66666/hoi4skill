@@ -199,8 +199,8 @@ pub(crate) fn apply_feature_cards_to_mod_with_index(
 ) -> Result<Vec<PathBuf>, String> {
     let decision_targets = scan_decision_category_targets(mod_root)?;
     let idea_targets = scan_idea_file_targets(mod_root)?;
-    let idea_picture_catalog = collect_idea_picture_catalog(mod_root, game_index)?;
-    let mut categories: BTreeMap<String, (String, String)> = BTreeMap::new();
+    let icon_catalog = collect_feature_icon_catalog(mod_root, game_index)?;
+    let mut categories: BTreeMap<String, GeneratedDecisionCategory> = BTreeMap::new();
     let mut decision_blocks: Vec<(String, String)> = Vec::new();
     let mut existing_decision_appends: BTreeMap<PathBuf, BTreeMap<String, Vec<(String, String)>>> =
         BTreeMap::new();
@@ -229,6 +229,7 @@ pub(crate) fn apply_feature_cards_to_mod_with_index(
                     slugify(category_title, &format!("category_{idx}"))
                 );
                 let decision_id = feature_card_id(card, prefix, "decision", idx);
+                let decision_icon = resolve_decision_icon(card, &icon_catalog.decision_icons);
                 if let Some(existing) = select_decision_category_target(
                     &decision_targets,
                     target,
@@ -242,15 +243,38 @@ pub(crate) fn apply_feature_cards_to_mod_with_index(
                         .or_default()
                         .push((
                             decision_id.clone(),
-                            render_decision_inner_block(card, &decision_id, target, idx),
+                            render_decision_inner_block_with_icon(
+                                card,
+                                &decision_id,
+                                target,
+                                idx,
+                                &decision_icon,
+                            ),
                         ));
                 } else {
-                    categories
-                        .entry(category_id.clone())
-                        .or_insert_with(|| (category_title.to_string(), target.to_string()));
+                    let category_picture = resolve_decision_category_picture(
+                        card,
+                        category_title,
+                        &icon_catalog.decision_category_pictures,
+                    );
+                    let category_icon = format!("GFX_decision_{decision_icon}");
+                    categories.entry(category_id.clone()).or_insert_with(|| {
+                        GeneratedDecisionCategory {
+                            target: target.to_string(),
+                            icon: category_icon,
+                            picture: category_picture,
+                        }
+                    });
                     decision_blocks.push((
                         decision_id.clone(),
-                        render_decision_block(card, &category_id, &decision_id, target, idx),
+                        render_decision_block_with_icon(
+                            card,
+                            &category_id,
+                            &decision_id,
+                            target,
+                            idx,
+                            &decision_icon,
+                        ),
                     ));
                     loc_entries.insert(category_id, category_title.to_string());
                 }
@@ -266,7 +290,7 @@ pub(crate) fn apply_feature_cards_to_mod_with_index(
             "民族精神" => {
                 let target = card.fields.get("目标").map(String::as_str).unwrap_or(tag);
                 let idea_id = feature_card_id(card, prefix, "idea", idx);
-                let picture = resolve_idea_picture(card, &idea_picture_catalog);
+                let picture = resolve_idea_picture(card, &icon_catalog.idea_pictures);
                 if let Some(existing) = select_idea_file_target(&idea_targets, target) {
                     existing_idea_appends
                         .entry(existing.path.clone())
@@ -367,7 +391,17 @@ pub(crate) fn apply_feature_cards_to_mod_with_index(
     if !categories.is_empty() {
         let blocks = categories
             .iter()
-            .map(|(id, (_, target))| (id.clone(), render_decision_category_block(id, target)))
+            .map(|(id, category)| {
+                (
+                    id.clone(),
+                    render_decision_category_block_with_icons(
+                        id,
+                        &category.target,
+                        &category.icon,
+                        &category.picture,
+                    ),
+                )
+            })
             .collect::<Vec<_>>();
         let path = mod_root
             .join("common")
@@ -547,10 +581,21 @@ pub(crate) fn ensure_idea_localisation_key_suffix(id: &str) -> String {
     }
 }
 
-pub(crate) fn render_decision_category_block(id: &str, target: &str) -> String {
+pub(crate) fn render_decision_category_block_with_icons(
+    id: &str,
+    target: &str,
+    icon: &str,
+    picture: &str,
+) -> String {
     format!(
-        "{id} = {{\n\ticon = GFX_decision_generic_political_reform\n\tpicture = GFX_decision_category_generic_political_reform\n\tallowed = {{\n\t\toriginal_tag = {target}\n\t}}\n\tvisible = {{\n\t\ttag = {target}\n\t}}\n\tvisible_when_empty = yes\n}}\n"
+        "{id} = {{\n\ticon = {icon}\n\tpicture = {picture}\n\tallowed = {{\n\t\toriginal_tag = {target}\n\t}}\n\tvisible = {{\n\t\ttag = {target}\n\t}}\n\tvisible_when_empty = yes\n}}\n"
     )
+}
+
+pub(crate) struct GeneratedDecisionCategory {
+    pub(crate) target: String,
+    pub(crate) icon: String,
+    pub(crate) picture: String,
 }
 
 #[derive(Clone)]
@@ -698,31 +743,34 @@ pub(crate) fn decision_category_name_matches(
             .is_some_and(|title| title.trim() == category_title.trim())
 }
 
-pub(crate) fn render_decision_block(
+pub(crate) fn render_decision_block_with_icon(
     card: &Card,
     category_id: &str,
     decision_id: &str,
     target: &str,
     idx: usize,
+    icon: &str,
 ) -> String {
     let mut out = String::new();
     out.push_str(&format!("{category_id} = {{\n"));
-    out.push_str(&render_decision_inner_block(card, decision_id, target, idx));
+    out.push_str(&render_decision_inner_block_with_icon(
+        card,
+        decision_id,
+        target,
+        idx,
+        icon,
+    ));
     out.push_str("}\n");
     out
 }
 
-pub(crate) fn render_decision_inner_block(
+pub(crate) fn render_decision_inner_block_with_icon(
     card: &Card,
     decision_id: &str,
     target: &str,
     idx: usize,
+    icon: &str,
 ) -> String {
-    let icon = card
-        .fields
-        .get("图标")
-        .map(String::as_str)
-        .unwrap_or("generic_political_discourse");
     let cost = card
         .fields
         .get("花费")
@@ -834,24 +882,42 @@ pub(crate) fn render_idea_inner_block_with_picture(
     out
 }
 
-pub(crate) fn collect_idea_picture_catalog(
+#[derive(Default)]
+pub(crate) struct FeatureIconCatalog {
+    pub(crate) idea_pictures: BTreeSet<String>,
+    pub(crate) decision_icons: BTreeSet<String>,
+    pub(crate) decision_category_pictures: BTreeSet<String>,
+}
+
+pub(crate) fn collect_feature_icon_catalog(
     mod_root: &Path,
     game_index: Option<&GameIndex>,
-) -> Result<BTreeSet<String>, String> {
-    let mut pictures = BTreeSet::new();
+) -> Result<FeatureIconCatalog, String> {
+    let mut catalog = FeatureIconCatalog::default();
     let interface_root = mod_root.join("interface");
     if interface_root.exists() {
         for file in collect_files(&interface_root)? {
             if file.extension().and_then(OsStr::to_str).unwrap_or("") != "gfx" {
                 continue;
             }
-            collect_idea_pictures(&read_utf8_lossy(&file)?, &mut pictures);
+            let text = read_utf8_lossy(&file)?;
+            collect_idea_pictures(&text, &mut catalog.idea_pictures);
+            collect_decision_icons(&text, &mut catalog.decision_icons);
+            collect_decision_category_pictures(&text, &mut catalog.decision_category_pictures);
         }
     }
     if let Some(index) = game_index {
-        pictures.extend(index.idea_pictures.iter().cloned());
+        catalog
+            .idea_pictures
+            .extend(index.idea_pictures.iter().cloned());
+        catalog
+            .decision_icons
+            .extend(index.decision_icons.iter().cloned());
+        catalog
+            .decision_category_pictures
+            .extend(index.decision_category_pictures.iter().cloned());
     }
-    Ok(pictures)
+    Ok(catalog)
 }
 
 pub(crate) fn resolve_idea_picture(card: &Card, catalog: &BTreeSet<String>) -> String {
@@ -888,6 +954,107 @@ pub(crate) fn choose_idea_picture_from_catalog(
         }
     }
     best.map(|(_, picture)| picture)
+}
+
+pub(crate) fn resolve_decision_icon(card: &Card, catalog: &BTreeSet<String>) -> String {
+    if let Some(explicit) = card.fields.get("图标").map(|value| value.trim_matches('"')) {
+        let normalized = explicit.strip_prefix("GFX_decision_").unwrap_or(explicit);
+        if is_reference_identifier(normalized) && !normalized.starts_with("category_") {
+            return normalized.to_string();
+        }
+        let semantic_title = format!("{} {explicit}", card.title);
+        return choose_semantic_reference_from_catalog(&semantic_title, catalog)
+            .unwrap_or_else(|| "generic_political_discourse".to_string());
+    }
+    choose_semantic_reference_from_catalog(&card.title, catalog)
+        .unwrap_or_else(|| "generic_political_discourse".to_string())
+}
+
+pub(crate) fn resolve_decision_category_picture(
+    card: &Card,
+    category_title: &str,
+    catalog: &BTreeSet<String>,
+) -> String {
+    if let Some(explicit) = card
+        .fields
+        .get("分类图片")
+        .or_else(|| card.fields.get("分类图标"))
+        .map(|value| value.trim_matches('"'))
+    {
+        if is_reference_identifier(explicit) {
+            return explicit.to_string();
+        }
+    }
+    let semantic_title = format!("{} {}", category_title, card.title);
+    choose_semantic_reference_from_catalog(&semantic_title, catalog)
+        .unwrap_or_else(|| "GFX_decision_category_generic_political_reform".to_string())
+}
+
+pub(crate) fn choose_semantic_reference_from_catalog(
+    title: &str,
+    catalog: &BTreeSet<String>,
+) -> Option<String> {
+    let keywords = focus_icon_keywords(title);
+    let mut best: Option<(i32, String)> = None;
+    for item in catalog {
+        let lower = item.to_ascii_lowercase();
+        let mut score = 1;
+        for keyword in &keywords {
+            if lower.contains(keyword) {
+                score += 10;
+            }
+        }
+        if lower.contains("_generic_") {
+            score += 1;
+        }
+        if lower.contains("attack_")
+            || lower.contains("crush_")
+            || lower.contains("counter_")
+            || lower.contains("anti_")
+            || lower.contains("ban_")
+        {
+            score -= 4;
+        }
+        if lower.contains("fascist") || lower.contains("fascism") {
+            score -= 12;
+        }
+        if (lower.contains("monarchist") || lower.contains("monarchy")) && !title.contains("君主")
+        {
+            score -= 12;
+        }
+        if lower.contains("africa") && !title.contains("非洲") {
+            score -= 6;
+        }
+        if (lower.contains("armor")
+            || lower.contains("armored")
+            || lower.contains("air")
+            || lower.contains("naval")
+            || lower.contains("tank")
+            || lower.contains("fleet"))
+            && !(title.contains("军")
+                || title.contains("武装")
+                || title.contains("战争")
+                || title.contains("空军")
+                || title.contains("海军")
+                || title.contains("坦克")
+                || title.contains("装甲")
+                || title.contains("舰"))
+        {
+            score -= 6;
+        }
+        if lower.contains("spain") && !title.contains("西班牙") {
+            score -= 4;
+        }
+        if lower.contains("unknown") || lower.contains("placeholder") {
+            score -= 8;
+        }
+        if best.as_ref().is_none_or(|(best_score, best_item)| {
+            score > *best_score || (score == *best_score && item < best_item)
+        }) {
+            best = Some((score, item.clone()));
+        }
+    }
+    best.map(|(_, item)| item)
 }
 
 pub(crate) fn render_technology_inner_block(

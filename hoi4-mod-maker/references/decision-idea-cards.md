@@ -200,14 +200,15 @@ For decisions:
 
 1. Create or reuse a decision category.
 2. Add `allowed`, `visible`, `available`, `cost`, `days_remove`, and `complete_effect`.
-3. Add localisation for category, decision, and description.
-4. Use the target mod's existing decision style when available.
+3. Choose `icon`, category `icon`, and category `picture` by meaning from verified `GFX_decision_*`, `GFX_decision_category_*`, or `GFX_decision_cat_picture_*` sprites when a game/dependency index is available.
+4. Add localisation for category, decision, and description.
+5. Use the target mod's existing decision style when available.
 
 For ideas:
 
 1. Add an `ideas = { country = { ... } }` entry or append inside an existing target-country `country = { ... }` wrapper.
 2. Generate a scripted ID ending with `_idea`, for example `FER_fragmented_railway_authority_idea`.
-3. Add `picture`, `removal_cost`, and `modifier`.
+3. Choose `picture` by meaning from verified `GFX_idea_<name>` sprites, then write the bare `<name>` in the idea block.
 4. Add localisation for name and `_desc` in the country's localisation file under the national-spirit section.
 5. If a focus or decision grants the idea, ensure that feature references the generated idea ID.
 

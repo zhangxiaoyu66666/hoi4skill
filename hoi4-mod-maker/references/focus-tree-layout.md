@@ -104,7 +104,7 @@ For real focus icons, pass a game root and dependency mods when available:
 hoi4skill apply-focus-layout --input layout.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_alt --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod"
 ```
 
-With `--game-root`, the writer chooses missing icons from verified `GFX_goal*` sprites found in the target mod and game/dependency `interface/*.gfx` files.
+With `--game-root`, the writer chooses missing icons from verified focus icon sprites found in the target mod and game/dependency `interface/goals*.gfx` files. Vanilla uses both `GFX_goal...` and `GFX_focus...`.
 
 ## Excel Layout
 
@@ -132,10 +132,10 @@ completion_reward: 1个军工厂
 
 Icon rules:
 
-- `icon:` values must be verified `GFX_goal*` sprite names from the target mod, dependency mods, or game `interface/*.gfx`.
+- `icon:` values must be verified focus sprite names from the target mod, dependency mods, or game `interface/goals*.gfx`; valid vanilla names include both `GFX_goal...` and `GFX_focus...`.
 - Do not invent icon names from a focus title.
 - If no verified focus icon is available, use `GFX_goal_unknown` and report that the icon index is missing.
-- For custom images, run `hoi4skill register-gfx-icons` first, then use the generated `GFX_goal*` sprite name.
+- For custom images, run `hoi4skill register-gfx-icons` first, then use the generated focus sprite name.
 - In `.xlsx`/`.xlsm`, Chinese focus titles stored in anchored text boxes or shapes are imported from the worksheet drawing XML and merged with an English ID in the underlying cell. Do not tell the user to manually unzip or re-read the workbook when the title is in a standard OOXML drawing.
 - Excel `互斥` markers are explicit-only: connect the nearest left and right focus in that same worksheet row. Do not add mutual exclusion to other rows or infer it from branch symmetry, route ideology, or proximity.
 

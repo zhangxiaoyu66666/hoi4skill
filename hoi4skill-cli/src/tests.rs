@@ -1074,7 +1074,9 @@ fn apply_focus_layout_uses_indexed_goal_icons() {
     .unwrap();
     fs::write(
         game.join("interface").join("game_goals.gfx"),
-        r#"spriteType = { name = "GFX_goal_game_factory" texturefile = "gfx/interface/goals/factory.dds" }"#,
+        r#"spriteType = { name = "GFX_goal_game_factory" texturefile = "gfx/interface/goals/factory.dds" }
+spriteType = { name = "GFX_focus_generic_workers" texturefile = "gfx/interface/goals/workers.dds" }
+spriteType = { name = "GFX_focus_SOV_socialism_in_one_country" texturefile = "gfx/interface/goals/socialism.dds" }"#,
     )
     .unwrap();
     fs::write(
@@ -1088,7 +1090,11 @@ fn apply_focus_layout_uses_indexed_goal_icons() {
     )
     .unwrap();
     let index = build_game_index(&game).unwrap();
-    let layout = parse_focus_layout("工业复兴\n政治改革\n", "SOV", "sov_alt");
+    let layout = parse_focus_layout(
+        "工业复兴\n政治改革\n工人起义   社会主义建设\n",
+        "SOV",
+        "sov_alt",
+    );
 
     apply_focus_layout_to_mod_with_index(&root, &layout, "SOV", "sov_alt", Some(&index)).unwrap();
 
@@ -1102,12 +1108,52 @@ fn apply_focus_layout_uses_indexed_goal_icons() {
     fs::remove_dir_all(&game).unwrap();
 
     assert!(index.focus_goal_sprites.contains("GFX_goal_game_factory"));
+    assert!(index
+        .focus_goal_sprites
+        .contains("GFX_focus_generic_workers"));
+    assert!(index
+        .focus_goal_sprites
+        .contains("GFX_focus_SOV_socialism_in_one_country"));
     assert!(!index.focus_goal_sprites.contains("GFX_goal_aaa_factory"));
     assert!(focus_file.contains("id = SOV_industry_revival"));
     assert!(focus_file.contains("icon = GFX_goal_game_factory"));
     assert!(!focus_file.contains("icon = GFX_goal_aaa_factory"));
     assert!(focus_file.contains("id = SOV_political_reform"));
     assert!(focus_file.contains("icon = GFX_goal_local_political_reform"));
+    assert!(focus_file.contains("id = SOV_industry"));
+    assert!(focus_file.contains("icon = GFX_focus_generic_workers"));
+    assert!(focus_file.contains("id = SOV_society_build"));
+    assert!(focus_file.contains("icon = GFX_focus_SOV_socialism_in_one_country"));
+}
+
+#[test]
+fn workflow_dry_run_embeds_semantic_indexed_focus_icons() {
+    let game = unique_temp_dir("workflow-dry-run-icons-game");
+    fs::create_dir_all(game.join("interface")).unwrap();
+    fs::write(
+        game.join("interface").join("goals.gfx"),
+        r#"spriteType = { name = "GFX_focus_generic_workers" texturefile = "gfx/interface/goals/workers.dds" }
+spriteType = { name = "GFX_focus_SOV_socialism_in_one_country" texturefile = "gfx/interface/goals/socialism.dds" }"#,
+    )
+    .unwrap();
+    let index = build_game_index(&game).unwrap();
+
+    let json = run_workflow_json(
+        "国策树：\n工人起义   社会主义建设\n",
+        None,
+        "SOV",
+        "sov_alt",
+        None,
+        true,
+        Some(&index),
+    )
+    .unwrap();
+    fs::remove_dir_all(&game).unwrap();
+
+    assert!(json.contains("\"title\": \"工人起义\""));
+    assert!(json.contains("\"icon\": \"GFX_focus_generic_workers\""));
+    assert!(json.contains("\"title\": \"社会主义建设\""));
+    assert!(json.contains("\"icon\": \"GFX_focus_SOV_socialism_in_one_country\""));
 }
 
 #[test]
@@ -1127,9 +1173,15 @@ fn apply_feature_cards_uses_registered_idea_picture_without_gfx_prefix() {
         r#"spriteType = { name = "GFX_idea_democratic_planned_economy" texturefile = "gfx//interface//ideas//democratic_planned_economy.dds" }"#,
     )
     .unwrap();
+    fs::write(
+        game.join("interface").join("decisions.gfx"),
+        r#"spriteType = { name = "GFX_decision_SOV_the_workers_dictatorship" texturefile = "gfx/interface/decisions/workers.dds" }
+spriteType = { name = "GFX_decision_category_generic_communism" texturefile = "gfx/interface/decisions/category_communism.dds" }"#,
+    )
+    .unwrap();
     let index = build_game_index(&game).unwrap();
     let cards = parse_cards(
-        "民族精神：民主计划经济\n目标：SOV\n效果：稳定度+5%",
+        "民族精神：民主计划经济\n目标：SOV\n效果：稳定度+5%\n\n决议：工人委员会动员\n目标：SOV\n分类：共产主义动员\n效果：政治点+25",
         FEATURE_CARD_HEADERS,
     );
 
@@ -1142,12 +1194,34 @@ fn apply_feature_cards_uses_registered_idea_picture_without_gfx_prefix() {
             .join("sov_reform_ideas.txt"),
     )
     .unwrap();
+    let decisions = fs::read_to_string(
+        root.join("common")
+            .join("decisions")
+            .join("sov_reform_decisions.txt"),
+    )
+    .unwrap();
+    let categories = fs::read_to_string(
+        root.join("common")
+            .join("decisions")
+            .join("categories")
+            .join("sov_reform_categories.txt"),
+    )
+    .unwrap();
     fs::remove_dir_all(&root).unwrap();
     fs::remove_dir_all(&game).unwrap();
 
     assert!(index.idea_pictures.contains("democratic_planned_economy"));
+    assert!(index
+        .decision_icons
+        .contains("SOV_the_workers_dictatorship"));
+    assert!(index
+        .decision_category_pictures
+        .contains("GFX_decision_category_generic_communism"));
     assert!(ideas.contains("picture = democratic_planned_economy"));
     assert!(!ideas.contains("picture = GFX_idea_democratic_planned_economy"));
+    assert!(decisions.contains("icon = SOV_the_workers_dictatorship"));
+    assert!(categories.contains("icon = GFX_decision_SOV_the_workers_dictatorship"));
+    assert!(categories.contains("picture = GFX_decision_category_generic_communism"));
 }
 
 #[test]
@@ -2034,6 +2108,36 @@ fn apply_event_cards_writes_events_and_localisation() {
 }
 
 #[test]
+fn apply_event_cards_uses_indexed_semantic_event_picture() {
+    let root = unique_temp_dir("apply-event-cards-indexed-picture");
+    let game = unique_temp_dir("apply-event-cards-game-picture");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(game.join("interface")).unwrap();
+    fs::write(
+        game.join("interface").join("eventpictures.gfx"),
+        r#"spriteType = { name = "GFX_report_event_generic" texturefile = "gfx/event_pictures/generic.dds" }
+spriteType = { name = "GFX_report_event_soviet_workers_revolution" texturefile = "gfx/event_pictures/workers.dds" }"#,
+    )
+    .unwrap();
+    let index = build_game_index(&game).unwrap();
+    let cards = parse_cards(
+        "事件：工人革命胜利\n类型：新闻事件\n命名空间：sov_news\n选项A：万岁",
+        &["事件"],
+    );
+
+    apply_event_cards_to_mod_with_index(&root, &cards, "SOV", "sov_news", Some(&index)).unwrap();
+
+    let events = fs::read_to_string(root.join("events").join("sov_news_events.txt")).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&game).unwrap();
+
+    assert!(index
+        .event_pictures
+        .contains("GFX_report_event_soviet_workers_revolution"));
+    assert!(events.contains("picture = GFX_report_event_soviet_workers_revolution"));
+}
+
+#[test]
 fn apply_event_cards_continues_existing_namespace_numbers() {
     let root = unique_temp_dir("apply-event-cards-existing-namespace");
     let events_dir = root.join("events");
@@ -2777,7 +2881,24 @@ fn game_index_collects_tags_states_and_sprites() {
     .unwrap();
     fs::write(
         root.join("interface").join("goals.gfx"),
-        r#"spriteType = { name = "GFX_goal_game_focus_icon" texturefile = "gfx/interface/goals/game.dds" }"#,
+        r#"spriteType = { name = "GFX_goal_game_focus_icon" texturefile = "gfx/interface/goals/game.dds" }
+spriteType = { name = "GFX_focus_generic_workers" texturefile = "gfx/interface/goals/workers.dds" }"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("interface").join("ideas.gfx"),
+        r#"spriteType = { name = "GFX_idea_workers_council" texturefile = "gfx/interface/ideas/workers.dds" }"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("interface").join("decisions.gfx"),
+        r#"spriteType = { name = "GFX_decision_SOV_the_workers_dictatorship" texturefile = "gfx/interface/decisions/workers.dds" }
+spriteType = { name = "GFX_decision_category_generic_communism" texturefile = "gfx/interface/decisions/category_communism.dds" }"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("interface").join("eventpictures.gfx"),
+        r#"spriteType = { name = "GFX_report_event_soviet_workers_revolution" texturefile = "gfx/event_pictures/workers.dds" }"#,
     )
     .unwrap();
 
@@ -2796,6 +2917,19 @@ fn game_index_collects_tags_states_and_sprites() {
     assert!(index
         .focus_goal_sprites
         .contains("GFX_goal_game_focus_icon"));
+    assert!(index
+        .focus_goal_sprites
+        .contains("GFX_focus_generic_workers"));
+    assert!(index.idea_pictures.contains("workers_council"));
+    assert!(index
+        .event_pictures
+        .contains("GFX_report_event_soviet_workers_revolution"));
+    assert!(index
+        .decision_icons
+        .contains("SOV_the_workers_dictatorship"));
+    assert!(index
+        .decision_category_pictures
+        .contains("GFX_decision_category_generic_communism"));
     assert!(index.buildings.contains("arms_factory"));
     assert_eq!(index.building_max_levels.get("arms_factory"), Some(&5));
     assert_eq!(
@@ -2815,8 +2949,15 @@ fn game_index_collects_tags_states_and_sprites() {
     assert!(json.contains("\"state_ids\": [64]"));
     assert!(json.contains("\"state_names\": {\"STATE_64\": 64}"));
     assert!(json.contains("\"province_ids\": [123, 456, 789]"));
-    assert!(json.contains("\"sprites\": [\"GFX_goal_game_focus_icon\"]"));
-    assert!(json.contains("\"focus_goal_sprites\": [\"GFX_goal_game_focus_icon\"]"));
+    assert!(json.contains("\"GFX_goal_game_focus_icon\""));
+    assert!(json.contains(
+        "\"focus_goal_sprites\": [\"GFX_focus_generic_workers\", \"GFX_goal_game_focus_icon\"]"
+    ));
+    assert!(json.contains("\"idea_pictures\": [\"workers_council\"]"));
+    assert!(json.contains("\"event_pictures\": [\"GFX_report_event_soviet_workers_revolution\"]"));
+    assert!(json.contains("\"decision_icons\": [\"SOV_the_workers_dictatorship\"]"));
+    assert!(json
+        .contains("\"decision_category_pictures\": [\"GFX_decision_category_generic_communism\"]"));
     assert!(json.contains("\"buildings\": [\"arms_factory\", \"industrial_complex\"]"));
     assert!(
         json.contains("\"building_max_levels\": {\"arms_factory\": 5, \"industrial_complex\": 10}")
@@ -3497,8 +3638,8 @@ fn focus_copy_cards_render_prompt_batch() {
     assert!(markdown.contains("relative_position_id =  #基于某个国策位置的相对位置"));
     assert!(markdown.contains("country = { factor = 0 modifier = { add = 10 tag = <TAG> } }"));
     assert!(markdown.contains("y=0 一个开篇国策 x=0"));
-    assert!(markdown.contains("真实 `GFX_goal*` 国策图标"));
-    assert!(markdown.contains("icon = <verified GFX_goal* from interface/*.gfx"));
+    assert!(markdown.contains("真实国策图标 sprite"));
+    assert!(markdown.contains("icon = <verified focus icon sprite from interface/goals*.gfx"));
 }
 
 #[test]

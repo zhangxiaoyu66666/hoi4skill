@@ -178,8 +178,9 @@ Create new files when:
 - Do not generate mod display-name localisation such as `<prefix>_mod_name:0 "..."` or `chinaprc_1979_mod_name:0 "..."`; mod names belong in `descriptor.mod` and the launcher-side `.mod` file.
 - National-spirit IDs must end with `_idea`; keep their localisation in the national-spirit section, not the focus-tree section.
 - If the user asks for a national focus tree or route but gives no visual layout, use the default five-stage x/y template: one opening focus, two to four expansion focuses, one phase result, two to four expansion focuses, and one closing result. Keep same-row `x` values spaced by 2.
-- National-focus icons must be chosen from verified `GFX_goal*` sprites read from target/dependency/game `interface/*.gfx` via `mod-knowledge`, `build-game-index`, or `run-workflow/apply-focus-layout --game-root`; do not invent icon sprite names.
-- National-spirit pictures must be chosen from verified `GFX_idea_<name>` registrations. The sprite registration keeps the full `GFX_idea_` prefix, while the idea block uses `picture = <name>` without that prefix.
+- National-focus icons must be chosen from verified focus sprites read from target/dependency/game `interface/goals*.gfx` via `mod-knowledge`, `build-game-index`, or `run-workflow/apply-focus-layout --game-root`; vanilla uses both `GFX_goal...` and `GFX_focus...`. Match by meaning, such as socialist/communist/worker/revolution keywords for left-route focuses, and do not invent icon sprite names.
+- National-spirit pictures must be chosen by meaning from verified `GFX_idea_<name>` registrations. The sprite registration keeps the full `GFX_idea_` prefix, while the idea block uses `picture = <name>` without that prefix.
+- Decision icons, decision category pictures, and event pictures must likewise come from verified `GFX_decision_*`, `GFX_decision_category_*` / `GFX_decision_cat_picture_*`, and `GFX_report_event_*` sprites, selected by the feature title/meaning rather than a generic placeholder when an index is available.
 - Unique-technology IDs generated from cards end with `_tech`.
 - Special-GUI IDs generated from cards end with `_gui`.
 - Scripted-effect IDs generated from cards end with `_effect`.

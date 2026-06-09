@@ -458,7 +458,7 @@ pub(crate) fn edit_context_unknown_facts(
         facts.push("history/state/province/capital facts require `plan-history-edit`, indexed game/dependency roots, or explicit user-provided IDs before direct history writes".to_string());
     }
     if mentions_icons && game_index.is_none() {
-        facts.push("game/dependency icon index was not built; focus icons and idea pictures may use only locally observed registrations, with `GFX_goal_unknown` as the focus fallback".to_string());
+        facts.push("game/dependency icon index was not built; focus icons, idea pictures, decision icons, decision category pictures, and event pictures may use only locally observed registrations, with `GFX_goal_unknown` as the focus fallback".to_string());
     }
     if mentions_country_or_leader && no_dependency_roots {
         facts.push("country/leader syntax for dependency-provided content is unknown until dependency roots are indexed".to_string());
@@ -482,7 +482,7 @@ fn edit_context_verification_steps(missing_evidence: &[String]) -> Vec<String> {
         } else if fact.contains("submod dependencies") || fact.contains("country/leader syntax") {
             steps.push("rerun `prepare-edit-context` with each dependency launcher/root supplied through `--mod-path`".to_string());
         } else if fact.contains("icon index") {
-            steps.push("supply `--game-root` or verify the exact `GFX_goal*` / `GFX_idea_*` registration in local/dependency `interface/*.gfx`; idea blocks must omit the `GFX_idea_` prefix".to_string());
+            steps.push("supply `--game-root` or verify exact focus/idea/decision/event sprite registrations in local/dependency `interface/*.gfx`; ideas register `GFX_idea_*` but idea blocks must omit the `GFX_idea_` prefix".to_string());
         } else if fact.contains("technology") {
             steps.push("supply `--game-root` so technologies, categories, equipment, and modifiers are checked against an index".to_string());
         } else if fact.contains("descriptor.mod") {
@@ -509,7 +509,7 @@ pub(crate) fn edit_context_blocked_until_verified(
         } else if fact.contains("submod dependencies") {
             blocked.push("Do not reference inherited dependency tags, sprites, scripted values, technologies, or state/province IDs until dependency roots are indexed.".to_string());
         } else if fact.contains("icon index") {
-            blocked.push("Do not invent `GFX_goal*` or `GFX_idea_*` names; use verified local/indexed registrations, reference ideas without the `GFX_idea_` prefix, or use `GFX_goal_unknown` for an unresolved focus icon.".to_string());
+            blocked.push("Do not invent focus, idea, decision, decision-category, or event sprite names; use verified local/indexed registrations, reference ideas without the `GFX_idea_` prefix, or use `GFX_goal_unknown` for an unresolved focus icon.".to_string());
         } else if fact.contains("technology") {
             blocked.push("Do not use unindexed technology/equipment/category/modifier IDs as confirmed facts.".to_string());
         } else if fact.contains("descriptor.mod") {

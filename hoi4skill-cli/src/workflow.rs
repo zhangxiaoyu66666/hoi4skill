@@ -1052,6 +1052,16 @@ pub(crate) fn run_workflow_json_with_focus_layout(
         if let Some(tree_id) = tree_id {
             layout.tree_id = tree_id.to_string();
         }
+        if let Some(root) = mod_root {
+            assign_indexed_focus_icons(layout, root, game_index)?;
+        } else if let Some(index) = game_index {
+            for focus in &mut layout.focuses {
+                if focus.icon.is_none() {
+                    focus.icon =
+                        choose_focus_icon_from_catalog(&focus.title, &index.focus_goal_sprites);
+                }
+            }
+        }
     }
     let has_focus_layout = focus_layout.is_some();
     let focus_plan = focus_layout
@@ -1080,7 +1090,13 @@ pub(crate) fn run_workflow_json_with_focus_layout(
                 )?);
             }
             if !event_cards.is_empty() {
-                changed.extend(apply_event_cards_to_mod(root, &event_cards, tag, prefix)?);
+                changed.extend(apply_event_cards_to_mod_with_index(
+                    root,
+                    &event_cards,
+                    tag,
+                    prefix,
+                    game_index,
+                )?);
             }
         }
     }

@@ -75,7 +75,7 @@ When converting an event plan into HOI4 code:
 3. Put every event body under `country_event`, `news_event`, or `state_event`; its `id` must use a declared namespace, for example `id = sov_nep.1`.
 4. Event numbers `1..200000` are valid inside a namespace.
 5. Use `is_triggered_only = yes` unless the user explicitly wants a random event with MTTH.
-6. Add a `picture` if the card provides one or the target mod has a default style.
+6. Add a `picture` from verified `GFX_report_event_*` sprites. When a game/dependency index is available, choose by event title/meaning instead of falling back to a generic picture.
 7. Add every option with `name = <event_id>.<option_key>`.
 8. Convert option effects only after checking scope.
 9. Add localisation for title, desc, and every option.

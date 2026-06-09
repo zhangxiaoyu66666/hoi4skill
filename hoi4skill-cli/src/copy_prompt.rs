@@ -933,7 +933,7 @@ pub(crate) fn render_focus_copy_card_prompts(cards: &[FocusCopyCard]) -> String 
             "国家筛选块硬规则：必须使用固定结构 `country = { factor = 0 modifier = { add = 10 tag = <TAG> } }`；不要把 `add` 改成 100 或其他数值。\n\n",
         );
         out.push_str("x/y 排布硬规则：如果用户没有给国策树草图，一律套五段模板：y=0 一个开篇国策 x=0；y=1 两到四个展开国策，x 间隔 2；y=2 一个阶段成果 x=0；y=3 两到四个展开国策，x 间隔 2；y=4 一个收尾成果 x=0。不要随机散点。\n\n");
-        out.push_str("icon 硬规则：`icon =` 必须填写从目标 MOD、依赖 MOD 或游戏 `interface/*.gfx` 读取到的真实 `GFX_goal*` 国策图标；如果没有图标索引，只能用 `GFX_goal_unknown` 并说明需要先索引，禁止按标题编造 sprite 名。\n\n");
+        out.push_str("icon 硬规则：`icon =` 必须填写从目标 MOD、依赖 MOD 或游戏 `interface/goals*.gfx` 读取到的真实国策图标 sprite（如 `GFX_goal...` 或 `GFX_focus...`），并按国策含义选择；如果没有图标索引，只能用 `GFX_goal_unknown` 并说明需要先索引，禁止按标题编造 sprite 名。\n\n");
         out.push_str("互斥字段硬规则：只能写 `mutually_exclusive = { focus = <id> }`。禁止 `mutual_exclusion`、`mutual_exclusive`、`mutually_exclusion` 等近似拼写。\n\n");
         out.push_str("字段拼写硬规则：所有国策字段必须使用 HOI4 精确字段名，不准复数化、缩写、翻译或凭印象拼写。重点检查 `prerequisite`、`relative_position_id`、`completion_reward`、`ai_will_do`、`cancel_if_invalid`、`continue_if_invalid`、`available_if_capitulated`。\n\n");
         out.push_str("事件字段同样必须精确：命名空间只能用顶层 `add_namespace`，事件结构使用 `is_triggered_only`、`fire_only_once`、`mean_time_to_happen`、`immediate`、`option`，禁止近似拼写。\n\n");
@@ -953,7 +953,9 @@ pub(crate) fn render_focus_copy_card_prompts(cards: &[FocusCopyCard]) -> String 
         out.push_str("```text\n");
         out.push_str("focus = {\n");
         out.push_str("id = \n");
-        out.push_str("icon = <verified GFX_goal* from interface/*.gfx, or GFX_goal_unknown>\n");
+        out.push_str(
+            "icon = <verified focus icon sprite from interface/goals*.gfx, or GFX_goal_unknown>\n",
+        );
         out.push_str("x = <use default template or user sketch>\n");
         out.push_str("y = <use default template or user sketch>\n");
         out.push_str("prerequisite = {focus = }\n");

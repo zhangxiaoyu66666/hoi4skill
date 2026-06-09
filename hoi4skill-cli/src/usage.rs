@@ -30,7 +30,7 @@ Usage:
   hoi4skill parse-feature-cards --input cards.txt --tag SOV --prefix sov_nep [--output plan.json]
   hoi4skill apply-feature-cards --input cards.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"]
   hoi4skill parse-event-cards --input events.txt --tag SOV --prefix sov_nep [--output plan.json]
-  hoi4skill apply-event-cards --input events.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep
+  hoi4skill apply-event-cards --input events.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"]
   hoi4skill emit-hoi4yaml --input cards.txt --kind feature-cards|event-cards|focus-layout --tag SOV --prefix sov_nep [--output mod.yaml]
   hoi4skill run-workflow --input copy.txt [--mod-root "M:\path\mod"] --tag SOV --prefix sov_nep [--sheet FocusTree] [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--dry-run] [--output workflow_report.json]
   hoi4skill generate-mod --text "给德国加一个国策，完成后获得3个军工厂" --output "M:\path\mod" [--tag GER] [--prefix ger_demo] [--name "My Mod"] [--source-root "M:\path\source_mod"] [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--report report.json]
