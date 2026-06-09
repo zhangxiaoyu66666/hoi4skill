@@ -18,6 +18,9 @@ Fix errors before reporting completion. Warnings can be reported when they need 
 - Localisation files start with `l_simp_chinese:` or the correct language header.
 - Localisation keys referenced by focuses, ideas, events, and decisions exist.
 - New files use unique IDs and do not silently replace vanilla content.
+- National-focus mutual exclusion uses exactly `mutually_exclusive = { focus = <id> }`; approximate spellings such as `mutual_exclusion` are fatal errors.
+- Critical national-focus fields must match exact HOI4 names. Near matches such as `prerequisites`, `completion_rewards`, `relative_position`, `ai_willdo`, or `cancel_if_invald` are fatal errors.
+- Event structure also requires exact names: `add_namespace`, `is_triggered_only`, `fire_only_once`, and `mean_time_to_happen`. `namespace =` and near-match spellings are fatal errors.
 - Effects use valid scopes for the target system.
 - Effect and trigger names are checked against the local game documentation or Wiki index when not already proven by nearby mod code.
 
@@ -39,5 +42,7 @@ Use this when the user asks for launch-ready or Workshop-ready output:
 - Copied vanilla files can conflict with other mods and future patches.
 - `add_building_construction` must run in a state scope.
 - Focus rewards must be in valid country/state scopes.
+- Misspelled focus fields such as `mutual_exclusion` are ignored by HOI4 and must fail static validation.
+- Do not fix only known typo examples. The validator rejects near-match spellings for all critical national-focus fields.
 - Event IDs can collide when namespaces or numbers are reused.
 - `replace_path` can disable vanilla or other mod content unexpectedly.

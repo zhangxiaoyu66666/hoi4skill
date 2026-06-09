@@ -134,6 +134,8 @@ Icon rules:
 - Do not invent icon names from a focus title.
 - If no verified focus icon is available, use `GFX_goal_unknown` and report that the icon index is missing.
 - For custom images, run `hoi4skill register-gfx-icons` first, then use the generated `GFX_goal*` sprite name.
+- In `.xlsx`/`.xlsm`, Chinese focus titles stored in anchored text boxes or shapes are imported from the worksheet drawing XML and merged with an English ID in the underlying cell. Do not tell the user to manually unzip or re-read the workbook when the title is in a standard OOXML drawing.
+- Excel `互斥` markers are explicit-only: connect the nearest left and right focus in that same worksheet row. Do not add mutual exclusion to other rows or infer it from branch symmetry, route ideology, or proximity.
 
 Commands:
 
@@ -176,6 +178,7 @@ Then resolve:
 - row/column -> `x/y`,
 - line relations -> `prerequisite`,
 - `互斥` -> `mutually_exclusive`.
+- The emitted Clausewitz field is exactly `mutually_exclusive = { focus = <id> }`. Do not shorten or translate it to `mutual_exclusion`, `mutual_exclusive`, or `mutually_exclusion`.
 
 ## Code Shape
 

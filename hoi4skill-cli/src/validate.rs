@@ -539,7 +539,7 @@ pub(crate) fn collect_ids_and_namespaces(
                 seen_event_body = true;
             }
             if trimmed.starts_with("namespace") && trimmed.contains('=') {
-                reporter.warn(format!(
+                reporter.error(format!(
                     "{}: event namespace should use add_namespace = ..., not namespace = ...",
                     path.display()
                 ));
@@ -1093,9 +1093,162 @@ pub(crate) fn check_script_semantics(
         return;
     }
     let cleaned = strip_comments(text);
+    if norm.contains("/common/national_focus/") {
+        check_national_focus_fields(path, &cleaned, reporter);
+    }
+    if norm.contains("/events/") {
+        check_event_fields(path, &cleaned, reporter);
+    }
     check_effect_contexts(path, &cleaned, reporter);
     check_trigger_contexts(path, &cleaned, reporter);
     check_suspicious_assignments(path, &cleaned, game_index, reporter);
+}
+
+pub(crate) fn check_national_focus_fields(path: &Path, text: &str, reporter: &mut Reporter) {
+    const CRITICAL_FOCUS_FIELDS: &[&str] = &[
+        "id",
+        "icon",
+        "x",
+        "y",
+        "cost",
+        "prerequisite",
+        "mutually_exclusive",
+        "relative_position_id",
+        "available",
+        "bypass",
+        "cancel_if_invalid",
+        "continue_if_invalid",
+        "available_if_capitulated",
+        "completion_reward",
+        "select_effect",
+        "ai_will_do",
+        "search_filters",
+        "allow_branch",
+        "will_lead_to_war_with",
+        "historical_ai",
+        "offset",
+        "initial_show_position",
+        "dynamic",
+    ];
+
+    for block in blocks_named(text, "focus") {
+        let focus_id = block_assignment(&block, "id").unwrap_or_else(|| "<unknown>".to_string());
+        for key in direct_assignment_keys(&block) {
+            if CRITICAL_FOCUS_FIELDS.contains(&key.as_str()) {
+                continue;
+            }
+            let expected = focus_field_alias(&key)
+                .or_else(|| closest_critical_field(&key, CRITICAL_FOCUS_FIELDS));
+            if let Some(expected) = expected {
+                reporter.error(format!(
+                    "{}: focus {focus_id} uses unknown near-match field `{key}`; use the exact HOI4 field `{expected}`",
+                    path.display()
+                ));
+            }
+        }
+    }
+}
+
+pub(crate) fn focus_field_alias(actual: &str) -> Option<&'static str> {
+    match actual {
+        "mutual_exclusion" | "mutual_exclusive" | "mutually_exclusion" | "mutually_exclusives" => {
+            Some("mutually_exclusive")
+        }
+        "relative_position" | "relative_positioning_id" => Some("relative_position_id"),
+        _ => None,
+    }
+}
+
+pub(crate) fn check_event_fields(path: &Path, text: &str, reporter: &mut Reporter) {
+    const CRITICAL_EVENT_FIELDS: &[&str] = &[
+        "id",
+        "title",
+        "desc",
+        "picture",
+        "is_triggered_only",
+        "fire_only_once",
+        "major",
+        "show_major",
+        "hidden",
+        "trigger",
+        "mean_time_to_happen",
+        "immediate",
+        "option",
+        "after",
+        "days",
+        "timeout_days",
+    ];
+
+    for block in event_blocks(text) {
+        let event_id = block_assignment(&block, "id").unwrap_or_else(|| "<unknown>".to_string());
+        for key in direct_assignment_keys(&block) {
+            if CRITICAL_EVENT_FIELDS.contains(&key.as_str()) {
+                continue;
+            }
+            if let Some(expected) = closest_critical_field(&key, CRITICAL_EVENT_FIELDS) {
+                reporter.error(format!(
+                    "{}: event {event_id} uses unknown near-match field `{key}`; use the exact HOI4 field `{expected}`",
+                    path.display()
+                ));
+            }
+        }
+    }
+}
+
+pub(crate) fn closest_critical_field<'a>(
+    actual: &str,
+    expected_fields: &'a [&str],
+) -> Option<&'a str> {
+    expected_fields
+        .iter()
+        .copied()
+        .filter_map(|expected| {
+            let distance = edit_distance(actual, expected);
+            let threshold = if expected.len() <= 5 {
+                1
+            } else if expected.len() >= 16 {
+                3
+            } else {
+                2
+            };
+            (distance <= threshold).then_some((distance, expected))
+        })
+        .min_by_key(|(distance, expected)| (*distance, expected.len()))
+        .map(|(_, expected)| expected)
+}
+
+pub(crate) fn edit_distance(left: &str, right: &str) -> usize {
+    let right_chars = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right_chars.len()).collect::<Vec<_>>();
+    for (left_index, left_char) in left.chars().enumerate() {
+        let mut current = Vec::with_capacity(right_chars.len() + 1);
+        current.push(left_index + 1);
+        for (right_index, right_char) in right_chars.iter().enumerate() {
+            let substitution = previous[right_index] + usize::from(left_char != *right_char);
+            let insertion = current[right_index] + 1;
+            let deletion = previous[right_index + 1] + 1;
+            current.push(substitution.min(insertion).min(deletion));
+        }
+        previous = current;
+    }
+    previous[right_chars.len()]
+}
+
+pub(crate) fn direct_assignment_keys(block: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let mut depth: i32 = 0;
+    for line in block.lines() {
+        let trimmed = line.trim();
+        if depth == 0 {
+            if let Some(key) = assignment_key(trimmed) {
+                keys.push(key.to_string());
+            }
+        }
+        depth += trimmed.chars().filter(|c| *c == '{').count() as i32;
+        depth -= trimmed.chars().filter(|c| *c == '}').count() as i32;
+        depth = depth.max(0);
+    }
+    keys
 }
 
 pub(crate) fn check_effect_contexts(path: &Path, text: &str, reporter: &mut Reporter) {

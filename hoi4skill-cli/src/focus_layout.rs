@@ -1043,16 +1043,17 @@ pub(crate) fn focus_identifier(
     id_hint: Option<&str>,
     fallback: &str,
 ) -> String {
-    let fragment = id_hint
+    let tag = sanitize_identifier_part(tag, "TAG").to_ascii_uppercase();
+    let mut fragment = id_hint
         .map(|hint| sanitize_identifier_part(hint, ""))
         .filter(|hint| !hint.is_empty())
         .or_else(|| english_focus_fragment(title))
         .unwrap_or_else(|| sanitize_identifier_part(fallback, "focus"));
-    format!(
-        "{}_{}",
-        sanitize_identifier_part(tag, "TAG").to_ascii_uppercase(),
-        fragment
-    )
+    let tag_prefix = format!("{}_", tag.to_ascii_lowercase());
+    if let Some(stripped) = fragment.strip_prefix(&tag_prefix) {
+        fragment = stripped.to_string();
+    }
+    format!("{tag}_{fragment}")
 }
 
 pub(crate) fn english_focus_fragment(title: &str) -> Option<String> {

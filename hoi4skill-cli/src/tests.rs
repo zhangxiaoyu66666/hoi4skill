@@ -79,6 +79,94 @@ fn write_minimal_focus_xlsx(path: &Path) {
     zip.finish().unwrap();
 }
 
+fn write_drawing_title_focus_xlsx(path: &Path) {
+    let file = fs::File::create(path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default();
+    write_zip_xml(
+        &mut zip,
+        options,
+        "[Content_Types].xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+  <Override PartName="/xl/drawings/drawing1.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>
+</Types>"#,
+    );
+    write_zip_xml(
+        &mut zip,
+        options,
+        "_rels/.rels",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#,
+    );
+    write_zip_xml(
+        &mut zip,
+        options,
+        "xl/workbook.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="FocusTree" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#,
+    );
+    write_zip_xml(
+        &mut zip,
+        options,
+        "xl/_rels/workbook.xml.rels",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#,
+    );
+    write_zip_xml(
+        &mut zip,
+        options,
+        "xl/worksheets/sheet1.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheetData>
+    <row r="3">
+      <c r="B3" t="inlineStr"><is><t>KOR_industry_revival</t></is></c>
+    </row>
+  </sheetData>
+  <drawing r:id="rId1"/>
+</worksheet>"#,
+    );
+    write_zip_xml(
+        &mut zip,
+        options,
+        "xl/worksheets/_rels/sheet1.xml.rels",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing1.xml"/>
+</Relationships>"#,
+    );
+    write_zip_xml(
+        &mut zip,
+        options,
+        "xl/drawings/drawing1.xml",
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+  <xdr:twoCellAnchor>
+    <xdr:from><xdr:col>1</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>2</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>
+    <xdr:to><xdr:col>2</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>3</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>
+    <xdr:sp>
+      <xdr:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>工业复兴</a:t></a:r></a:p></xdr:txBody>
+    </xdr:sp>
+    <xdr:clientData/>
+  </xdr:twoCellAnchor>
+</xdr:wsDr>"#,
+    );
+    zip.finish().unwrap();
+}
+
 fn write_zip_xml(
     zip: &mut zip::ZipWriter<fs::File>,
     options: zip::write::SimpleFileOptions,
@@ -1891,6 +1979,106 @@ fn focus_excel_reads_drawn_tree_and_renders_standard_skeleton() {
 }
 
 #[test]
+fn focus_excel_merges_drawing_chinese_title_with_cell_english_id() {
+    let root = unique_temp_dir("focus-excel-drawing-title");
+    fs::create_dir_all(&root).unwrap();
+    let xlsx = root.join("tree.xlsx");
+    write_drawing_title_focus_xlsx(&xlsx);
+
+    let layout = read_focus_excel_layout(&xlsx, Some("FocusTree"), "KOR", "kor_spring").unwrap();
+    let json = focus_excel_layout_json(&layout, &xlsx, Some("FocusTree"), "KOR", "kor_spring");
+    fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(layout.focuses.len(), 1);
+    assert_eq!(layout.focuses[0].title, "工业复兴");
+    assert_eq!(layout.focuses[0].id, "KOR_industry_revival");
+    assert!(json.contains("\"title\": \"工业复兴\""));
+    assert!(json.contains("\"id\": \"KOR_industry_revival\""));
+}
+
+#[test]
+fn focus_excel_preserves_only_explicit_mutual_exclusion_pair() {
+    let imported = ExcelFocusImport {
+        cells: vec![
+            ExcelFocusCell {
+                row: 0,
+                column: 0,
+                title: "邀请盟军调停".to_string(),
+                id_hint: Some("invite_allied_mediation".to_string()),
+                icon: None,
+                completion_reward: Vec::new(),
+            },
+            ExcelFocusCell {
+                row: 0,
+                column: 2,
+                title: "接触中苏".to_string(),
+                id_hint: Some("contact_ccp_soviet_union".to_string()),
+                icon: None,
+                completion_reward: Vec::new(),
+            },
+            ExcelFocusCell {
+                row: 1,
+                column: 0,
+                title: "临时政府归来".to_string(),
+                id_hint: Some("provisional_government_returns".to_string()),
+                icon: None,
+                completion_reward: Vec::new(),
+            },
+            ExcelFocusCell {
+                row: 1,
+                column: 2,
+                title: "苏维埃政权".to_string(),
+                id_hint: Some("soviet_power".to_string()),
+                icon: None,
+                completion_reward: Vec::new(),
+            },
+            ExcelFocusCell {
+                row: 2,
+                column: 0,
+                title: "夺取平壤".to_string(),
+                id_hint: Some("capture_pyongyang".to_string()),
+                icon: None,
+                completion_reward: Vec::new(),
+            },
+            ExcelFocusCell {
+                row: 2,
+                column: 2,
+                title: "夺取汉城".to_string(),
+                id_hint: Some("capture_seoul".to_string()),
+                icon: None,
+                completion_reward: Vec::new(),
+            },
+        ],
+        mutual_markers: vec![(2, 1)],
+    };
+
+    let layout = focus_layout_from_excel_cells(imported, "KOR", "kor_spring").unwrap();
+    let json = focus_excel_layout_json(
+        &layout,
+        Path::new("tree.xlsx"),
+        Some("FocusTree"),
+        "KOR",
+        "kor_spring",
+    );
+
+    assert_eq!(
+        layout.mutuals,
+        vec![(
+            "KOR_capture_pyongyang".to_string(),
+            "KOR_capture_seoul".to_string(),
+            2
+        )]
+    );
+    assert!(json.contains("\"left\": \"KOR_capture_pyongyang\", \"right\": \"KOR_capture_seoul\""));
+    assert!(!json.contains(
+        "\"left\": \"KOR_invite_allied_mediation\", \"right\": \"KOR_contact_ccp_soviet_union\""
+    ));
+    assert!(!json.contains(
+        "\"left\": \"KOR_provisional_government_returns\", \"right\": \"KOR_soviet_power\""
+    ));
+}
+
+#[test]
 fn apply_focus_layout_extends_existing_country_focus_tree() {
     let root = unique_temp_dir("apply-focus-layout-existing-tree");
     let focus_dir = root.join("common").join("national_focus");
@@ -3023,6 +3211,93 @@ capital = 64
         .warnings
         .iter()
         .any(|warning| warning.contains("not present in the province index")));
+}
+
+#[test]
+fn validator_errors_for_misspelled_focus_mutually_exclusive_field() {
+    let path = Path::new("M:\\mod\\common\\national_focus\\bad_focus.txt");
+    let text = r#"
+focus = {
+	id = BAD_left_branch
+	mutual_exclusion = { focus = BAD_right_branch }
+}
+focus = {
+	id = BAD_right_branch
+	mutually_exclusive = { focus = BAD_left_branch }
+}
+"#;
+    let mut reporter = Reporter::default();
+
+    check_script_semantics(path, text, None, &mut reporter);
+
+    assert_eq!(reporter.errors.len(), 1);
+    assert!(reporter.errors[0].contains("focus BAD_left_branch"));
+    assert!(reporter.errors[0].contains("unknown near-match field `mutual_exclusion`"));
+    assert!(reporter.errors[0].contains("exact HOI4 field `mutually_exclusive`"));
+}
+
+#[test]
+fn validator_errors_for_other_near_match_focus_fields() {
+    let path = Path::new("M:\\mod\\common\\national_focus\\bad_focus.txt");
+    let text = r#"
+focus = {
+	id = BAD_focus
+	prerequisites = { focus = BAD_parent }
+	relative_position = BAD_parent
+	completion_rewards = { add_political_power = 50 }
+	ai_willdo = { factor = 1 }
+	cancel_if_invald = yes
+}
+"#;
+    let mut reporter = Reporter::default();
+
+    check_script_semantics(path, text, None, &mut reporter);
+
+    for (actual, expected) in [
+        ("prerequisites", "prerequisite"),
+        ("relative_position", "relative_position_id"),
+        ("completion_rewards", "completion_reward"),
+        ("ai_willdo", "ai_will_do"),
+        ("cancel_if_invald", "cancel_if_invalid"),
+    ] {
+        assert!(reporter.errors.iter().any(|error| {
+            error.contains(&format!("`{actual}`")) && error.contains(&format!("`{expected}`"))
+        }));
+    }
+}
+
+#[test]
+fn validator_errors_for_event_namespace_and_near_match_fields() {
+    let path = Path::new("M:\\mod\\events\\bad_events.txt");
+    let text = r#"
+namespace = bad
+country_event = {
+	id = bad.1
+	is_trigger_only = yes
+	fire_only_ones = yes
+	mean_time_to_hapen = { days = 1 }
+}
+"#;
+    let mut reporter = Reporter::default();
+    let mut ids = BTreeMap::new();
+    let mut namespaces = BTreeMap::new();
+
+    collect_ids_and_namespaces(path, text, &mut ids, &mut namespaces, &mut reporter);
+    check_script_semantics(path, text, None, &mut reporter);
+
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|error| error.contains("use add_namespace")));
+    for (actual, expected) in [
+        ("is_trigger_only", "is_triggered_only"),
+        ("fire_only_ones", "fire_only_once"),
+        ("mean_time_to_hapen", "mean_time_to_happen"),
+    ] {
+        assert!(reporter.errors.iter().any(|error| {
+            error.contains(&format!("`{actual}`")) && error.contains(&format!("`{expected}`"))
+        }));
+    }
 }
 
 #[test]
