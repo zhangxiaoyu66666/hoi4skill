@@ -63,3 +63,11 @@ Use `markdown_summary` as the first context block for a model-generated edit pla
 - which facts still need verification.
 
 When the summary says `unknown_no_descriptor`, stop and ask for the real mod root or launcher `.mod` file.
+
+For complex existing-mod edits, prefer generating a complete model context pack:
+
+```text
+hoi4skill prepare-edit-context --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod" --output edit_context.md
+```
+
+Read `edit_context.md` before writing. Its `Write Gate` is the first boundary: `BLOCKED` means stop, `VERIFY_FIRST` means collect the listed evidence first, and `READY_FOR_NARROW_WRITE` still allows edits only inside the reported edit surface. Its `Unknown Facts` and `Blocked Until Verified` sections explain the missing evidence behind that gate.

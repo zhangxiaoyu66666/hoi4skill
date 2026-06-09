@@ -804,6 +804,83 @@ fn workflow_dry_run_detects_mixed_copy() {
 }
 
 #[test]
+fn prepare_edit_context_packages_model_preflight_context() {
+    let root = unique_temp_dir("edit-context");
+    fs::create_dir_all(root.join("common").join("national_focus")).unwrap();
+    fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Context Test\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("common")
+            .join("national_focus")
+            .join("sov_focus.txt"),
+        "focus_tree = {\n\tid = sov_focus\n\tcountry = { factor = 0 modifier = { add = 10 tag = SOV } }\n\tfocus = {\n\t\tid = SOV_existing\n\t\ticon = GFX_goal_unknown\n\t\tx = 0\n\t\ty = 0\n\t\tcost = 10\n\t\tai_will_do = { factor = 100 }\n\t\tavailable = { }\n\t\tbypass = { }\n\t\tcancel_if_invalid = yes\n\t\tcontinue_if_invalid = no\n\t\tavailable_if_capitulated = no\n\t\tcompletion_reward = { }\n\t}\n}\n",
+    )
+    .unwrap();
+    let mut loc = vec![0xef, 0xbb, 0xbf];
+    loc.extend_from_slice(
+        "l_simp_chinese:\n SOV_existing:0 \"既有国策\"\n SOV_existing_desc:0 \"既有描述。\"\n"
+            .as_bytes(),
+    );
+    fs::write(
+        root.join("localisation")
+            .join("simp_chinese")
+            .join("SOV_l_simp_chinese.yml"),
+        loc,
+    )
+    .unwrap();
+    let input = root.join("copy.txt");
+    fs::write(
+        &input,
+        "国策树：\n工业复兴\n\n州效果：整顿首都工业\n州ID：64\n效果：1个军工厂\n图标：工业图标\n科技：新式步兵\n",
+    )
+    .unwrap();
+
+    let context = prepare_edit_context_markdown(
+        &input,
+        &root,
+        "SOV",
+        "sov_ctx",
+        None,
+        None,
+        &[],
+        None,
+        20,
+        20,
+        10,
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(context.contains("# HOI4 Edit Context Pack"));
+    assert!(context.contains("## Write Gate"));
+    assert!(context.contains("- status: `VERIFY_FIRST`"));
+    assert!(context.contains("### Verified Evidence"));
+    assert!(context.contains("request parsed as focus_layout=true, feature_cards=2, event_cards=0"));
+    assert!(context.contains("### Allowed Edit Surface"));
+    assert!(context.contains("common/national_focus and localisation/simp_chinese"));
+    assert!(context.contains("common/technologies and localisation"));
+    assert!(context.contains("common/scripted_effects state-scope helpers only"));
+    assert!(context.contains("### Missing Evidence To Resolve"));
+    assert!(context.contains("### Verification Steps"));
+    assert!(context.contains("plan-history-edit"));
+    assert!(context.contains("### Stop Conditions"));
+    assert!(context.contains("## Knowledge Summary"));
+    assert!(context.contains("## Dry Run Plan"));
+    assert!(context.contains("## Unknown Facts"));
+    assert!(context.contains("## Blocked Until Verified"));
+    assert!(context.contains("history/state/province/capital facts require"));
+    assert!(context.contains("Do not edit `history/states`"));
+    assert!(context.contains("game/dependency icon index was not built"));
+    assert!(context.contains("technology, category, equipment"));
+    assert!(context.contains("common/national_focus/sov_focus.txt"));
+    assert!(context.contains("\"focus_layout\": true"));
+}
+
+#[test]
 fn workflow_applies_files_and_embeds_validation() {
     let root = unique_temp_dir("workflow-apply");
     fs::create_dir_all(&root).unwrap();
@@ -893,7 +970,7 @@ fn country_inference_reads_localisation_and_verifies_country_file() {
 
     let guess = infer_country_from_sources(
         "给远东铁路共和国加一个国策，完成后获得3个军工厂。",
-        &[root.clone()],
+        std::slice::from_ref(&root),
     )
     .unwrap()
     .unwrap();

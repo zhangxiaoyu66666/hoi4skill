@@ -19,6 +19,7 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - If it is a submod, pass available dependency roots with `--mod-path` before claiming inherited tags, sprites, technologies, scripted values, state/province IDs, or localisation exist.
    - Use `knowledge_base` and `markdown_summary` as the source of truth for ID prefixes, localisation languages, namespace names, focus tree style, decision category style, state/province facts, scripted helper files, and icon/GFX sprite style.
    - If the request says "一句话", infer sensible defaults instead of asking, unless the country/tag or feature target is impossible to infer.
+   - For any multi-system edit, also run `hoi4skill prepare-edit-context --input <copy.txt> --mod-root <mod-root> --tag <TAG> --prefix <prefix> --output edit_context.md` and read its `Write Gate` as the first model context block before writing code.
 3. Convert the request into a small implementation plan.
    - Name the feature.
    - List touched systems such as focus, idea, event, decision, state, country history, technology, or localisation.
@@ -110,6 +111,7 @@ hoi4skill scaffold --name "My HOI4 Mod" --output "M:\path\my_hoi4_mod" --launche
 hoi4skill generate-mod --text "给德国加一个国策，完成后获得3个军工厂，并触发一个新闻事件。" --output "M:\path\my_hoi4_mod"
 hoi4skill generate-mod --text "给远东铁路共和国加一个国策，完成后获得3个军工厂。" --source-root "M:\path\source_mod" --output "M:\path\my_hoi4_mod"
 hoi4skill mod-knowledge "M:\path\mod_or_launcher.mod" --mod-path "M:\path\dependency.mod" --output mod_knowledge.json
+hoi4skill prepare-edit-context --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod" --output edit_context.md
 hoi4skill plan-history-edit "M:\path\mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod" --output history_plan.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --output workflow_report.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod" --output workflow_report.json
@@ -140,6 +142,8 @@ hoi4skill analyze-error-log --input "%USERPROFILE%\Documents\Paradox Interactive
 Excel mutual exclusion is explicit-only. A cell containing `互斥` links only the nearest focus on its left and right in the same worksheet row. The importer writes that exact pair to each focus and to the JSON `mutually_exclusive` list. It must not infer additional mutual exclusions from branches, ideology, proximity, or mirrored layout.
 
 `mod-knowledge` is the required pre-edit dossier for existing mods. It resolves a directory, `descriptor.mod`, or launcher-side `.mod` file; classifies the target as `standalone_mod`, `submod`, or `unknown_no_descriptor`; reads local descriptor/launcher metadata, dependency names, focus trees, event namespaces, country tags, history countries, history states, province definition summaries, localisation style, decisions, ideas, GFX sprites, and content samples; then emits a JSON `knowledge_base` plus a model-readable `markdown_summary`. Use it before `run-workflow`, `apply-*`, or manual edits.
+
+`prepare-edit-context` packages the user's request, a `Write Gate`, `mod-knowledge` markdown summary, a non-writing dry-run workflow plan, validation status, unknown-fact list, blocked-until-verified list, and local file excerpts into one Markdown file. Use that Markdown as the model's first context block so it sees enough verified evidence before generating code. If the `Write Gate` status is `BLOCKED` or `VERIFY_FIRST`, follow its verification steps before writing final game script; when it is ready, write only inside the allowed edit surface.
 
 `plan-history-edit` is the required gate before direct `history/countries` or `history/states` work. It reads local state files, `map/definition.csv`, dependency roots supplied with `--mod-path`, and optional `--game-root` index facts; then reports whether state IDs, province IDs, and capital province IDs are known. If facts are missing, it returns skipped reasons instead of guessing. For focus rewards and temporary changes, prefer the generated state-scoped scripted-effect strategy.
 

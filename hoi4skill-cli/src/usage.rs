@@ -15,6 +15,7 @@ Usage:
   hoi4skill build-game-index --game-root "C:\path\Hearts of Iron IV" [--mod-path "M:\path\dependency.mod"] [--output game_index.json]
   hoi4skill scan-mod-style "M:\path\mod" [--output mod_style.json] [--max-sprites 400]
   hoi4skill mod-knowledge "M:\path\mod" [--mod-path "M:\path\dependency.mod"] [--output mod_knowledge.json] [--max-items 80]
+  hoi4skill prepare-edit-context --input copy.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep [--sheet FocusTree] [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--output edit_context.md]
   hoi4skill plan-history-edit "M:\path\mod" --text "给 GER 的 64 州加工厂" [--state-id 64] [--province-id 6521] [--capital 6521] [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--output history_plan.json]
   hoi4skill import-mod-ir "M:\path\mod" [--output imported_ir.json] [--max-items 1000]
   hoi4skill focus-copy-prompt "M:\path\modA" ["M:\path\modB"] [--output focus_prompt.md] [--style full|compact]

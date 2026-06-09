@@ -19,6 +19,9 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
         "build-game-index" => super::cmd_build_game_index(&args),
         "scan-mod-style" => super::cmd_scan_mod_style(&args),
         "mod-knowledge" | "summarize-mod" | "mod-dossier" => super::cmd_mod_knowledge(&args),
+        "prepare-edit-context" | "edit-context" | "preflight-context" => {
+            super::cmd_prepare_edit_context(&args)
+        }
         "plan-history-edit" | "history-edit-plan" | "plan-state-edit" => {
             super::cmd_plan_history_edit(&args)
         }

@@ -31,6 +31,7 @@ When the compiled `hoi4skill` CLI is available, use `generate-mod` for a one-sen
 hoi4skill generate-mod --text "给德国加一个国策，完成后获得3个军工厂，并触发一个新闻事件。" --output "M:\path\new_mod"
 hoi4skill generate-mod --text "给远东铁路共和国加一个国策，完成后获得3个军工厂。" --source-root "M:\path\source_mod" --output "M:\path\new_mod"
 hoi4skill mod-knowledge "M:\path\existing_mod_or_launcher.mod" --mod-path "M:\path\dependency.mod" --output mod_knowledge.json
+hoi4skill prepare-edit-context --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod" --output edit_context.md
 hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod" --output history_plan.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --tag SOV --prefix sov_nep --dry-run --output workflow_plan.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --output workflow_report.json
@@ -38,6 +39,8 @@ hoi4skill run-workflow --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_
 ```
 
 `mod-knowledge` creates the pre-edit dossier: standalone/submod classification, descriptor/launcher metadata, dependency names, dependency roots supplied with `--mod-path`, observed tags, focus trees, namespaces, localisation style, decision categories, idea pictures, GFX sprites, and model-readable `markdown_summary`. Treat missing facts as unknown, not as permission to invent.
+
+`prepare-edit-context` creates the model-facing preflight context. It combines the user's request, a `Write Gate`, the `mod-knowledge` `markdown_summary`, a dry-run plan, validation status, local file excerpts, an `Unknown Facts` section, and a `Blocked Until Verified` section. Read the `Write Gate` before code generation: `BLOCKED` means do not write; `VERIFY_FIRST` means run the listed verification steps before final script; `READY_FOR_NARROW_WRITE` means write only inside the allowed edit surface and the dry-run plan.
 
 `plan-history-edit` is the follow-up gate for `history/countries`, `history/states`, state IDs, province IDs, capitals, victory points, owner/controller, cores, buildings, and resources. Use it before direct history edits; if it returns `direct_history_edit_allowed = false`, report the skipped reasons and switch to state-scoped scripted effects or ask for a game/dependency index.
 

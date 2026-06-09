@@ -27,7 +27,7 @@
 - **历史文件编辑计划**：在修改 `history/states` 等危险区域前，先生成编辑计划，避免乱猜 state id / province id。
 - **`error.log` 反向分析**：读取 HOI4 报错日志，辅助定位和修复 MOD 问题。
 - **本地化快速翻译**：读取任意 `localisation/<source_language>`，对照目标语言键名，生成任意目标语言的翻译 prompt / yml 骨架，并支持写回后查漏。
-- **AI 工作流辅助**：适合配合 Codex、ChatGPT、啊拼等工具，把“人话需求”转成更可控的 MOD 文件改动。
+- **AI 工作流辅助**：适合配合 Codex、ChatGPT、啊拼等工具，把“人话需求”转成带证据闸门的 MOD 文件改动，先确认上下文够不够，再限制可写文件范围。
 
 ### 构建方式
 
@@ -53,6 +53,7 @@ hoi4skill-cli/target/release/hoi4skill.exe --help
 ```text
 hoi4skill scaffold --name "My HOI4 Mod" --output "M:\path\my_mod" --launcher-file
 hoi4skill mod-knowledge "M:\path\existing_mod" --mod-path "M:\path\dependency.mod" --output mod_knowledge.json
+hoi4skill prepare-edit-context --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output edit_context.md
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output workflow_report.json
 hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --output history_plan.json
 hoi4skill parse-focus-excel --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_excel --sheet FocusTree --output focus_tree.txt
