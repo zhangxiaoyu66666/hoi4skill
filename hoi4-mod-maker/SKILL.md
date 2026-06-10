@@ -12,12 +12,13 @@ This gate runs before scaffolding, parsing a workbook, choosing a prefix, or wri
 1. Resolve the target against the local game/dependency knowledge base:
    `hoi4skill resolve-country-tag --text "<literal user request>" --game-root "<HOI4 root>" [--source-root "<source mod>"] [--mod-path "<dependency>"] --output tag_resolution.json`
 2. Read `resolved_tag`, `source`, `exists_in_index`, and `decision`. Pass only that `resolved_tag` to later commands.
+   Resolution is data-driven for every country: read country names and aliases from the game/dependency/source-mod localisation, verify the mapping through `common/country_tags` and `common/countries`, and rank target-country wording above enemy/background-country wording. Do not maintain or rely on a small hard-coded country list.
 3. When `decision = reuse_existing_tag`, writing `common/country_tags/*`, `common/countries/*`, or `history/countries/*` is forbidden. A new mod may add content for an existing country without redefining that country.
 4. Creating a new country TAG requires both:
    - the user's literal request explicitly says to establish/create a new country or establish/create a new/custom TAG; and
    - the resolver is rerun with an explicit `--tag <TAG> --allow-new-tag`.
    No inferred necessity, narrative context, regime change, revolution, independence, new government, or deleted/new mod folder can substitute for that literal authorization.
-5. A mod title, route, ideology, party, faction, government, revolutionary committee, army, resistance group, namespace, or file/ID prefix is not a country TAG and never authorizes one. For example, a "韩国革命委员会" prefix such as `krc` still targets vanilla `KOR` unless the user explicitly requests a new country.
+5. A mod title, route, ideology, party, faction, government, revolutionary committee, army, resistance group, namespace, or file/ID prefix is not a country TAG and never authorizes one. Resolve whatever country the user names from the local knowledge base; do not turn an organisation or prefix into a country.
 6. A parser echoing a supplied `--tag` is not evidence that the TAG exists. Only the resolver's indexed result or verified source-mod country mapping is evidence.
 7. Never fall back to a backup, versioned-old, cached, or separately discovered skill/binary after the active bundled command fails. Use this skill's own `bin/windows-x64/hoi4skill.exe`; if it cannot perform the required gate, stop instead of using an older executable.
 

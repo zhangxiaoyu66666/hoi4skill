@@ -24,11 +24,8 @@ pub(crate) fn cmd_resolve_country_tag(args: &[String]) -> Result<(), String> {
     let game_root = normalize_path(&require_value(&map, "game-root")?)?;
     let dependency_mods = dependency_mod_roots(&map)?;
     let game_index = build_country_tag_index_with_mod_paths(&game_root, &dependency_mods)?;
-    let inferred = if let Some(country) = infer_country_from_text(&text) {
-        Some(country)
-    } else {
-        infer_country_from_sources(&text, &generate_mod_source_roots(&map)?)?
-    };
+    let inferred = infer_country_from_sources(&text, &generate_mod_source_roots(&map)?)?
+        .or_else(|| infer_country_from_text(&text));
     let resolution = resolve_country_tag(
         &text,
         value(&map, "tag"),
@@ -62,16 +59,7 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     }
     let mut workflow_input = workflow_input_from_path(&input, sheet, tag, prefix)?;
     append_explicit_request(&mut workflow_input, value(&map, "request"));
-    if let Some(request) = value(&map, "request") {
-        let inferred = infer_country_from_text(request);
-        resolve_country_tag(
-            request,
-            Some(tag),
-            inferred,
-            game_index.as_ref(),
-            map.flags.contains("allow-new-tag"),
-        )?;
-    }
+    enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
     let json = run_workflow_json_with_focus_layout(
         &workflow_input.text,
         workflow_input.focus_layout.as_ref(),
@@ -137,10 +125,10 @@ pub(crate) fn cmd_generate_mod(args: &[String]) -> Result<(), String> {
     let country = if let Some(country) = infer_country_from_sources(&text, &explicit_source_roots)?
     {
         Some(country)
-    } else if let Some(country) = infer_country_from_text(&text) {
+    } else if let Some(country) = infer_country_from_sources(&text, &source_roots)? {
         Some(country)
     } else {
-        infer_country_from_sources(&text, &source_roots)?
+        infer_country_from_text(&text)
     };
     let dependency_mods = dependency_mod_roots(&map)?;
     let game_index = value(&map, "game-root")
@@ -395,6 +383,11 @@ pub(crate) fn resolve_country_tag(
     };
 
     let exists_in_index = game_index.map(|index| index.country_tags.contains(&tag));
+    if exists_in_index.is_none() && source == "explicit --tag" && !new_tag_authorized {
+        return Err(format!(
+            "country TAG {tag} was supplied without local game/dependency/source-mod evidence. Run resolve-country-tag with --game-root first; a bare --tag is not proof that the country exists"
+        ));
+    }
     if exists_in_index == Some(false) && !new_tag_authorized {
         return Err(format!(
             "country TAG {tag} is not present in the indexed game/dependency knowledge base. Creating common/country_tags, common/countries, or history/countries is forbidden unless the user literally requests a new country/TAG and --allow-new-tag is supplied"
@@ -453,10 +446,16 @@ pub(crate) fn enforce_tag_request_contract(
     let Some(request) = value(map, "request") else {
         return Ok(());
     };
+    let inferred = if let Some(index) = game_index {
+        infer_country_from_sources(request, &index.indexed_roots)?
+            .or_else(|| infer_country_from_text(request))
+    } else {
+        infer_country_from_text(request)
+    };
     resolve_country_tag(
         request,
         Some(tag),
-        infer_country_from_text(request),
+        inferred,
         game_index,
         map.flags.contains("allow-new-tag"),
     )
@@ -689,28 +688,29 @@ pub(crate) fn infer_country_from_sources(
         }
 
         let loc_candidates = collect_country_localisation_candidates(root)?;
-        let mut best_match: Option<(CountryLocCandidate, CountryVerification)> = None;
+        let mut best_match: Option<(i64, CountryLocCandidate, CountryVerification)> = None;
         for candidate in &loc_candidates {
-            if !country_name_matches_text(text, &candidate.name) {
+            let Some(score) = country_target_match_score(text, &candidate.name, candidate.rank)
+            else {
                 continue;
-            }
+            };
             let Some(record) = tag_records.get(&candidate.tag) else {
                 continue;
             };
             let Some(verification) = verify_country_record(root, record) else {
                 continue;
             };
-            let replace = best_match.as_ref().is_none_or(|(old, _)| {
-                candidate.rank < old.rank
-                    || (candidate.rank == old.rank
+            let replace = best_match.as_ref().is_none_or(|(old_score, old, _)| {
+                score > *old_score
+                    || (score == *old_score
                         && candidate.name.chars().count() > old.name.chars().count())
             });
             if replace {
-                best_match = Some((candidate.clone(), verification));
+                best_match = Some((score, candidate.clone(), verification));
             }
         }
 
-        if let Some((candidate, verification)) = best_match {
+        if let Some((_, candidate, verification)) = best_match {
             return Ok(Some(CountryGuess {
                 tag: candidate.tag.clone(),
                 name: candidate.name.clone(),
@@ -790,6 +790,9 @@ pub(crate) fn collect_country_localisation_candidates(
         if !matches!(ext.as_str(), "yml" | "yaml") {
             continue;
         }
+        if root.join("hoi4.exe").is_file() && !is_game_country_localisation_file(&file) {
+            continue;
+        }
         let text = read_utf8_lossy(&file)?;
         for line in text.lines() {
             let Some((key, value)) = parse_localisation_line(line) else {
@@ -813,6 +816,15 @@ pub(crate) fn collect_country_localisation_candidates(
     Ok(candidates)
 }
 
+pub(crate) fn is_game_country_localisation_file(file: &Path) -> bool {
+    let name = file
+        .file_name()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    name.contains("countries") || name.contains("country")
+}
+
 pub(crate) fn country_localisation_key_tag(key: &str) -> Option<(String, u8)> {
     if looks_like_tag(key) {
         return Some((key.to_string(), 0));
@@ -824,7 +836,18 @@ pub(crate) fn country_localisation_key_tag(key: &str) -> Option<(String, u8)> {
             }
         }
     }
-    None
+    let tag = key.split('_').next()?;
+    if !looks_like_tag(tag) {
+        return None;
+    }
+    let rank = if key.ends_with("_DEF") {
+        4
+    } else if key.ends_with("_ADJ") {
+        5
+    } else {
+        3
+    };
+    Some((tag.to_string(), rank))
 }
 
 pub(crate) fn verify_country_record(
@@ -881,10 +904,79 @@ pub(crate) fn preferred_country_names(
         .collect()
 }
 
-pub(crate) fn country_name_matches_text(text: &str, name: &str) -> bool {
+pub(crate) fn country_target_match_score(text: &str, name: &str, rank: u8) -> Option<i64> {
     let text = searchable_country_text(text);
     let name = searchable_country_text(name);
-    is_meaningful_country_name_norm(&name) && text.contains(&name)
+    if !is_meaningful_country_name_norm(&name) {
+        return None;
+    }
+    let mut best = None;
+    for (position, _) in text.match_indices(&name) {
+        let before_tail = char_tail(&text[..position], 12);
+        let after_head = char_head(&text[position + name.len()..], 12);
+        let mut score = 1_000i64 - position.min(800) as i64;
+        score += (name.chars().count().min(20) * 8) as i64;
+        score -= i64::from(rank) * 20;
+        if ends_with_any(
+            &before_tail,
+            &["给", "为", "替", "让", "依据", "按照", "面向", "针对"],
+        ) {
+            score += 900;
+        }
+        if starts_with_any(
+            &after_head,
+            &[
+                "制作",
+                "生成",
+                "创建",
+                "建立",
+                "添加",
+                "设计",
+                "写",
+                "的mod",
+                "mod",
+                "国策",
+                "事件",
+                "民族精神",
+            ],
+        ) {
+            score += 450;
+        }
+        if ends_with_any(
+            &before_tail,
+            &[
+                "反抗", "抵抗", "对抗", "抗击", "击败", "进攻", "攻击", "入侵", "摆脱", "防御",
+                "防范", "反对", "驱逐",
+            ],
+        ) {
+            score -= 1_500;
+        }
+        best = Some(best.map_or(score, |old: i64| old.max(score)));
+    }
+    best
+}
+
+pub(crate) fn char_tail(value: &str, count: usize) -> String {
+    value
+        .chars()
+        .rev()
+        .take(count)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect()
+}
+
+pub(crate) fn char_head(value: &str, count: usize) -> String {
+    value.chars().take(count).collect()
+}
+
+pub(crate) fn ends_with_any(value: &str, suffixes: &[&str]) -> bool {
+    suffixes.iter().any(|suffix| value.ends_with(suffix))
+}
+
+pub(crate) fn starts_with_any(value: &str, prefixes: &[&str]) -> bool {
+    prefixes.iter().any(|prefix| value.starts_with(prefix))
 }
 
 pub(crate) fn is_meaningful_country_name(value: &str) -> bool {
@@ -1035,59 +1127,13 @@ pub(crate) fn target_localisation_path(root: &Path, tag: &str) -> PathBuf {
 }
 
 pub(crate) fn infer_country_from_text(text: &str) -> Option<CountryGuess> {
-    country_guess_table()
-        .iter()
-        .copied()
-        .filter_map(|(name, tag, aliases)| {
-            let canonical = text.find(name).map(|position| (position, 0usize));
-            let alias = aliases
-                .iter()
-                .filter_map(|alias| text.find(alias).map(|position| (position, 1usize)))
-                .min();
-            let tag_match = contains_ascii_token(text, tag)
-                .then(|| text.find(tag).map(|position| (position, 2usize)))
-                .flatten();
-            [canonical, alias, tag_match]
-                .into_iter()
-                .flatten()
-                .min()
-                .map(|(position, match_rank)| {
-                    (
-                        position,
-                        match_rank,
-                        std::cmp::Reverse(name.chars().count()),
-                        CountryGuess {
-                            tag: tag.to_string(),
-                            name: name.to_string(),
-                            source: format!("built-in country table: {name} -> {tag}"),
-                        },
-                    )
-                })
+    text.split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '_'))
+        .find(|token| looks_like_tag(token))
+        .map(|tag| CountryGuess {
+            tag: tag.to_string(),
+            name: tag.to_string(),
+            source: "literal country TAG in request".to_string(),
         })
-        .min_by_key(|(position, match_rank, name_length, _)| (*position, *match_rank, *name_length))
-        .map(|(_, _, _, guess)| guess)
-}
-
-pub(crate) fn country_guess_table(
-) -> &'static [(&'static str, &'static str, &'static [&'static str])] {
-    &[
-        ("远东铁路共和国", "FER", &["远东铁路", "远东"]),
-        ("德国", "GER", &["德意志"]),
-        ("苏联", "SOV", &["苏维埃", "俄罗斯"]),
-        ("意大利", "ITA", &["意呆利"]),
-        ("日本", "JAP", &[]),
-        ("韩国", "KOR", &["朝鲜", "大韩民国", "高丽"]),
-        ("美国", "USA", &["美利坚"]),
-        ("英国", "ENG", &["不列颠", "英格兰"]),
-        ("法国", "FRA", &[]),
-        ("中国", "CHI", &["中华民国", "国民政府"]),
-        ("中共", "PRC", &["共产党中国", "红色中国"]),
-        ("波兰", "POL", &[]),
-        ("奥地利", "AUS", &[]),
-        ("西班牙", "SPR", &[]),
-        ("匈牙利", "HUN", &[]),
-        ("罗马尼亚", "ROM", &[]),
-    ]
 }
 
 pub(crate) fn one_sentence_requires_idea(text: &str, effects: &str) -> bool {

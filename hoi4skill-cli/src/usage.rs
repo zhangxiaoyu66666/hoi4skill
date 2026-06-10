@@ -35,7 +35,7 @@ Usage:
   hoi4skill apply-event-cards --input events.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"]
   hoi4skill emit-hoi4yaml --input cards.txt --kind feature-cards|event-cards|focus-layout --tag SOV --prefix sov_nep [--output mod.yaml]
   hoi4skill run-workflow --input copy.txt [--mod-root "M:\path\mod"] --tag SOV --prefix sov_nep [--request "literal user request"] [--sheet FocusTree] [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--dry-run] [--output workflow_report.json]
-  hoi4skill generate-mod --text "给德国加一个国策，完成后获得3个军工厂" --output "M:\path\mod" [--tag GER] [--prefix ger_demo] [--name "My Mod"] [--source-root "M:\path\source_mod"] [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--report report.json]
+  hoi4skill generate-mod --text "给德国加一个国策，完成后获得3个军工厂" --output "M:\path\mod" --game-root "C:\path\Hearts of Iron IV" [--tag GER] [--prefix ger_demo] [--name "My Mod"] [--source-root "M:\path\source_mod"] [--mod-path "M:\path\dependency.mod"] [--report report.json]
   hoi4skill country-localisation-template --tag FER --name "远东铁路共和国" --prefix fer_rail [--output FER_l_simp_chinese.yml]
   hoi4skill translate-localisation --mod-root "M:\path\mod" --from <source_language> --to <target_language> [--format prompt|yml|json] [--output translated.md]
   hoi4skill translate-localisation --mod-root "M:\path\mod" --from french --to german --translated-input translated_l_german.yml --apply [--report loc_apply_report.json]

@@ -206,6 +206,39 @@ fn write_fer_country_source(root: &Path) {
     .unwrap();
 }
 
+fn write_country_knowledge_source(root: &Path, countries: &[(&str, &str, &str)]) {
+    fs::create_dir_all(root.join("common").join("country_tags")).unwrap();
+    fs::create_dir_all(root.join("common").join("countries")).unwrap();
+    fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
+    fs::write(root.join("hoi4.exe"), "").unwrap();
+    let mut tags = String::new();
+    let mut loc = vec![0xef, 0xbb, 0xbf];
+    loc.extend_from_slice(b"l_simp_chinese:\n");
+    for (tag, file_name, name) in countries {
+        tags.push_str(&format!("{tag} = \"countries/{file_name}\"\n"));
+        fs::write(
+            root.join("common").join("countries").join(file_name),
+            "graphical_culture = western_european_gfx\n",
+        )
+        .unwrap();
+        loc.extend_from_slice(format!(" {tag}:0 \"{name}\"\n").as_bytes());
+    }
+    fs::write(
+        root.join("common")
+            .join("country_tags")
+            .join("00_countries.txt"),
+        tags,
+    )
+    .unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("simp_chinese")
+            .join("countries_l_simp_chinese.yml"),
+        loc,
+    )
+    .unwrap();
+}
+
 #[test]
 fn split_field_handles_chinese_colon() {
     let (key, value) = split_field("决议：鼓励奈普曼投资").unwrap();
@@ -1131,14 +1164,63 @@ fn country_inference_reads_localisation_and_verifies_country_file() {
 }
 
 #[test]
-fn korean_request_resolves_to_existing_kor_tag() {
-    let guess = infer_country_from_text(
+fn country_knowledge_resolves_target_instead_of_background_enemy() {
+    let root = unique_temp_dir("country-target-context");
+    write_country_knowledge_source(
+        &root,
+        &[("KOR", "Korea.txt", "韩国"), ("JAP", "Japan.txt", "日本")],
+    );
+    let guess = infer_country_from_sources(
         "依据韩国之春.xlsx生成一个韩国革命的mod，游戏时间是1936，是反抗日本的起义以后的国策",
+        std::slice::from_ref(&root),
     )
     .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(guess.unwrap().tag, "KOR");
+}
+
+#[test]
+fn country_knowledge_uses_ideology_and_cosmetic_localisation_aliases() {
+    let root = unique_temp_dir("country-target-alias");
+    write_country_knowledge_source(&root, &[("KOR", "Korea.txt", "朝鲜")]);
+    let loc_path = root
+        .join("localisation")
+        .join("simp_chinese")
+        .join("countries_l_simp_chinese.yml");
+    let mut loc = fs::read(&loc_path).unwrap();
+    loc.extend_from_slice(b" KOR_democratic:0 \"\xe9\x9f\xa9\xe5\x9b\xbd\"\n");
+    fs::write(&loc_path, loc).unwrap();
+
+    let guess = infer_country_from_sources("为韩国制作国策", std::slice::from_ref(&root))
+        .unwrap()
+        .unwrap();
+    fs::remove_dir_all(&root).unwrap();
 
     assert_eq!(guess.tag, "KOR");
     assert_eq!(guess.name, "韩国");
+}
+
+#[test]
+fn country_knowledge_resolves_countries_absent_from_builtin_fallback() {
+    let root = unique_temp_dir("country-target-vietnam");
+    write_country_knowledge_source(
+        &root,
+        &[
+            ("VIN", "Vietnam.txt", "越南"),
+            ("FRA", "France.txt", "法国"),
+        ],
+    );
+    let guess = infer_country_from_sources(
+        "为越南制作摆脱法国统治后的国策、事件与民族精神",
+        std::slice::from_ref(&root),
+    )
+    .unwrap()
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(guess.tag, "VIN");
+    assert_eq!(guess.name, "越南");
 }
 
 #[test]
@@ -1147,16 +1229,15 @@ fn tag_resolution_rejects_invented_revolutionary_committee_tag() {
         "依据韩国之春.xlsx生成一个韩国革命的mod，游戏时间是1936，是反抗日本的起义以后的国策";
     let mut index = GameIndex::default();
     index.country_tags.insert("KOR".to_string());
+    let inferred = CountryGuess {
+        tag: "KOR".to_string(),
+        name: "韩国".to_string(),
+        source: "local country knowledge base".to_string(),
+    };
 
-    let error = resolve_country_tag(
-        request,
-        Some("KRC"),
-        infer_country_from_text(request),
-        Some(&index),
-        false,
-    )
-    .err()
-    .unwrap();
+    let error = resolve_country_tag(request, Some("KRC"), Some(inferred), Some(&index), false)
+        .err()
+        .unwrap();
 
     assert!(error.contains("request resolves to existing KOR"));
     assert!(error.contains("--tag KRC"));
@@ -1168,14 +1249,13 @@ fn tag_resolution_reuses_indexed_kor_and_forbids_country_files() {
     let request = "给韩国制作国策、事件和民族精神";
     let mut index = GameIndex::default();
     index.country_tags.insert("KOR".to_string());
-    let resolution = resolve_country_tag(
-        request,
-        Some("KOR"),
-        infer_country_from_text(request),
-        Some(&index),
-        false,
-    )
-    .unwrap();
+    let inferred = CountryGuess {
+        tag: "KOR".to_string(),
+        name: "韩国".to_string(),
+        source: "local country knowledge base".to_string(),
+    };
+    let resolution =
+        resolve_country_tag(request, Some("KOR"), Some(inferred), Some(&index), false).unwrap();
     let json = country_tag_resolution_json(request, &resolution);
 
     assert_eq!(resolution.decision, "reuse_existing_tag");
@@ -1199,6 +1279,16 @@ fn new_tag_requires_literal_request_and_allow_flag() {
     assert_eq!(allowed.tag, "KRC");
     assert_eq!(allowed.decision, "create_new_tag");
     assert!(allowed.new_tag_authorized);
+}
+
+#[test]
+fn bare_tag_without_local_evidence_is_rejected() {
+    let error = resolve_country_tag("制作这个国家的国策", Some("XYZ"), None, None, false)
+        .err()
+        .unwrap();
+
+    assert!(error.contains("without local game/dependency/source-mod evidence"));
+    assert!(error.contains("bare --tag is not proof"));
 }
 
 #[test]
