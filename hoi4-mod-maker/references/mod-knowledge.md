@@ -71,3 +71,8 @@ hoi4skill prepare-edit-context --input "M:\path\copy.txt" --mod-root "M:\path\mo
 ```
 
 Read `edit_context.md` before writing. Its `Write Gate` is the first boundary: `BLOCKED` means stop, `VERIFY_FIRST` means collect the listed evidence first, and `READY_FOR_NARROW_WRITE` still allows edits only inside the reported edit surface. Its `Unknown Facts` and `Blocked Until Verified` sections explain the missing evidence behind that gate.
+# Country TAG evidence
+
+Before any country-targeted generation, run `resolve-country-tag` with the literal request and the game root. Reuse an indexed existing TAG. Do not treat a feature prefix, political organisation, revolutionary committee, faction, government, or mod name as a new country.
+
+If the resolved TAG already exists, the edit surface excludes `common/country_tags`, `common/countries`, and `history/countries`. Creating those files requires a literal user request for a new country/TAG plus the resolver's `--allow-new-tag` gate.

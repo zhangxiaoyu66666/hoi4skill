@@ -1340,6 +1340,51 @@ pub(crate) fn check_focus_tree_country_selectors(path: &Path, text: &str, report
                 path.display()
             ));
         }
+        check_focus_tree_position_anchor(path, &tree_id, &tree, reporter);
+    }
+}
+
+pub(crate) fn check_focus_tree_position_anchor(
+    path: &Path,
+    tree_id: &str,
+    tree: &str,
+    reporter: &mut Reporter,
+) {
+    let focuses = blocks_named(tree, "focus");
+    let roots = focuses
+        .iter()
+        .filter(|focus| blocks_named(focus, "prerequisite").is_empty())
+        .filter_map(|focus| block_assignment(focus, "id"))
+        .collect::<Vec<_>>();
+    if roots.len() != 1 {
+        return;
+    }
+    let opening_id = &roots[0];
+    for focus in focuses {
+        let Some(focus_id) = block_assignment(&focus, "id") else {
+            continue;
+        };
+        let relative_id = direct_assignment_value(&focus, "relative_position_id");
+        if focus_id == *opening_id {
+            if let Some(relative_id) = relative_id {
+                reporter.error(format!(
+                    "{}: focus_tree {tree_id} opening focus {opening_id} must use its own absolute x/y and must not set relative_position_id = {relative_id}",
+                    path.display()
+                ));
+            }
+            continue;
+        }
+        match relative_id {
+            Some(relative_id) if relative_id == opening_id => {}
+            Some(relative_id) => reporter.error(format!(
+                "{}: focus_tree {tree_id} focus {focus_id} uses relative_position_id = {relative_id}; keep prerequisite links for progression, but anchor every later focus to opening focus {opening_id} and calculate x/y relative to that opening focus",
+                path.display()
+            )),
+            None => reporter.error(format!(
+                "{}: focus_tree {tree_id} focus {focus_id} is missing relative_position_id; anchor every later focus to opening focus {opening_id}",
+                path.display()
+            )),
+        }
     }
 }
 

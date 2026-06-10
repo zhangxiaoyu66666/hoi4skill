@@ -17,6 +17,9 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
         "validate" => super::cmd_validate(&args),
         "detect-hoi4-path" => super::cmd_detect_hoi4_path(&args),
         "build-game-index" => super::cmd_build_game_index(&args),
+        "resolve-country-tag" | "country-tag-resolution" | "tag-resolution" => {
+            super::cmd_resolve_country_tag(&args)
+        }
         "scan-mod-style" => super::cmd_scan_mod_style(&args),
         "mod-knowledge" | "summarize-mod" | "mod-dossier" => super::cmd_mod_knowledge(&args),
         "prepare-edit-context" | "edit-context" | "preflight-context" => {

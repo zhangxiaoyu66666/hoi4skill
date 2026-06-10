@@ -18,6 +18,30 @@ pub(crate) struct RequirementScopeContract {
     pub(crate) rules: Vec<String>,
 }
 
+pub(crate) fn cmd_resolve_country_tag(args: &[String]) -> Result<(), String> {
+    let map = parse_args(args);
+    let text = one_sentence_input_text(&map)?;
+    let game_root = normalize_path(&require_value(&map, "game-root")?)?;
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = build_country_tag_index_with_mod_paths(&game_root, &dependency_mods)?;
+    let inferred = if let Some(country) = infer_country_from_text(&text) {
+        Some(country)
+    } else {
+        infer_country_from_sources(&text, &generate_mod_source_roots(&map)?)?
+    };
+    let resolution = resolve_country_tag(
+        &text,
+        value(&map, "tag"),
+        inferred,
+        Some(&game_index),
+        map.flags.contains("allow-new-tag"),
+    )?;
+    write_or_print(
+        &country_tag_resolution_json(&text, &resolution),
+        value(&map, "output"),
+    )
+}
+
 pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let input = normalize_path(&require_value(&map, "input")?)?;
@@ -38,6 +62,16 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     }
     let mut workflow_input = workflow_input_from_path(&input, sheet, tag, prefix)?;
     append_explicit_request(&mut workflow_input, value(&map, "request"));
+    if let Some(request) = value(&map, "request") {
+        let inferred = infer_country_from_text(request);
+        resolve_country_tag(
+            request,
+            Some(tag),
+            inferred,
+            game_index.as_ref(),
+            map.flags.contains("allow-new-tag"),
+        )?;
+    }
     let json = run_workflow_json_with_focus_layout(
         &workflow_input.text,
         workflow_input.focus_layout.as_ref(),
@@ -99,12 +133,29 @@ pub(crate) fn cmd_generate_mod(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let text = one_sentence_input_text(&map)?;
     let source_roots = generate_mod_source_roots(&map)?;
-    let country = infer_country_from_sources(&text, &source_roots)?
-        .or_else(|| infer_country_from_text(&text));
-    let tag = value(&map, "tag")
-        .map(|value| sanitize_identifier_part(value, "TAG").to_ascii_uppercase())
-        .or_else(|| country.as_ref().map(|country| country.tag.clone()))
-        .unwrap_or_else(|| "TAG".to_string());
+    let explicit_source_roots = generate_mod_explicit_source_roots(&map)?;
+    let country = if let Some(country) = infer_country_from_sources(&text, &explicit_source_roots)?
+    {
+        Some(country)
+    } else if let Some(country) = infer_country_from_text(&text) {
+        Some(country)
+    } else {
+        infer_country_from_sources(&text, &source_roots)?
+    };
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+        .transpose()?;
+    let resolution = resolve_country_tag(
+        &text,
+        value(&map, "tag"),
+        country.clone(),
+        game_index.as_ref(),
+        map.flags.contains("allow-new-tag"),
+    )?;
+    let tag = resolution.tag;
     let title = infer_one_sentence_title(&text);
     let prefix = value(&map, "prefix")
         .map(|value| sanitize_identifier_part(value, "mod"))
@@ -136,7 +187,7 @@ pub(crate) fn cmd_generate_mod(args: &[String]) -> Result<(), String> {
         supported_version,
         launcher_file,
         dry_run,
-        country_source: country.as_ref().map(|country| country.source.as_str()),
+        country_source: Some(&resolution.source),
     };
     let json = generate_mod_json(&request)?;
     write_or_print(&json, value(&map, "report"))
@@ -287,6 +338,148 @@ pub(crate) struct CountryGuess {
     pub(crate) source: String,
 }
 
+#[derive(Clone)]
+pub(crate) struct CountryTagResolution {
+    pub(crate) tag: String,
+    pub(crate) name: String,
+    pub(crate) source: String,
+    pub(crate) exists_in_index: Option<bool>,
+    pub(crate) new_tag_authorized: bool,
+    pub(crate) decision: &'static str,
+}
+
+pub(crate) fn resolve_country_tag(
+    request: &str,
+    explicit_tag: Option<&str>,
+    inferred: Option<CountryGuess>,
+    game_index: Option<&GameIndex>,
+    allow_new_tag: bool,
+) -> Result<CountryTagResolution, String> {
+    let explicit_tag = explicit_tag
+        .map(|tag| sanitize_identifier_part(tag, "TAG").to_ascii_uppercase())
+        .filter(|tag| tag != "TAG");
+    let new_tag_authorized = request_explicitly_creates_country_tag(request) && allow_new_tag;
+
+    if let (Some(explicit), Some(guess)) = (explicit_tag.as_ref(), inferred.as_ref()) {
+        if explicit != &guess.tag && !new_tag_authorized {
+            return Err(format!(
+                "country TAG conflict: request resolves to existing {} ({}) from {}, but --tag {} was supplied. Reuse {}. A prefix, faction, committee, government, or revolutionary organisation name is not authorization to create a country TAG",
+                guess.tag, guess.name, guess.source, explicit, guess.tag
+            ));
+        }
+    }
+
+    let (tag, name, source) = if new_tag_authorized {
+        let tag = explicit_tag.ok_or_else(|| {
+            "--allow-new-tag requires an explicit --tag and a literal request to create a new country/TAG"
+                .to_string()
+        })?;
+        let name = inferred
+            .as_ref()
+            .map(|guess| guess.name.clone())
+            .unwrap_or_else(|| tag.clone());
+        (
+            tag,
+            name,
+            "explicit user request plus --allow-new-tag".to_string(),
+        )
+    } else if let Some(guess) = inferred {
+        (guess.tag, guess.name, guess.source)
+    } else if let Some(tag) = explicit_tag {
+        (tag.clone(), tag, "explicit --tag".to_string())
+    } else {
+        return Err(
+            "country TAG is unknown. Build/read the local game or mod knowledge base and resolve an existing TAG; do not invent one from the mod name or prefix"
+                .to_string(),
+        );
+    };
+
+    let exists_in_index = game_index.map(|index| index.country_tags.contains(&tag));
+    if exists_in_index == Some(false) && !new_tag_authorized {
+        return Err(format!(
+            "country TAG {tag} is not present in the indexed game/dependency knowledge base. Creating common/country_tags, common/countries, or history/countries is forbidden unless the user literally requests a new country/TAG and --allow-new-tag is supplied"
+        ));
+    }
+
+    Ok(CountryTagResolution {
+        tag,
+        name,
+        source,
+        exists_in_index,
+        new_tag_authorized,
+        decision: if new_tag_authorized {
+            "create_new_tag"
+        } else {
+            "reuse_existing_tag"
+        },
+    })
+}
+
+pub(crate) fn request_explicitly_creates_country_tag(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    contains_any(
+        text,
+        &[
+            "创建新国家",
+            "创建一个新国家",
+            "新建国家",
+            "新建一个国家",
+            "建立新国家",
+            "建立一个新国家",
+            "创建国家TAG",
+            "创建国家tag",
+            "新建TAG",
+            "新建tag",
+            "创建新TAG",
+            "创建新tag",
+            "建立新TAG",
+            "建立新tag",
+            "建立一个新TAG",
+            "建立一个新tag",
+            "自定义TAG",
+            "自定义tag",
+        ],
+    ) || lower.contains("create a new country")
+        || lower.contains("create new country")
+        || lower.contains("create a new tag")
+        || lower.contains("create new tag")
+}
+
+pub(crate) fn enforce_tag_request_contract(
+    map: &ArgMap,
+    tag: &str,
+    game_index: Option<&GameIndex>,
+) -> Result<(), String> {
+    let Some(request) = value(map, "request") else {
+        return Ok(());
+    };
+    resolve_country_tag(
+        request,
+        Some(tag),
+        infer_country_from_text(request),
+        game_index,
+        map.flags.contains("allow-new-tag"),
+    )
+    .map(|_| ())
+}
+
+pub(crate) fn country_tag_resolution_json(
+    request: &str,
+    resolution: &CountryTagResolution,
+) -> String {
+    let indexed = resolution.exists_in_index.map(json_bool).unwrap_or("null");
+    format!(
+        "{{\n  \"request\": {},\n  \"resolved_tag\": {},\n  \"country_name\": {},\n  \"source\": {},\n  \"exists_in_index\": {},\n  \"new_tag_authorized\": {},\n  \"decision\": {},\n  \"forbidden_files_when_reusing\": [\"common/country_tags/*\", \"common/countries/*\", \"history/countries/*\"]\n}}\n",
+        json_str(request),
+        json_str(&resolution.tag),
+        json_str(&resolution.name),
+        json_str(&resolution.source),
+        indexed,
+        json_bool(resolution.new_tag_authorized),
+        json_str(resolution.decision),
+    )
+}
+
 pub(crate) fn one_sentence_input_text(map: &ArgMap) -> Result<String, String> {
     if let Some(text) = value(map, "text").or_else(|| value(map, "sentence")) {
         return Ok(text.trim().to_string());
@@ -311,6 +504,12 @@ pub(crate) fn generate_mod_source_roots(map: &ArgMap) -> Result<Vec<PathBuf>, St
         }
     }
 
+    roots.extend(generate_mod_explicit_source_roots(map)?);
+    Ok(dedupe_paths(roots))
+}
+
+pub(crate) fn generate_mod_explicit_source_roots(map: &ArgMap) -> Result<Vec<PathBuf>, String> {
+    let mut roots = Vec::new();
     for key in ["source-root", "source-mod", "source-mod-root"] {
         for raw in repeated_values(map, key) {
             for path in split_path_option(raw) {
@@ -836,19 +1035,37 @@ pub(crate) fn target_localisation_path(root: &Path, tag: &str) -> PathBuf {
 }
 
 pub(crate) fn infer_country_from_text(text: &str) -> Option<CountryGuess> {
-    for (name, tag, aliases) in country_guess_table().iter().copied() {
-        if text.contains(tag)
-            || text.contains(name)
-            || aliases.iter().any(|alias| text.contains(alias))
-        {
-            return Some(CountryGuess {
-                tag: tag.to_string(),
-                name: name.to_string(),
-                source: format!("built-in country table: {name} -> {tag}"),
-            });
-        }
-    }
-    None
+    country_guess_table()
+        .iter()
+        .copied()
+        .filter_map(|(name, tag, aliases)| {
+            let canonical = text.find(name).map(|position| (position, 0usize));
+            let alias = aliases
+                .iter()
+                .filter_map(|alias| text.find(alias).map(|position| (position, 1usize)))
+                .min();
+            let tag_match = contains_ascii_token(text, tag)
+                .then(|| text.find(tag).map(|position| (position, 2usize)))
+                .flatten();
+            [canonical, alias, tag_match]
+                .into_iter()
+                .flatten()
+                .min()
+                .map(|(position, match_rank)| {
+                    (
+                        position,
+                        match_rank,
+                        std::cmp::Reverse(name.chars().count()),
+                        CountryGuess {
+                            tag: tag.to_string(),
+                            name: name.to_string(),
+                            source: format!("built-in country table: {name} -> {tag}"),
+                        },
+                    )
+                })
+        })
+        .min_by_key(|(position, match_rank, name_length, _)| (*position, *match_rank, *name_length))
+        .map(|(_, _, _, guess)| guess)
 }
 
 pub(crate) fn country_guess_table(
@@ -859,6 +1076,7 @@ pub(crate) fn country_guess_table(
         ("苏联", "SOV", &["苏维埃", "俄罗斯"]),
         ("意大利", "ITA", &["意呆利"]),
         ("日本", "JAP", &[]),
+        ("韩国", "KOR", &["朝鲜", "大韩民国", "高丽"]),
         ("美国", "USA", &["美利坚"]),
         ("英国", "ENG", &["不列颠", "英格兰"]),
         ("法国", "FRA", &[]),
@@ -1194,10 +1412,7 @@ pub(crate) fn requirement_scope_contract(
     let wants_events = text.contains("事件") || lower.contains("event");
     let wants_ideas =
         text.contains("民族精神") || lower.contains("national spirit") || lower.contains("idea");
-    let wants_country_creation = contains_any(
-        text,
-        &["创建国家", "新国家", "国家TAG", "国家tag", "country tag"],
-    );
+    let wants_country_creation = request_explicitly_creates_country_tag(text);
     let wants_country_history = contains_any(text, &["国家历史", "history/countries", "开局政治"]);
     let wants_units = contains_any(
         text,

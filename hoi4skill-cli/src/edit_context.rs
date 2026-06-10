@@ -20,6 +20,7 @@ pub(crate) fn cmd_prepare_edit_context(args: &[String]) -> Result<(), String> {
         .transpose()?
         .map(|path| build_game_index_with_mod_paths(&path, &dependency_roots))
         .transpose()?;
+    enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
 
     let context = prepare_edit_context_markdown(
         &input,

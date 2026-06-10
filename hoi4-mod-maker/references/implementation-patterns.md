@@ -42,7 +42,7 @@ Minimal pieces:
     `x = ...`
     `y = ...`
     `prerequisite = { focus = ... }`
-    `relative_position_id = ...`
+    `relative_position_id = <opening_focus_id>` for every non-opening focus; prerequisites remain independent progression links
     `cost = <required 1..10; only exceed 10 when the user explicitly asked for a longer focus>`
     `ai_will_do = { factor = 100 }`
     `available = { }`
@@ -130,7 +130,7 @@ random_owned_controlled_state = {
 
 ## Country And Leader Pattern
 
-Use a full country creation plan when the request mentions 创建国家, 新国家, 国家TAG, 国家名, cosmetic名, starting leader, or country leader traits.
+Use a full country creation plan only when the literal request explicitly asks to create a new country or new/custom country TAG. A country name, cosmetic name, government, faction, committee, starting leader, or leader trait request does not by itself authorize a new TAG.
 
 Minimal country pieces:
 

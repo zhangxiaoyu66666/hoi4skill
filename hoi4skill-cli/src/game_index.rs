@@ -49,6 +49,39 @@ pub(crate) fn build_game_index(game_root: &Path) -> Result<GameIndex, String> {
     build_game_index_with_mod_paths(game_root, &[])
 }
 
+pub(crate) fn build_country_tag_index_with_mod_paths(
+    game_root: &Path,
+    mod_paths: &[PathBuf],
+) -> Result<GameIndex, String> {
+    let indexed_roots = std::iter::once(game_root.to_path_buf())
+        .chain(mod_paths.iter().cloned())
+        .collect::<Vec<_>>();
+    let mut index = GameIndex {
+        game_root: game_root.to_path_buf(),
+        indexed_roots: indexed_roots.clone(),
+        ..Default::default()
+    };
+    for root in indexed_roots {
+        if !root.is_dir() {
+            return Err(format!(
+                "{}: indexed root is not a directory",
+                root.display()
+            ));
+        }
+        let tag_root = root.join("common").join("country_tags");
+        if !tag_root.exists() {
+            continue;
+        }
+        for file in collect_files(&tag_root)? {
+            if file.extension().and_then(OsStr::to_str).unwrap_or("") != "txt" {
+                continue;
+            }
+            collect_country_tags(&read_utf8_lossy(&file)?, &mut index.country_tags);
+        }
+    }
+    Ok(index)
+}
+
 pub(crate) fn build_game_index_with_mod_paths(
     game_root: &Path,
     mod_paths: &[PathBuf],

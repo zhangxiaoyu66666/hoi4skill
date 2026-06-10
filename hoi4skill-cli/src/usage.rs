@@ -13,6 +13,7 @@ Usage:
   hoi4skill validate "M:\path\mod"
   hoi4skill validate "M:\path\mod" --game-root "C:\path\Hearts of Iron IV" [--mod-path "M:\path\dependency.mod"]
   hoi4skill build-game-index --game-root "C:\path\Hearts of Iron IV" [--mod-path "M:\path\dependency.mod"] [--output game_index.json]
+  hoi4skill resolve-country-tag --text "给韩国制作国策" --game-root "C:\path\Hearts of Iron IV" [--tag KOR] [--source-root "M:\path\source_mod"] [--mod-path "M:\path\dependency.mod"] [--allow-new-tag] [--output tag_resolution.json]
   hoi4skill scan-mod-style "M:\path\mod" [--output mod_style.json] [--max-sprites 400]
   hoi4skill mod-knowledge "M:\path\mod" [--mod-path "M:\path\dependency.mod"] [--output mod_knowledge.json] [--max-items 80]
   hoi4skill prepare-edit-context --input copy.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep [--request "literal user request"] [--sheet FocusTree] [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--output edit_context.md]

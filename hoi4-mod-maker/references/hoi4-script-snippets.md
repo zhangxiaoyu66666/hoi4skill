@@ -86,7 +86,7 @@ focus_tree = {
 		icon = GFX_goal_generic_construct_civ_factory
 		x = 0
 		y = 0
-		# relative_position_id = TAG_parent_focus
+		# relative_position_id = TAG_opening_focus
 		cost = <required 1..10; only exceed 10 when the user explicitly asked for a longer focus>
 		ai_will_do = {
 			factor = 10
@@ -113,7 +113,7 @@ Common additions:
 ```hoi4
 prerequisite = { focus = TAG_previous_focus }
 mutually_exclusive = { focus = TAG_other_branch }
-relative_position_id = TAG_previous_focus
+relative_position_id = TAG_opening_focus
 ```
 
 ## Focus Reward: Factories In A Valid State Scope

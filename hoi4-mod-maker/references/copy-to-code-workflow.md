@@ -145,7 +145,7 @@ Map common Chinese wording to HOI4 systems:
 - “州效果：、州编辑：、州改动：、省份效果：” -> `common/scripted_effects/<prefix>_state_effects.txt`; generated IDs end with `_state_effect`
 - “核心、工厂、资源、防空、基础设施、胜利点” -> `history/states` or state-scoped effects
 - “历史文件、省份、province、首都、州ID、STATE_、胜利点” -> verify with `references/history-states-provinces.md`, `mod_knowledge.json`, and/or `build-game-index`; `capital` is a province ID
-- “创建国家、国家TAG、国家名、cosmetic名” -> `common/country_tags`, `common/countries`, `history/countries`, and target TAG localisation; see `references/country-creation-leaders.md`
+- Only a literal request to create a new country or new/custom country TAG authorizes `common/country_tags`, `common/countries`, and `history/countries`; a country name, cosmetic name, government name, faction, committee, or route title alone does not. See `references/country-creation-leaders.md`.
 - “领袖、顾问、将领、country_leader特质” -> `common/characters`, `common/country_leader`, or legacy `history/countries` `create_country_leader`; choose style from `mod_knowledge.json`
 - “开局触发、每月触发、战争胜利触发” -> `common/on_actions`
 - “按钮、面板、GUI” -> `common/scripted_guis` plus interface files; avoid auto-generating complex GUI unless the target mod already has a clear pattern

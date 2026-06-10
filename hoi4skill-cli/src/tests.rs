@@ -1131,6 +1131,77 @@ fn country_inference_reads_localisation_and_verifies_country_file() {
 }
 
 #[test]
+fn korean_request_resolves_to_existing_kor_tag() {
+    let guess = infer_country_from_text(
+        "依据韩国之春.xlsx生成一个韩国革命的mod，游戏时间是1936，是反抗日本的起义以后的国策",
+    )
+    .unwrap();
+
+    assert_eq!(guess.tag, "KOR");
+    assert_eq!(guess.name, "韩国");
+}
+
+#[test]
+fn tag_resolution_rejects_invented_revolutionary_committee_tag() {
+    let request =
+        "依据韩国之春.xlsx生成一个韩国革命的mod，游戏时间是1936，是反抗日本的起义以后的国策";
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+
+    let error = resolve_country_tag(
+        request,
+        Some("KRC"),
+        infer_country_from_text(request),
+        Some(&index),
+        false,
+    )
+    .err()
+    .unwrap();
+
+    assert!(error.contains("request resolves to existing KOR"));
+    assert!(error.contains("--tag KRC"));
+    assert!(error.contains("not authorization to create a country TAG"));
+}
+
+#[test]
+fn tag_resolution_reuses_indexed_kor_and_forbids_country_files() {
+    let request = "给韩国制作国策、事件和民族精神";
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+    let resolution = resolve_country_tag(
+        request,
+        Some("KOR"),
+        infer_country_from_text(request),
+        Some(&index),
+        false,
+    )
+    .unwrap();
+    let json = country_tag_resolution_json(request, &resolution);
+
+    assert_eq!(resolution.decision, "reuse_existing_tag");
+    assert_eq!(resolution.exists_in_index, Some(true));
+    assert!(json.contains("\"resolved_tag\": \"KOR\""));
+    assert!(json.contains("\"common/country_tags/*\""));
+    assert!(!request_explicitly_creates_country_tag(request));
+}
+
+#[test]
+fn new_tag_requires_literal_request_and_allow_flag() {
+    let request = "创建新国家并创建新TAG KRC";
+    let index = GameIndex::default();
+
+    let blocked = resolve_country_tag(request, Some("KRC"), None, Some(&index), false)
+        .err()
+        .unwrap();
+    assert!(blocked.contains("not present in the indexed"));
+
+    let allowed = resolve_country_tag(request, Some("KRC"), None, Some(&index), true).unwrap();
+    assert_eq!(allowed.tag, "KRC");
+    assert_eq!(allowed.decision, "create_new_tag");
+    assert!(allowed.new_tag_authorized);
+}
+
+#[test]
 fn generate_mod_infers_country_from_source_root() {
     let workspace = unique_temp_dir("generate-mod-source-inference");
     let source = workspace.join("source_mod");
@@ -3462,6 +3533,71 @@ focus = {
         .errors
         .iter()
         .any(|msg| { msg.contains("focus SOV_focus_3_0 uses a generated position fallback id") }));
+}
+
+#[test]
+fn validator_rejects_parent_relative_focus_coordinates() {
+    let path = Path::new("M:\\mod\\common\\national_focus\\bad_anchor.txt");
+    let text = r#"
+focus_tree = {
+    id = krc_tree
+    country = { factor = 0 modifier = { add = 10 tag = KOR } }
+    focus = {
+        id = krc_uprising
+        icon = GFX_goal_unknown
+        x = 0
+        y = 0
+        cost = 10
+        ai_will_do = { factor = 100 }
+        available = { }
+        bypass = { }
+        cancel_if_invalid = yes
+        continue_if_invalid = no
+        available_if_capitulated = no
+        completion_reward = { }
+    }
+    focus = {
+        id = krc_unite_people
+        icon = GFX_goal_unknown
+        x = -2
+        y = 1
+        prerequisite = { focus = krc_uprising }
+        relative_position_id = krc_uprising
+        cost = 10
+        ai_will_do = { factor = 100 }
+        available = { }
+        bypass = { }
+        cancel_if_invalid = yes
+        continue_if_invalid = no
+        available_if_capitulated = no
+        completion_reward = { }
+    }
+    focus = {
+        id = krc_consolidate_power
+        icon = GFX_goal_unknown
+        x = -4
+        y = 2
+        prerequisite = { focus = krc_unite_people }
+        relative_position_id = krc_unite_people
+        cost = 10
+        ai_will_do = { factor = 100 }
+        available = { }
+        bypass = { }
+        cancel_if_invalid = yes
+        continue_if_invalid = no
+        available_if_capitulated = no
+        completion_reward = { }
+    }
+}
+"#;
+    let mut reporter = Reporter::default();
+
+    check_national_focus_fields(path, &strip_comments(text), &mut reporter);
+
+    assert!(reporter.errors.iter().any(|error| {
+        error.contains("focus krc_consolidate_power uses relative_position_id = krc_unite_people")
+            && error.contains("opening focus krc_uprising")
+    }));
 }
 
 #[test]

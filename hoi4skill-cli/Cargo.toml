@@ -1,6 +1,6 @@
 [package]
 name = "hoi4skill"
-version = "0.2.13"
+version = "0.2.14"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Rust CLI backend for the hoi4-mod-maker Codex skill."

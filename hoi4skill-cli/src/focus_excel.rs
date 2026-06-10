@@ -33,6 +33,7 @@ pub(crate) fn cmd_parse_focus_excel(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let input = normalize_path(&require_value(&map, "input")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
+    enforce_tag_request_contract(&map, tag, None)?;
     let prefix = value(&map, "prefix").unwrap_or("focus");
     let sheet = value(&map, "sheet");
     let format = value(&map, "format").unwrap_or("focus-tree");
@@ -66,6 +67,7 @@ pub(crate) fn cmd_apply_focus_excel(args: &[String]) -> Result<(), String> {
     let input = normalize_path(&require_value(&map, "input")?)?;
     let mod_root = normalize_path(&require_value(&map, "mod-root")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
+    enforce_tag_request_contract(&map, tag, None)?;
     let prefix = value(&map, "prefix").unwrap_or("focus");
     let sheet = value(&map, "sheet");
     let mut layout = read_focus_excel_layout(&input, sheet, tag, prefix)?;

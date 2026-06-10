@@ -5,6 +5,22 @@ description: Build, extend, and validate Hearts of Iron IV mod files from natura
 
 # HOI4 Mod Maker
 
+## Country TAG Evidence Gate
+
+This gate runs before scaffolding, parsing a workbook, choosing a prefix, or writing any content.
+
+1. Resolve the target against the local game/dependency knowledge base:
+   `hoi4skill resolve-country-tag --text "<literal user request>" --game-root "<HOI4 root>" [--source-root "<source mod>"] [--mod-path "<dependency>"] --output tag_resolution.json`
+2. Read `resolved_tag`, `source`, `exists_in_index`, and `decision`. Pass only that `resolved_tag` to later commands.
+3. When `decision = reuse_existing_tag`, writing `common/country_tags/*`, `common/countries/*`, or `history/countries/*` is forbidden. A new mod may add content for an existing country without redefining that country.
+4. Creating a new country TAG requires both:
+   - the user's literal request explicitly says to establish/create a new country or establish/create a new/custom TAG; and
+   - the resolver is rerun with an explicit `--tag <TAG> --allow-new-tag`.
+   No inferred necessity, narrative context, regime change, revolution, independence, new government, or deleted/new mod folder can substitute for that literal authorization.
+5. A mod title, route, ideology, party, faction, government, revolutionary committee, army, resistance group, namespace, or file/ID prefix is not a country TAG and never authorizes one. For example, a "韩国革命委员会" prefix such as `krc` still targets vanilla `KOR` unless the user explicitly requests a new country.
+6. A parser echoing a supplied `--tag` is not evidence that the TAG exists. Only the resolver's indexed result or verified source-mod country mapping is evidence.
+7. Never fall back to a backup, versioned-old, cached, or separately discovered skill/binary after the active bundled command fails. Use this skill's own `bin/windows-x64/hoi4skill.exe`; if it cannot perform the required gate, stop instead of using an older executable.
+
 ## Requirement Scope Contract
 
 Before planning files, copy the user's literal request into a scope contract. A request to create a new mod authorizes a new mod folder, not every HOI4 subsystem.
@@ -40,7 +56,8 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - Prefer the user's provided folder.
    - If no folder exists, create a minimal descriptor-only skeleton with `hoi4skill scaffold`; content writers create only the directories required by authorized systems.
    - Treat the folder containing `descriptor.mod` as the mod root.
-2. For existing mods, build a modification knowledge base before editing.
+2. Resolve the country TAG, then build a modification knowledge base before editing.
+   - Run the Country TAG Evidence Gate above for both new and existing mods. This is the fast local knowledge-base bootstrap and must finish before any `--tag` is passed to a parser/writer.
    - Run `hoi4skill mod-knowledge <mod-root-or-launcher.mod> --output mod_knowledge.json`.
    - Determine whether the target is a standalone mod or a submod from `descriptor.mod` and launcher-side `.mod` dependencies.
    - If it is a submod, pass available dependency roots with `--mod-path` before claiming inherited tags, sprites, technologies, scripted values, state/province IDs, or localisation exist.
@@ -91,6 +108,7 @@ These are non-negotiable for AI-generated HOI4 content:
 - All national-focus keys must use exact HOI4 field names. Never pluralize, shorten, translate, or approximate fields such as `prerequisite`, `relative_position_id`, `completion_reward`, `ai_will_do`, `cancel_if_invalid`, `continue_if_invalid`, or `available_if_capitulated`.
 - Event files must use exact structural fields too: top-level `add_namespace`, event `is_triggered_only`, `fire_only_once`, `mean_time_to_happen`, `immediate`, and `option`. Near-match spellings are fatal validation errors.
 - When generating a focus tree without a user-supplied visual layout, use the default `x/y` structure: row `y=0` has one opening focus at `x=0`; row `y=1` has two to four expansion focuses with an `x` gap of 2; row `y=2` has one phase-result focus at `x=0`; row `y=3` has two to four expansion focuses with an `x` gap of 2; row `y=4` has one closing-result focus at `x=0`. Do not scatter focuses randomly.
+- The opening focus uses absolute `x/y` and no `relative_position_id`. Every later focus keeps its real progression parent only in `prerequisite`, but its `relative_position_id` must point to the single opening focus and its `x/y` must be calculated relative to that opening focus. Never set `relative_position_id` to the previous/prerequisite focus.
 - National-focus `icon = ...` values must come from verified focus icon sprites in the target mod, dependency mods, or game `interface/goals*.gfx`; vanilla commonly uses both `GFX_goal...` and `GFX_focus...`. National spirits, decisions, events, and leader portraits follow their own verified `interface/*.gfx` registrations. Do not invent icon or portrait names from the title.
 - National-spirit pictures must come from verified `GFX_idea_<name>` registrations in target, dependency, or game `interface/*.gfx`. Register with `name = "GFX_idea_<name>"`, but reference it in `common/ideas` as `picture = <name>` without the `GFX_idea_` prefix.
 - Simplified Chinese country-content localisation must be written to the target country TAG file, for example `localisation/simp_chinese/SOV_l_simp_chinese.yml` or `localisation/simp_chinese/FER_l_simp_chinese.yml`. Never output feature-prefix localisation files such as `sov_nep_l_simp_chinese.yml`, `ger_build_army_industry_l_simp_chinese.yml`, or `<prefix>_l_simp_chinese.yml`.
