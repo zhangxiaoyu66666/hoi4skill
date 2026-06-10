@@ -31,6 +31,7 @@ cargo build --release
 
 ```text
 target\release\hoi4skill.exe --help
+target\release\hoi4skill.exe doctor-skill-install
 target\release\hoi4skill.exe scaffold --name "GPL Smoke Test" --output "..\_scratch\release-smoke" --launcher-file
 target\release\hoi4skill.exe validate "..\_scratch\release-smoke"
 ```

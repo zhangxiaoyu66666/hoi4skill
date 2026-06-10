@@ -5,6 +5,17 @@ description: Build, extend, and validate Hearts of Iron IV mod files from natura
 
 # HOI4 Mod Maker
 
+## Installation Self-Check
+
+Before any other HOI4 command in a new agent session, run this skill's bundled binary:
+
+`hoi4skill doctor-skill-install --fix`
+
+- The command scans the global and project skill roots used by Codex, Claude Code, OpenCode, and generic Agent Skills.
+- It infers the currently running `hoi4-mod-maker` directory from the bundled executable, keeps that copy, and automatically removes other directories whose `SKILL.md` frontmatter has the exact same skill name.
+- It never deletes a directory without a verified matching `SKILL.md`. If the current copy cannot be inferred, it refuses automatic deletion instead of guessing.
+- After cleanup, continue using the same bundled binary. Never fall back to a backup, versioned-old, cached, or repository-copy skill.
+
 ## Country TAG Evidence Gate
 
 This gate runs before scaffolding, parsing a workbook, choosing a prefix, or writing any content.
@@ -33,6 +44,8 @@ Before planning files, copy the user's literal request into a scope contract. A 
 - A Chinese request authorizes Simplified Chinese localisation. English localisation requires an explicit request or an existing target-mod convention.
 - Counts such as "事件不少于4个" and "民族精神不少于5个" authorize those systems and set minimum counts; they do not authorize unrelated systems.
 - Spreadsheet focus titles and positions are immutable. Preserve names and geometry exactly; never "improve" them by renaming or aesthetic rearrangement.
+- Narrative context such as a revolution, uprising, postwar situation, ideology, or start year may shape descriptions and effects for existing spreadsheet cells, but it never authorizes adding, removing, splitting, merging, or renaming focus nodes.
+- "Create a mod", "1936 start", "after the uprising", and similar setup language do not authorize `common/countries`, `common/country_tags`, `history/countries`, or `history/states`. Those files require a literal user request naming that subsystem.
 - Validation warnings about unresolved sprites, modifiers, technologies, equipment, sub-units, states, or provinces are unfinished work. Do not call them harmless and do not report success.
 
 ## Template-Only Generation Contract
@@ -80,6 +93,7 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - Run `hoi4skill run-workflow --input <copy.txt> --tag <TAG> --prefix <prefix> --dry-run --output workflow_plan.json`.
    - Read the dry-run plan before writing files. Confirm target tag, prefix, touched systems, generated IDs, localisation targets, skipped reasons, warnings, and validation expectations.
    - If using a narrower `apply-*` path instead of `run-workflow`, first run the matching `parse-*` command and inspect the generated plan.
+   - For spreadsheet focus trees, run `parse-focus-excel` without `--format` or explicitly with `--format markdown`. Its default review output shows the literal worksheet titles, occupied cells, simulated `x/y`, node count, and explicit mutual exclusions. Do not use `--format focus-tree` as model context and do not infer that generated IDs mean the worksheet lacks content.
    - If the plan touches `history/countries`, `history/states`, state IDs, province IDs, or capitals, run `hoi4skill plan-history-edit` and follow its `decision`, `checks`, `warnings`, and `skipped` entries before writing.
    - For focuses, decisions, events, and national spirits, never transition from the dry-run plan to a manual file edit. Apply the same structured input through the matching Rust writer.
 5. Edit or create the minimum required files.
@@ -91,7 +105,8 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - For national-focus icons, first read the target mod/dependencies/game `interface/goals*.gfx` sprites through `mod-knowledge`, `build-game-index --game-root`, or `run-workflow/apply-focus-layout --game-root`; choose only verified focus icon sprite names such as `GFX_goal...` or `GFX_focus...` by matching the focus meaning. For national spirits, decisions, decision categories, events, and leader portraits, use the same verified-resource rule with `GFX_idea_*`, `GFX_decision_*`, `GFX_decision_category_*`, `GFX_report_event_*`, and `GFX_portrait_*` registrations. Match by ideology, country/region, role, and feature meaning; if no verified resource is available, use the documented fallback or report missing indexing instead of inventing a sprite key.
    - When `register-gfx-icons` sees a non-English/non-ASCII image filename, it automatically translates the local filename into a semantic English filename, renames the asset, updates matching `interface/*.gfx` texturefile references, and then registers sprites. If the filename is already English/ASCII, it is left unchanged. If the filename cannot be translated semantically, skip that image and report it in `skipped_assets` for the AI/user summary; never invent random names such as `SOV_12347.png`.
 6. Validate.
-   - Run `hoi4skill validate <mod-root> --game-root <hoi4-root>` after edits whenever the game installation is available.
+   - Run `hoi4skill validate <mod-root> --game-root <hoi4-root> --request "<literal user request>"` after edits whenever the game installation is available.
+   - For a new-mod request, request-scope validation rejects unrequested country definitions, country/state history, initial units, characters, English localisation, decisions, technologies, or custom GUI directories even if a model created them manually.
    - Treat unresolved-resource warnings as failures to finish, not as permission to claim success.
    - Also run any repo-specific checks if the mod provides them.
 7. After the mod is launched in HOI4, analyze `error.log`.
@@ -171,7 +186,7 @@ hoi4skill icon-preview --mod-root "M:\path\mod" --output "M:\preview"
 hoi4skill register-gfx-icons --mod-root "M:\path\mod" --prefix sov_nep --category all --output gfx_report.json
 hoi4skill parse-focus-layout --input "M:\path\layout.txt" --tag SOV --prefix sov_alt --output focus_plan.json
 hoi4skill apply-focus-layout --input "M:\path\layout.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_alt --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod"
-hoi4skill parse-focus-excel --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_alt --sheet FocusTree --output focus_tree.txt
+hoi4skill parse-focus-excel --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_alt --sheet FocusTree --output focus_review.md
 hoi4skill apply-focus-excel --input "M:\path\focus_tree.xlsx" --mod-root "M:\path\mod" --tag SOV --prefix sov_alt --sheet FocusTree
 hoi4skill parse-feature-cards --input "M:\path\cards.txt" --tag SOV --prefix sov_nep --output feature_plan.json
 hoi4skill parse-event-cards --input "M:\path\events.txt" --tag SOV --prefix sov_nep --output event_plan.json
@@ -181,13 +196,13 @@ hoi4skill translate-localisation --mod-root "M:\path\mod" --from english --to si
 hoi4skill translate-localisation --mod-root "M:\path\mod" --from french --to german --format prompt --output loc_fr_to_de_prompt.md
 hoi4skill translate-localisation --mod-root "M:\path\mod" --from french --to german --translated-input translated_l_german.yml --apply --report loc_apply_report.json
 hoi4skill translate-localisation --mod-root "M:\path\mod" --from russian --to japanese --format yml --output-dir "M:\path\mod\localisation\japanese"
-hoi4skill validate "M:\path\mod"
+hoi4skill validate "M:\path\mod" --game-root "C:\path\Hearts of Iron IV" --request "literal user request"
 hoi4skill analyze-error-log --input "%USERPROFILE%\Documents\Paradox Interactive\Hearts of Iron IV\logs\error.log" --mod-root "M:\path\mod" --output error_report.json
 ```
 
 `run-workflow` accepts mixed Chinese prose/cards, detects focus-tree sketches, decision/national-spirit/technology/special-GUI/scripted-helper/state-effect cards, and event cards, then writes the generated files when `--mod-root` is supplied. Its JSON report includes detected sections, generated plans, changed files, validation errors/warnings, and next steps. When the target mod already has a `focus_tree` whose country block resolves to the target tag, focus generation extends that existing tree and shifts new focus rows below the current max `y`; otherwise it creates a new focus file. When `--input` points to `.xlsx/.xls/.xlsm/.xlsb/.ods`, `run-workflow` keeps a structured worksheet layout beside the model-readable Markdown table and applies that structure directly; it must never flatten cells into whitespace-delimited prose and parse them again. Excel focus titles, node count, rows, columns, blank-column spacing, and explicit mutual exclusions are immutable input. Do not rename, paraphrase, split, merge, add, remove, or recenter those focuses. When `--game-root` and optional `--mod-path` are supplied, generated focuses, national spirits, decisions, decision categories, and events choose missing art from verified indexed sprites by matching ideology, country/region, role, and feature meaning; leader work must use indexed `GFX_portrait_*` or verified legacy `gfx/leaders/...` paths.
 
-`parse-focus-excel` and `apply-focus-excel` read `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, or `.ods` files where AI or a human drew a national focus tree as a worksheet grid. Every non-empty non-connector cell becomes a focus. Cell text may include lines such as `ID: english_id`, `icon: GFX_goal...`, and `completion_reward: 1个军工厂`. For OOXML workbooks (`.xlsx`/`.xlsm`), the importer also reads worksheet drawing text boxes/shapes and merges an anchored Chinese title with the English ID stored in the underlying cell. The importer expands worksheet columns into HOI4 `x` coordinates with a minimum gap of 2 on the same `y` row, so if one focus is `x = 1`, the adjacent same-row focus is at least `x = 3`. Prerequisites are still inferred from the nearest valid earlier row, but relative placement now anchors to the first/start focus by default so later focuses share one `relative_position_id` base and can be moved together.
+`parse-focus-excel` and `apply-focus-excel` read `.xlsx`, `.xls`, `.xlsm`, `.xlsb`, or `.ods` files where AI or a human drew a national focus tree as a worksheet grid. `parse-focus-excel` defaults to a model-readable Markdown review; script output requires explicit `--format focus-tree`. Every non-empty non-connector cell becomes a focus. Cell text may include lines such as `ID: english_id`, `icon: GFX_goal...`, and `completion_reward: 1个军工厂`. For OOXML workbooks (`.xlsx`/`.xlsm`), the importer also reads worksheet drawing text boxes/shapes and merges an anchored Chinese title with the English ID stored in the underlying cell. The importer expands worksheet columns into HOI4 `x` coordinates with a minimum gap of 2 on the same `y` row, so if one focus is `x = 1`, the adjacent same-row focus is at least `x = 3`. Prerequisites are still inferred from the nearest valid earlier row, but relative placement now anchors to the first/start focus by default so later focuses share one `relative_position_id` base and can be moved together.
 
 Never manually pair `relative_position_id = <parent>` with the worksheet's absolute `x/y` values. HOI4 treats those coordinates as offsets from that parent, so branch drift compounds on every row. Use the CLI-generated opening-focus anchor and its relative offsets unchanged.
 

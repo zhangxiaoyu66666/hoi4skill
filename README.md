@@ -46,6 +46,7 @@ hoi4skill-cli/target/release/hoi4skill.exe
 
 ```text
 hoi4skill-cli/target/release/hoi4skill.exe --help
+hoi4skill-cli/target/release/hoi4skill.exe doctor-skill-install --fix
 ```
 
 ### 示例命令
@@ -56,11 +57,11 @@ hoi4skill mod-knowledge "M:\path\existing_mod" --mod-path "M:\path\dependency.mo
 hoi4skill prepare-edit-context --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output edit_context.md
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output workflow_report.json
 hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --output history_plan.json
-hoi4skill parse-focus-excel --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_excel --sheet FocusTree --output focus_tree.txt
+hoi4skill parse-focus-excel --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_excel --sheet FocusTree --output focus_review.md
 hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from english --to simp_chinese --format prompt --output loc_translate_prompt.md
 hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from french --to german --format prompt --output loc_fr_to_de_prompt.md
 hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from french --to german --translated-input translated_l_german.yml --apply --report loc_apply_report.json
-hoi4skill validate "M:\path\existing_mod" --game-root "C:\path\Hearts of Iron IV"
+hoi4skill validate "M:\path\existing_mod" --game-root "C:\path\Hearts of Iron IV" --request "literal user request"
 ```
 
 ### 适合谁使用

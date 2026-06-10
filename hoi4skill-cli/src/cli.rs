@@ -29,6 +29,9 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
             super::cmd_plan_history_edit(&args)
         }
         "import-mod-ir" => super::cmd_import_mod_ir(&args),
+        "doctor-skill-install" | "cleanup-old-skills" | "repair-skill-install" => {
+            super::cmd_doctor_skill_install(&args)
+        }
         "focus-copy-prompt" => super::cmd_focus_copy_prompt(&args),
         "idea-copy-prompt" | "national-spirit-copy-prompt" => super::cmd_idea_copy_prompt(&args),
         "icon-preview" => super::cmd_icon_preview(&args),

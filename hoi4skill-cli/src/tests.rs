@@ -10,6 +10,15 @@ fn unique_temp_dir(name: &str) -> PathBuf {
     ))
 }
 
+fn write_test_skill(path: &Path, name: &str) {
+    fs::create_dir_all(path).unwrap();
+    fs::write(
+        path.join("SKILL.md"),
+        format!("---\nname: {name}\ndescription: test\n---\n"),
+    )
+    .unwrap();
+}
+
 fn write_minimal_focus_xlsx(path: &Path) {
     let file = fs::File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
@@ -2704,6 +2713,10 @@ fn parse_focus_excel_can_render_markdown_table() {
     fs::remove_dir_all(&root).unwrap();
 
     assert!(markdown.contains("# Worksheet: FocusTree"));
+    assert!(markdown.contains("## Immutable Import Contract"));
+    assert!(markdown.contains("- focus_count: 3"));
+    assert!(markdown
+        .contains("A generated or generic ID never means the worksheet title/content is missing"));
     assert!(markdown.contains("## Original Worksheet Grid"));
     assert!(markdown.contains("## Simulated HOI4 x/y Grid"));
     assert!(markdown.contains("| Row | A | B | C | D |"));
@@ -2713,6 +2726,147 @@ fn parse_focus_excel_can_render_markdown_table() {
     ));
     assert!(markdown.contains("| y\\\\x | 0 | 2 | 4 |"));
     assert!(markdown.contains("重建中央委员会<br><sub>id: SOV_rebuild_committee</sub>"));
+}
+
+#[test]
+fn parse_focus_excel_default_format_is_model_readable_markdown() {
+    assert_eq!(DEFAULT_FOCUS_EXCEL_FORMAT, "markdown");
+    assert_eq!(normalise_focus_excel_format("table"), "markdown");
+}
+
+#[test]
+fn validator_requires_game_index_for_history_files() {
+    let root = unique_temp_dir("validate-history-needs-index");
+    fs::create_dir_all(root.join("history/states")).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"History Index Gate\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("history/states/1-Test.txt"),
+        "state = { id = 1 history = { owner = GER } provinces = { 1 } }\n",
+    )
+    .unwrap();
+
+    let reporter = validate_mod(&root, None).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(reporter.errors.iter().any(|error| {
+        error.contains("history files require indexed validation with --game-root")
+    }));
+}
+
+#[test]
+fn new_mod_request_scope_rejects_unrequested_country_and_state_files() {
+    let root = unique_temp_dir("validate-new-mod-request-scope");
+    fs::create_dir_all(root.join("common/countries")).unwrap();
+    fs::create_dir_all(root.join("history/states")).unwrap();
+    fs::write(
+        root.join("common/countries/KOR.txt"),
+        "graphical_culture = asian_gfx\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("history/states/525.txt"),
+        "state = { id = 525 history = { owner = KOR } provinces = { 7125 } }\n",
+    )
+    .unwrap();
+    let request = "按照表格生成一个韩国革命mod，事件不少于4个，民族精神不少于5个";
+    let mut reporter = Reporter::default();
+
+    check_request_scope_for_new_mod(&root, request, &mut reporter);
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(reporter.errors.iter().any(|error| {
+        error.contains("common/countries") && error.contains("country_definition")
+    }));
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|error| error.contains("history/states") && error.contains("state_history")));
+}
+
+#[test]
+fn request_scope_audit_is_generic_for_any_existing_country() {
+    let root = unique_temp_dir("validate-generic-country-request-scope");
+    fs::create_dir_all(root.join("history/countries")).unwrap();
+    fs::write(
+        root.join("history/countries/GER - Germany.txt"),
+        "capital = 6521\n",
+    )
+    .unwrap();
+    let request = "create a Germany mod with focuses and events";
+    let mut reporter = Reporter::default();
+
+    check_request_scope_for_new_mod(&root, request, &mut reporter);
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|error| error.contains("history/countries") && error.contains("country_history")));
+}
+
+#[test]
+fn skill_install_doctor_finds_nested_duplicate_copies() {
+    let root = unique_temp_dir("skill-install-doctor-scan");
+    let keep = root.join(".opencode/skills/hoi4-mod-maker");
+    let backup = root.join(".agents/skills/hoi4-mod-maker.backup-v0.2.0");
+    let unrelated = root.join(".codex/skills/unrelated");
+    write_test_skill(&keep, "hoi4-mod-maker");
+    write_test_skill(&backup, "hoi4-mod-maker");
+    write_test_skill(&unrelated, "other-skill");
+
+    let found = find_installed_skill_copies(&[
+        root.join(".opencode/skills"),
+        root.join(".agents/skills"),
+        root.join(".codex/skills"),
+    ])
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(found.len(), 2);
+    assert!(found.iter().any(|path| path.ends_with("hoi4-mod-maker")));
+    assert!(found
+        .iter()
+        .any(|path| path.ends_with("hoi4-mod-maker.backup-v0.2.0")));
+}
+
+#[test]
+fn skill_install_doctor_fix_keeps_current_and_removes_old_copies() {
+    let root = unique_temp_dir("skill-install-doctor-fix");
+    let keep = root.join(".opencode/skills/hoi4-mod-maker");
+    let old = root.join(".agents/skills/hoi4skill-repo/hoi4-mod-maker");
+    write_test_skill(&keep, "hoi4-mod-maker");
+    write_test_skill(&old, "hoi4-mod-maker");
+    let found =
+        find_installed_skill_copies(&[root.join(".opencode/skills"), root.join(".agents/skills")])
+            .unwrap();
+
+    let report = repair_installed_skill_copies(&found, Some(&keep), true).unwrap();
+
+    assert_eq!(report.removed.len(), 1);
+    assert!(keep.exists());
+    assert!(!old.exists());
+    fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn skill_install_doctor_refuses_ambiguous_automatic_deletion() {
+    let root = unique_temp_dir("skill-install-doctor-ambiguous");
+    let first = root.join(".opencode/skills/hoi4-mod-maker");
+    let second = root.join(".agents/skills/hoi4-mod-maker");
+    write_test_skill(&first, "hoi4-mod-maker");
+    write_test_skill(&second, "hoi4-mod-maker");
+    let found =
+        find_installed_skill_copies(&[root.join(".opencode/skills"), root.join(".agents/skills")])
+            .unwrap();
+
+    let error = repair_installed_skill_copies(&found, None, true).unwrap_err();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(error.contains("current skill directory could not be inferred"));
 }
 
 #[test]

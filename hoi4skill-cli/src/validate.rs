@@ -21,12 +21,58 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during validation".to_string());
     }
-    let reporter = validate_mod(&root, game_index.as_ref())?;
+    let mut reporter = validate_mod(&root, game_index.as_ref())?;
+    if let Some(request) = value(&map, "request") {
+        check_request_scope_for_new_mod(&root, request, &mut reporter);
+    }
     reporter.print();
     if reporter.errors.is_empty() {
         Ok(())
     } else {
         Err("validation failed".to_string())
+    }
+}
+
+pub(crate) fn check_request_scope_for_new_mod(root: &Path, request: &str, reporter: &mut Reporter) {
+    let scope = requirement_scope_contract(request, false, "TAG", "feature");
+    if !scope
+        .authorized_systems
+        .iter()
+        .any(|system| system == "new_mod_descriptor")
+    {
+        return;
+    }
+
+    for (system, paths) in [
+        (
+            "country_definition",
+            &["common/country_tags", "common/countries"][..],
+        ),
+        ("country_history", &["history/countries"][..]),
+        ("state_history", &["history/states"][..]),
+        ("initial_units", &["history/units"][..]),
+        ("characters", &["common/characters"][..]),
+        ("english_localisation", &["localisation/english"][..]),
+        ("decisions", &["common/decisions"][..]),
+        ("technologies", &["common/technologies"][..]),
+        ("custom_gui", &["common/scripted_guis"][..]),
+    ] {
+        if scope
+            .authorized_systems
+            .iter()
+            .any(|authorized| authorized == system)
+        {
+            continue;
+        }
+        for relative in paths {
+            let path = root.join(relative);
+            if path.exists() {
+                reporter.error(format!(
+                    "{}: request-scope violation; `{relative}` exists but the literal new-mod request did not authorize `{system}`",
+                    path.display()
+                ));
+            }
+        }
     }
 }
 
@@ -46,6 +92,7 @@ pub(crate) fn validate_mod(
     let mut focus_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut local_focus_ids: BTreeSet<String> = BTreeSet::new();
     let mut game_data_refs = GameDataRefs::default();
+    let mut indexed_history_files = Vec::new();
 
     if !root.exists() {
         reporter.error(format!("{}: path does not exist", root.display()));
@@ -60,6 +107,9 @@ pub(crate) fn validate_mod(
                 .unwrap_or("")
                 .to_ascii_lowercase();
             let norm = slash_path(&file);
+            if norm.contains("/history/countries/") || norm.contains("/history/states/") {
+                indexed_history_files.push(file.clone());
+            }
             if matches!(ext.as_str(), "txt" | "mod" | "gfx" | "gui" | "asset") {
                 let text = read_utf8_lossy(&file)?;
                 check_braces(&file, &text, &mut reporter);
@@ -89,6 +139,17 @@ pub(crate) fn validate_mod(
                 check_jsonl_duplicate_keys(&file, &text, &mut reporter);
             }
         }
+    }
+
+    if game_index.is_none() && !indexed_history_files.is_empty() {
+        reporter.error(format!(
+            "history files require indexed validation with --game-root before completion can be claimed: {}",
+            indexed_history_files
+                .iter()
+                .map(|path| path.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
     }
 
     for (id, paths) in ids {

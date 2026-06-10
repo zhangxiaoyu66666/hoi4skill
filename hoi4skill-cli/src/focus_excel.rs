@@ -14,6 +14,8 @@ use zip::ZipArchive;
 #[allow(unused_imports)]
 use crate::*;
 
+pub(crate) const DEFAULT_FOCUS_EXCEL_FORMAT: &str = "markdown";
+
 #[derive(Clone)]
 pub(crate) struct ExcelFocusCell {
     pub(crate) row: usize,
@@ -36,7 +38,7 @@ pub(crate) fn cmd_parse_focus_excel(args: &[String]) -> Result<(), String> {
     enforce_tag_request_contract(&map, tag, None)?;
     let prefix = value(&map, "prefix").unwrap_or("focus");
     let sheet = value(&map, "sheet");
-    let format = value(&map, "format").unwrap_or("focus-tree");
+    let format = value(&map, "format").unwrap_or(DEFAULT_FOCUS_EXCEL_FORMAT);
     let output = match normalise_focus_excel_format(format).as_str() {
         "markdown" => render_focus_excel_markdown(&input, sheet, tag, prefix)?,
         "json" => {
@@ -846,6 +848,21 @@ pub(crate) fn render_focus_excel_markdown_table(
 
     let mut out = String::new();
     out.push_str(&format!("# Worksheet: {sheet_name}\n\n"));
+    out.push_str("## Immutable Import Contract\n\n");
+    out.push_str(&format!("- focus_count: {}\n", layout.focuses.len()));
+    out.push_str(&format!(
+        "- explicit_mutual_exclusion_pairs: {}\n",
+        layout.mutuals.len()
+    ));
+    out.push_str(
+        "- The worksheet titles, occupied cells, node count, spacing, and explicit mutual exclusions are authoritative.\n",
+    );
+    out.push_str(
+        "- IDs shown below are implementation identifiers only. A generated or generic ID never means the worksheet title/content is missing.\n",
+    );
+    out.push_str(
+        "- Do not rename, paraphrase, add, remove, split, merge, or aesthetically rearrange focus nodes.\n\n",
+    );
     out.push_str("## Original Worksheet Grid\n\n");
     out.push('|');
     out.push_str(" Row |");

@@ -10,8 +10,8 @@ pub(crate) fn print_usage() {
 Usage:
   hoi4skill scaffold --name "My Mod" --output "M:\path\mod" [--launcher-file]
   hoi4skill detect-hoi4-path [--hoi4-path "C:\path\Hearts of Iron IV"] [--output hoi4_path.json]
-  hoi4skill validate "M:\path\mod"
-  hoi4skill validate "M:\path\mod" --game-root "C:\path\Hearts of Iron IV" [--mod-path "M:\path\dependency.mod"]
+  hoi4skill validate "M:\path\mod" [--request "literal user request"]
+  hoi4skill validate "M:\path\mod" --game-root "C:\path\Hearts of Iron IV" [--mod-path "M:\path\dependency.mod"] [--request "literal user request"]
   hoi4skill build-game-index --game-root "C:\path\Hearts of Iron IV" [--mod-path "M:\path\dependency.mod"] [--output game_index.json]
   hoi4skill resolve-country-tag --text "给韩国制作国策" --game-root "C:\path\Hearts of Iron IV" [--tag KOR] [--source-root "M:\path\source_mod"] [--mod-path "M:\path\dependency.mod"] [--allow-new-tag] [--output tag_resolution.json]
   hoi4skill scan-mod-style "M:\path\mod" [--output mod_style.json] [--max-sprites 400]
@@ -19,6 +19,7 @@ Usage:
   hoi4skill prepare-edit-context --input copy.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_nep [--request "literal user request"] [--sheet FocusTree] [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--output edit_context.md]
   hoi4skill plan-history-edit "M:\path\mod" --text "给 GER 的 64 州加工厂" [--state-id 64] [--province-id 6521] [--capital 6521] [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--output history_plan.json]
   hoi4skill import-mod-ir "M:\path\mod" [--output imported_ir.json] [--max-items 1000]
+  hoi4skill doctor-skill-install [--fix] [--root "C:\custom\skill-root"] [--keep "C:\path\hoi4-mod-maker"]
   hoi4skill focus-copy-prompt "M:\path\modA" ["M:\path\modB"] [--output focus_prompt.md] [--style full|compact]
   hoi4skill idea-copy-prompt "M:\path\modA" ["M:\path\modB"] [--output idea_prompt.md] [--style full|compact] [--all-categories]
   hoi4skill icon-preview --mod-root "M:\path\mod" [--output "M:\preview"] [--max-icons 800]
@@ -26,7 +27,7 @@ Usage:
   hoi4skill parse-focus-layout --input layout.txt --tag SOV --prefix sov_alt [--format json|focus-tree] [--output plan.json]
   hoi4skill render-focus-code --input layout.txt --tag SOV --prefix sov_alt [--tree-id sov_focus] [--output focus_tree.txt]
   hoi4skill apply-focus-layout --input layout.txt --mod-root "M:\path\mod" --tag SOV --prefix sov_alt [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"]
-  hoi4skill parse-focus-excel --input tree.xlsx --tag SOV --prefix sov_alt [--sheet FocusTree] [--format focus-tree|json|markdown] [--output focus_tree.txt]
+  hoi4skill parse-focus-excel --input tree.xlsx --tag SOV --prefix sov_alt [--sheet FocusTree] [--format markdown|json|focus-tree] [--output focus_review.md]
   hoi4skill apply-focus-excel --input tree.xlsx --mod-root "M:\path\mod" --tag SOV --prefix sov_alt [--sheet FocusTree]
   hoi4skill parse-focus-copy-cards --input focus_copy.txt [--output focus_prompts.md]
   hoi4skill parse-feature-cards --input cards.txt --tag SOV --prefix sov_nep [--output plan.json]

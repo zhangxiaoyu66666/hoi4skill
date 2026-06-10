@@ -65,19 +65,25 @@ For project-only installation, copy it to one of:
 
 OpenCode loads matching `SKILL.md` files on demand through its skill tool.
 
-## Universal Zip Layout
+## Release Zip Layout
 
-The release zip contains drop-in layouts:
+The release zip contains one canonical skill folder:
 
 ```text
-.codex/skills/hoi4-mod-maker/
-.claude/skills/hoi4-mod-maker/
-.opencode/skills/hoi4-mod-maker/
-.agents/skills/hoi4-mod-maker/
 hoi4-mod-maker/
 ```
 
-Extract the zip into your home directory for global installation, or into a project root for project-local installation. Use only the folders needed by your tool if you do not want all layouts.
+Copy that one folder into exactly one skill location supported by your agent. Do not install the same skill simultaneously under `.opencode/skills`, `.agents/skills`, `.claude/skills`, or versioned backup folders: agents may discover multiple `name: hoi4-mod-maker` entries and load a stale copy nondeterministically.
+
+Before upgrading, remove or move the previous `hoi4-mod-maker` directory out of every skill-discovery root, then install the new canonical folder once. Backups must live outside skill-discovery directories.
+
+After installing or upgrading, run the bundled self-check:
+
+```text
+hoi4-mod-maker/bin/windows-x64/hoi4skill.exe doctor-skill-install --fix
+```
+
+The command keeps the skill directory containing the running executable and automatically deletes other verified `hoi4-mod-maker` copies from Codex, Claude Code, OpenCode, and generic Agent Skill discovery roots. It refuses cleanup if it cannot identify the copy to keep.
 
 ## CLI Backend
 
