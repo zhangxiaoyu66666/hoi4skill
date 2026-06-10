@@ -971,6 +971,7 @@ fn explicit_request_is_combined_with_structured_workbook_input() {
 #[test]
 fn prepare_edit_context_packages_model_preflight_context() {
     let root = unique_temp_dir("edit-context");
+    let library = unique_temp_dir("edit-context-library");
     fs::create_dir_all(root.join("common").join("national_focus")).unwrap();
     fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
     fs::write(
@@ -1003,6 +1004,7 @@ fn prepare_edit_context_packages_model_preflight_context() {
         "国策树：\n工业复兴\n\n州效果：整顿首都工业\n州ID：64\n效果：1个军工厂\n图标：工业图标\n科技：新式步兵\n",
     )
     .unwrap();
+    build_clausewitz_library(std::slice::from_ref(&root), &library).unwrap();
 
     let context = prepare_edit_context_markdown(
         &input,
@@ -1017,9 +1019,11 @@ fn prepare_edit_context_packages_model_preflight_context() {
         20,
         20,
         10,
+        Some(std::slice::from_ref(&library)),
     )
     .unwrap();
     fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&library).unwrap();
 
     assert!(context.contains("# HOI4 Edit Context Pack"));
     assert!(context.contains("## Write Gate"));
@@ -1035,6 +1039,10 @@ fn prepare_edit_context_packages_model_preflight_context() {
     assert!(context.contains("plan-history-edit"));
     assert!(context.contains("### Stop Conditions"));
     assert!(context.contains("## Knowledge Summary"));
+    assert!(context.contains("## Retrieved Clausewitz Code Library"));
+    assert!(context.contains("clausewitz_code_layers"));
+    assert!(context.contains("vanilla_base"));
+    assert!(context.contains("focus `SOV_existing`"));
     assert!(context.contains("## Dry Run Plan"));
     assert!(context.contains("## Unknown Facts"));
     assert!(context.contains("## Blocked Until Verified"));
@@ -2867,6 +2875,151 @@ fn skill_install_doctor_refuses_ambiguous_automatic_deletion() {
     fs::remove_dir_all(&root).unwrap();
 
     assert!(error.contains("current skill directory could not be inferred"));
+}
+
+#[test]
+fn clausewitz_library_builds_and_retrieves_real_block_shapes() {
+    let root = unique_temp_dir("clausewitz-library-source");
+    let library = unique_temp_dir("clausewitz-library-output");
+    fs::create_dir_all(root.join("common/national_focus")).unwrap();
+    fs::create_dir_all(root.join("events")).unwrap();
+    fs::create_dir_all(root.join("common/ideas")).unwrap();
+    fs::write(
+        root.join("common/national_focus/test.txt"),
+        r#"focus_tree = {
+	id = test_tree
+	country = { factor = 0 modifier = { add = 10 tag = TST } }
+	focus = {
+		id = TST_workers_revolution
+		icon = GFX_goal_generic_communism
+		x = 0
+		y = 0
+		cost = 10
+		completion_reward = { add_stability = 0.05 }
+	}
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("events/test.txt"),
+        r#"add_namespace = test
+country_event = {
+	id = test.1
+	title = test.1.t
+	desc = test.1.d
+	is_triggered_only = yes
+	option = { name = test.1.a add_stability = 0.05 }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("common/ideas/test.txt"),
+        r#"ideas = {
+	country = {
+		TST_planned_economy = {
+			picture = planned_economy
+			modifier = { production_speed_industrial_complex_factor = 0.05 }
+		}
+	}
+}
+"#,
+    )
+    .unwrap();
+
+    let count = build_clausewitz_library(std::slice::from_ref(&root), &library).unwrap();
+    let focuses =
+        query_clausewitz_library(&library, "工人 共产主义 革命", Some("focus"), 3).unwrap();
+    let events =
+        query_clausewitz_library(&library, "revolution country event", Some("event"), 3).unwrap();
+    let ideas =
+        query_clausewitz_library(&library, "planned economy national spirit", Some("idea"), 3)
+            .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&library).unwrap();
+
+    assert!(count >= 4);
+    assert!(focuses
+        .iter()
+        .any(|example| example.code.contains("id = TST_workers_revolution")));
+    assert!(events
+        .iter()
+        .any(|example| example.code.starts_with("country_event = {")));
+    assert!(ideas
+        .iter()
+        .any(|example| example.code.contains("picture = planned_economy")));
+}
+
+#[test]
+fn clausewitz_library_refuses_to_replace_unrelated_directory() {
+    let root = unique_temp_dir("clausewitz-library-safe-source");
+    let output = unique_temp_dir("clausewitz-library-unsafe-output");
+    fs::create_dir_all(root.join("events")).unwrap();
+    fs::create_dir_all(&output).unwrap();
+    fs::write(output.join("user-file.txt"), "keep me").unwrap();
+
+    let error = build_clausewitz_library(std::slice::from_ref(&root), &output).unwrap_err();
+    assert!(output.join("user-file.txt").is_file());
+    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&output).unwrap();
+
+    assert!(error.contains("refusing to replace non-library directory"));
+}
+
+#[test]
+fn mod_code_layer_requires_literal_user_authorization() {
+    let roots = vec![PathBuf::from("M:\\mods\\example")];
+    let denied = enforce_mod_code_request("给德国制作国策", &roots).unwrap_err();
+
+    assert!(denied.contains("mod code loading is forbidden"));
+    assert!(enforce_mod_code_request("加载 example 模组代码作为参考", &roots).is_ok());
+    assert!(enforce_mod_code_request("reference mod code from example", &roots).is_ok());
+}
+
+#[test]
+fn dependency_mod_path_does_not_authorize_code_library_loading() {
+    let args = vec!["--mod-path".to_string(), "M:\\mods\\dependency".to_string()];
+    let map = parse_args(&args);
+
+    assert!(code_mod_roots(&map).unwrap().is_empty());
+}
+
+#[test]
+fn mod_code_layer_is_separate_and_precedes_vanilla_results() {
+    let vanilla_root = unique_temp_dir("clausewitz-vanilla-source");
+    let mod_root = unique_temp_dir("clausewitz-mod-source");
+    let vanilla_library = unique_temp_dir("clausewitz-vanilla-library");
+    let mod_library = unique_temp_dir("clausewitz-mod-library");
+    fs::create_dir_all(vanilla_root.join("events")).unwrap();
+    fs::create_dir_all(mod_root.join("events")).unwrap();
+    fs::write(
+        vanilla_root.join("events/base.txt"),
+        "country_event = {\n id = base.1\n is_triggered_only = yes\n option = { name = base.1.a }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join("events/mod.txt"),
+        "country_event = {\n id = custom_mod.1\n is_triggered_only = yes\n option = { name = custom_mod.1.a }\n}\n",
+    )
+    .unwrap();
+    build_clausewitz_library(std::slice::from_ref(&vanilla_root), &vanilla_library).unwrap();
+    build_clausewitz_library(std::slice::from_ref(&mod_root), &mod_library).unwrap();
+
+    let results = query_clausewitz_libraries(
+        &[mod_library.clone(), vanilla_library.clone()],
+        "country event",
+        Some("event"),
+        2,
+    )
+    .unwrap();
+    fs::remove_dir_all(&vanilla_root).unwrap();
+    fs::remove_dir_all(&mod_root).unwrap();
+    fs::remove_dir_all(&vanilla_library).unwrap();
+    fs::remove_dir_all(&mod_library).unwrap();
+
+    assert_eq!(results[0].symbol, "custom_mod.1");
+    assert_eq!(results[1].symbol, "base.1");
 }
 
 #[test]

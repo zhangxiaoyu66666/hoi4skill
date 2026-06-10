@@ -15,11 +15,28 @@ pub(crate) fn cmd_prepare_edit_context(args: &[String]) -> Result<(), String> {
     let max_sprites = parse_usize_option(&map, "max-sprites", 400)?;
     let max_context_files = parse_usize_option(&map, "max-context-files", 24)?;
     let dependency_roots = dependency_mod_roots(&map)?;
-    let game_index = value(&map, "game-root")
-        .map(normalize_path)
-        .transpose()?
-        .map(|path| build_game_index_with_mod_paths(&path, &dependency_roots))
+    let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
+    let game_index = game_root
+        .as_ref()
+        .map(|path| build_game_index_with_mod_paths(path, &dependency_roots))
         .transpose()?;
+    let requested_library = value(&map, "code-library")
+        .map(normalize_path)
+        .transpose()?;
+    let code_mod_roots = code_mod_roots(&map)?;
+    if !code_mod_roots.is_empty() {
+        let request = value(&map, "request").ok_or_else(|| {
+            "--code-mod-path requires --request with the user's literal authorization".to_string()
+        })?;
+        enforce_mod_code_request(request, &code_mod_roots)?;
+    }
+    let code_libraries = game_root
+        .as_ref()
+        .map(|root| {
+            ensure_clausewitz_libraries(root, &code_mod_roots, requested_library.as_deref())
+        })
+        .transpose()?
+        .or_else(|| requested_library.map(|path| vec![path]));
     enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
 
     let context = prepare_edit_context_markdown(
@@ -35,6 +52,7 @@ pub(crate) fn cmd_prepare_edit_context(args: &[String]) -> Result<(), String> {
         max_items,
         max_sprites,
         max_context_files,
+        code_libraries.as_deref(),
     )?;
     write_or_print(&context, value(&map, "output"))
 }
@@ -53,6 +71,7 @@ pub(crate) fn prepare_edit_context_markdown(
     max_items: usize,
     max_sprites: usize,
     max_context_files: usize,
+    code_libraries: Option<&[PathBuf]>,
 ) -> Result<String, String> {
     let resolved = resolve_mod_root(mod_input)?;
     let mut workflow_input = workflow_input_from_path(input, sheet, tag, prefix)?;
@@ -115,6 +134,17 @@ pub(crate) fn prepare_edit_context_markdown(
             out.push_str(&format!("  - `{}`\n", root.display()));
         }
     }
+    if let Some(libraries) = code_libraries {
+        out.push_str("- clausewitz_code_layers (highest priority first):\n");
+        for (index, library) in libraries.iter().enumerate() {
+            let kind = if index + 1 == libraries.len() {
+                "vanilla_base"
+            } else {
+                "user_authorized_mod"
+            };
+            out.push_str(&format!("  - {kind}: `{}`\n", library.display()));
+        }
+    }
     out.push('\n');
     out.push_str(&markdown_fence(
         "text",
@@ -174,6 +204,17 @@ pub(crate) fn prepare_edit_context_markdown(
         out.push_str(&render_indexed_resource_summary(index, 40));
     }
 
+    if let Some(libraries) = code_libraries {
+        out.push_str("\n## Retrieved Clausewitz Code Library\n\n");
+        out.push_str("- rule: read these verified local examples before producing structured inputs or changing a generator.\n");
+        out.push_str("- rule: copy syntax and block ownership only; never copy IDs, country-specific narrative, or unrelated effects.\n");
+        out.push_str(&render_retrieved_clausewitz_context(
+            libraries,
+            request_text,
+            &scope_contract.authorized_systems,
+        )?);
+    }
+
     out.push_str("\n## Dry Run Plan\n\n");
     out.push_str("This is a non-writing `run-workflow` plan with validation against the target mod root.\n\n");
     out.push_str(&markdown_fence(
@@ -218,7 +259,7 @@ pub(crate) fn prepare_edit_context_markdown(
     out.push_str("\n## Safe Next Step\n\n");
     out.push_str("- If every `Blocked Until Verified` item is resolved, rerun `run-workflow` without `--dry-run` or use the narrow `apply-*` command.\n");
     out.push_str("- If any blocked item remains, read/index the missing files first or ask the user for explicit IDs/roots.\n");
-    out.push_str("- After writes, run `hoi4skill validate <mod-root>` and then check HOI4 `error.log` from an in-game launch.\n");
+    out.push_str("- After writes, run `hoi4skill validate <mod-root> --game-root <HOI4 root> --request \"<literal user request>\"` and then check HOI4 `error.log` from an in-game launch.\n");
     Ok(out)
 }
 
@@ -792,11 +833,11 @@ fn skip_json_whitespace(json: &str, mut offset: usize) -> Option<usize> {
     Some(offset)
 }
 
-fn markdown_fence(info: &str, text: &str) -> String {
+pub(crate) fn markdown_fence(info: &str, text: &str) -> String {
     format!("````{info}\n{text}\n````\n")
 }
 
-fn truncate_chars(text: &str, max_chars: usize) -> String {
+pub(crate) fn truncate_chars(text: &str, max_chars: usize) -> String {
     let mut out = String::new();
     for (idx, ch) in text.chars().enumerate() {
         if idx >= max_chars {

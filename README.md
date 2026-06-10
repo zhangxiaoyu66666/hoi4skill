@@ -47,6 +47,8 @@ hoi4skill-cli/target/release/hoi4skill.exe
 ```text
 hoi4skill-cli/target/release/hoi4skill.exe --help
 hoi4skill-cli/target/release/hoi4skill.exe doctor-skill-install --fix
+hoi4skill-cli/target/release/hoi4skill.exe build-clausewitz-library --game-root "C:\path\Hearts of Iron IV"
+hoi4skill-cli/target/release/hoi4skill.exe query-clausewitz-library --system focus --query "socialist workers revolution"
 ```
 
 ### 示例命令
@@ -54,6 +56,9 @@ hoi4skill-cli/target/release/hoi4skill.exe doctor-skill-install --fix
 ```text
 hoi4skill scaffold --name "My HOI4 Mod" --output "M:\path\my_mod" --launcher-file
 hoi4skill mod-knowledge "M:\path\existing_mod" --mod-path "M:\path\dependency.mod" --output mod_knowledge.json
+hoi4skill build-clausewitz-library --game-root "C:\path\Hearts of Iron IV"
+hoi4skill build-clausewitz-library --game-root "C:\path\Hearts of Iron IV" --code-mod-path "M:\path\requested_mod" --request "加载 requested_mod 的模组代码作为参考"
+hoi4skill query-clausewitz-library --system event --query "uprising country event"
 hoi4skill prepare-edit-context --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output edit_context.md
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output workflow_report.json
 hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --output history_plan.json

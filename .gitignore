@@ -28,6 +28,8 @@ mod_knowledge.json
 workflow_report.json
 workflow_plan.json
 history_plan.json
+clausewitz-library/
+.hoi4skill/
 
 # Local launcher files and generated demo launchers
 *.mod

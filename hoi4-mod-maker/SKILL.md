@@ -33,6 +33,23 @@ This gate runs before scaffolding, parsing a workbook, choosing a prefix, or wri
 6. A parser echoing a supplied `--tag` is not evidence that the TAG exists. Only the resolver's indexed result or verified source-mod country mapping is evidence.
 7. Never fall back to a backup, versioned-old, cached, or separately discovered skill/binary after the active bundled command fails. Use this skill's own `bin/windows-x64/hoi4skill.exe`; if it cannot perform the required gate, stop instead of using an older executable.
 
+## Local Clausewitz Code Library
+
+The model must retrieve real HOI4 code before generating or changing any Clausewitz-backed system. Prompt knowledge and remembered syntax are not evidence.
+
+1. Build the vanilla base library from the user's own game installation:
+   `hoi4skill build-clausewitz-library --game-root "<HOI4 root>"`
+2. `--mod-path` is dependency evidence for validation and resource lookup; it never authorizes or loads that mod's code into the Clausewitz library.
+3. Load a separate mod-code layer only when the user's literal request explicitly says to load, reference, or imitate that specific mod:
+   `hoi4skill build-clausewitz-library --game-root "<HOI4 root>" --code-mod-path "<requested mod>" --request "<literal user request>"`
+4. The library indexes complete, source-attributed blocks for focus trees/focuses, country/news/state/leader events, national spirits, decisions/categories, characters, scripted effects/triggers, country/state history, and GFX sprite registrations.
+5. Query it directly when investigating syntax:
+   `hoi4skill query-clausewitz-library --system focus --query "<feature meaning>"`
+6. `prepare-edit-context --game-root ...` automatically creates only the vanilla library when missing. Add `--code-mod-path` only under the explicit user authorization above. Retrieved mod code is layered ahead of vanilla and never replaces the vanilla base.
+7. Copy only block ownership, exact field names, nesting, and locally verified usage patterns. Never copy source IDs, country-specific narrative, balance values, or unrelated effects.
+8. Retrieval does not authorize manual writes to template-owned systems. The Rust generators still own final focus, event, decision, and national-spirit output. If retrieved syntax exposes a missing generator field, extend the parser/writer and tests first.
+9. The library is generated locally and must not be bundled, committed, or redistributed because it contains excerpts from the user's game/mod files.
+
 ## Requirement Scope Contract
 
 Before planning files, copy the user's literal request into a scope contract. A request to create a new mod authorizes a new mod folder, not every HOI4 subsystem.
@@ -77,7 +94,7 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - If it is a submod, pass available dependency roots with `--mod-path` before claiming inherited tags, sprites, technologies, scripted values, state/province IDs, or localisation exist.
    - Use `knowledge_base` and `markdown_summary` as the source of truth for ID prefixes, localisation languages, namespace names, focus tree style, decision category style, state/province facts, scripted helper files, and icon/GFX sprite style.
    - If the request says "一句话", infer sensible defaults instead of asking, unless the country/tag or feature target is impossible to infer.
-   - For any multi-system edit, also run `hoi4skill prepare-edit-context --input <copy-or-workbook> --request "<literal user request>" --mod-root <mod-root> --tag <TAG> --prefix <prefix> --game-root <hoi4-root> --output edit_context.md` and read `Requirement Scope Contract` and `Write Gate` as the first model context blocks before writing code.
+   - For any multi-system edit, also run `hoi4skill prepare-edit-context --input <copy-or-workbook> --request "<literal user request>" --mod-root <mod-root> --tag <TAG> --prefix <prefix> --game-root <hoi4-root> --output edit_context.md` and read `Requirement Scope Contract`, `Write Gate`, and `Retrieved Clausewitz Code Library` as the first model context blocks before writing code.
 3. Convert the request into a small implementation plan.
    - Name the feature.
    - List authorized systems and the exact planned files. Systems absent from the literal request are forbidden by default.
@@ -150,6 +167,7 @@ Read only the reference needed for the current task:
 
 - `references/file-map.md`: folder and file locations for common HOI4 systems.
 - `references/mod-knowledge.md`: pre-edit mod/submod classification and knowledge-base rules to avoid hallucinating tags, namespaces, sprites, and dependency content.
+- `references/clausewitz-code-library.md`: locally build and query source-attributed real HOI4 code blocks before generation.
 - `references/copy-to-code-workflow.md`: full pipeline from player-facing prose to Feature Plan, HOI4 file plan, code generation, validation, and repair.
 - `references/implementation-patterns.md`: ID naming, one-sentence request handling, and common feature patterns.
 - `references/focus-tree-layout.md`: plain-text focus tree sketch syntax, including row/column layout and `互斥` branch handling.
@@ -173,6 +191,9 @@ If this skill was installed from the release package, prefer the bundled Windows
 
 ```text
 hoi4skill scaffold --name "My HOI4 Mod" --output "M:\path\my_hoi4_mod" --launcher-file
+hoi4skill build-clausewitz-library --game-root "C:\path\Hearts of Iron IV"
+hoi4skill build-clausewitz-library --game-root "C:\path\Hearts of Iron IV" --code-mod-path "M:\path\requested_mod" --request "加载 requested_mod 的模组代码作为参考"
+hoi4skill query-clausewitz-library --system focus --query "communist workers revolution" --max-results 6
 hoi4skill generate-mod --text "给德国加一个国策，完成后获得3个军工厂，并触发一个新闻事件。" --output "M:\path\my_hoi4_mod"
 hoi4skill generate-mod --text "给远东铁路共和国加一个国策，完成后获得3个军工厂。" --source-root "M:\path\source_mod" --output "M:\path\my_hoi4_mod"
 hoi4skill mod-knowledge "M:\path\mod_or_launcher.mod" --mod-path "M:\path\dependency.mod" --output mod_knowledge.json

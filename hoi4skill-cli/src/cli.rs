@@ -17,6 +17,12 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
         "validate" => super::cmd_validate(&args),
         "detect-hoi4-path" => super::cmd_detect_hoi4_path(&args),
         "build-game-index" => super::cmd_build_game_index(&args),
+        "build-clausewitz-library" | "build-code-library" => {
+            super::cmd_build_clausewitz_library(&args)
+        }
+        "query-clausewitz-library" | "query-code-library" | "search-hoi4-code" => {
+            super::cmd_query_clausewitz_library(&args)
+        }
         "resolve-country-tag" | "country-tag-resolution" | "tag-resolution" => {
             super::cmd_resolve_country_tag(&args)
         }

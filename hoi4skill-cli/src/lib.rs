@@ -8,6 +8,7 @@
 mod args;
 mod cards;
 mod clausewitz;
+mod clausewitz_library;
 mod clausewitz_script;
 pub mod cli;
 mod copy_prompt;
@@ -40,6 +41,7 @@ mod workflow;
 pub(crate) use args::*;
 pub(crate) use cards::*;
 pub(crate) use clausewitz::*;
+pub(crate) use clausewitz_library::*;
 pub(crate) use clausewitz_script::*;
 pub(crate) use copy_prompt::*;
 pub(crate) use detect_path::*;
