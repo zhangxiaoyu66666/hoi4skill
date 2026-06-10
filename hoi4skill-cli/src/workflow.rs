@@ -1325,6 +1325,12 @@ pub(crate) fn requirement_scope_contract(
                 .to_string(),
             "Warnings about unresolved game resources are unfinished work; do not report validation success until indexed validation is clean."
                 .to_string(),
+            "LLMs must submit structured focus, decision, event, and national-spirit inputs to Rust generators; they must not handwrite common/national_focus, common/decisions, common/ideas, or events scripts unless the user explicitly requests direct manual Clausewitz/file editing."
+                .to_string(),
+            "General requests such as create a mod, make it complete, fix it, or add content are not permission for manual script editing; only the user's explicit request to handwrite or directly edit those script files is an exception."
+                .to_string(),
+            "Without that explicit user exception, if a requested field is not supported by the generator, extend the generator first instead of bypassing it with manual Clausewitz code."
+                .to_string(),
         ],
     }
 }

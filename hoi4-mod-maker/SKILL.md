@@ -18,6 +18,20 @@ Before planning files, copy the user's literal request into a scope contract. A 
 - Spreadsheet focus titles and positions are immutable. Preserve names and geometry exactly; never "improve" them by renaming or aesthetic rearrangement.
 - Validation warnings about unresolved sprites, modifiers, technologies, equipment, sub-units, states, or provinces are unfinished work. Do not call them harmless and do not report success.
 
+## Template-Only Generation Contract
+
+National focuses, decisions, events, and national spirits are template-owned systems. The model must not directly write or patch their Clausewitz blocks unless the user explicitly asks for direct manual Clausewitz/file editing.
+
+- National focuses: the model may supply only structured layout/spec data such as ID, title, description, `x/y`, prerequisite, mutual exclusion, icon meaning, and completion effects. Use `apply-focus-excel`, `apply-focus-layout`, `render-focus-code`, or `run-workflow` to emit the fixed tree header and focus blocks.
+- Decisions: the model may supply only decision cards. Use `apply-feature-cards` or `run-workflow`; the Rust writer owns category/decision wrappers, field names, localisation, and formatting.
+- National spirits: the model may supply only national-spirit cards. Use `apply-feature-cards` or `run-workflow`; the Rust writer owns `ideas = { country = { ... } }`, `_idea` IDs, `picture` syntax, modifiers, and localisation.
+- Events: the model may supply only event cards. Use `apply-event-cards` or `run-workflow`; the Rust writer owns namespaces, event types, IDs, options, localisation, and structural fields.
+- Do not use generic file-write or edit tools on `common/national_focus`, `common/decisions`, `common/ideas`, or `events` for generated content.
+- If a requested field or mechanic is not expressible by the current structured input, extend the Rust parser/writer and add tests first. Never bypass the generator by hand-writing approximate script.
+- After tool generation, inspect the emitted plan/diff and validate with the indexed game root. The model may revise structured input and rerun the tool, but must not repair generated blocks manually.
+- Exception: manual editing is allowed only when the user explicitly requests hand-written Clausewitz code or direct edits to one of those script files. Requests such as "create a mod", "make it complete", "fix it", "continue", or "add content" do not grant this exception. The model may not infer the exception from convenience, complexity, missing generator support, or a deleted/new mod.
+- Even under the explicit manual-edit exception, read the canonical Rust-rendered template first, preserve its fixed wrappers and fields, and run indexed validation afterward.
+
 ## Core Workflow
 
 Turn the user's mod idea into concrete HOI4 files, using the existing mod's style when a mod folder is present.
@@ -49,6 +63,7 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - Read the dry-run plan before writing files. Confirm target tag, prefix, touched systems, generated IDs, localisation targets, skipped reasons, warnings, and validation expectations.
    - If using a narrower `apply-*` path instead of `run-workflow`, first run the matching `parse-*` command and inspect the generated plan.
    - If the plan touches `history/countries`, `history/states`, state IDs, province IDs, or capitals, run `hoi4skill plan-history-edit` and follow its `decision`, `checks`, `warnings`, and `skipped` entries before writing.
+   - For focuses, decisions, events, and national spirits, never transition from the dry-run plan to a manual file edit. Apply the same structured input through the matching Rust writer.
 5. Edit or create the minimum required files.
    - Preserve existing formatting and folder organization.
    - Keep unrelated mod content unchanged.

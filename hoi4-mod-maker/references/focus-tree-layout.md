@@ -142,11 +142,14 @@ Icon rules:
 Commands:
 
 ```text
+hoi4skill render-focus-code --input layout.txt --tag SOV --prefix sov_alt --output focus_tree.txt
 hoi4skill parse-focus-excel --input focus_tree.xlsx --tag SOV --prefix sov_alt --sheet FocusTree --format focus-tree --output focus_tree.txt
 hoi4skill parse-focus-excel --input focus_tree.xlsx --tag SOV --prefix sov_alt --format json --output focus_excel_plan.json
 hoi4skill parse-focus-excel --input focus_tree.xlsx --tag SOV --prefix sov_alt --format markdown --output focus_excel_table.md
 hoi4skill apply-focus-excel --input focus_tree.xlsx --mod-root "M:\path\mod" --tag SOV --prefix sov_alt --sheet FocusTree
 ```
+
+`render-focus-code` is the manual-layout equivalent of the Excel writer. The model supplies the layout and optional ID hints; Rust emits the complete fixed `focus_tree` and `focus` templates. Do not copy the example template below into a file by hand unless the user explicitly requests direct manual Clausewitz/file editing.
 
 Use `--format markdown` when the worksheet should be shown to a model first as a human-readable grid. The output preserves the Excel row/column layout as a Markdown table, keeps merged cell/drawing text in one cell, and adds a second Markdown table that simulates the normalized HOI4 `x/y` layout so the model can read both the original worksheet and the eventual focus coordinates.
 

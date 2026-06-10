@@ -804,6 +804,41 @@ fn workflow_dry_run_detects_mixed_copy() {
 }
 
 #[test]
+fn render_focus_code_uses_fixed_tree_and_focus_templates() {
+    let root = unique_temp_dir("render-focus-code");
+    fs::create_dir_all(&root).unwrap();
+    let input = root.join("layout.txt");
+    fs::write(
+        &input,
+        "朝鲜民族起义 | people_uprising\n联络游击队 | contact_guerrillas   动员市民 | mobilize_citizens\n",
+    )
+    .unwrap();
+    let args = vec![
+        "--input".to_string(),
+        input.display().to_string(),
+        "--tag".to_string(),
+        "KOR".to_string(),
+        "--prefix".to_string(),
+        "kor_spring".to_string(),
+    ];
+
+    let map = parse_args(&args);
+    let text =
+        read_utf8_lossy(&normalize_path(&require_value(&map, "input").unwrap()).unwrap()).unwrap();
+    let layout = parse_focus_layout_with_rewards(&text, "KOR", "kor_spring");
+    let code = render_focus_tree(&layout, "KOR");
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(code.contains("country = {\n\t\tfactor = 0"));
+    assert!(code.contains("modifier = {\n\t\t\tadd = 10\n\t\t\ttag = KOR"));
+    assert!(!code.contains("default_focus"));
+    assert!(!code.contains("country = KOR"));
+    assert!(code.contains("id = KOR_people_uprising"));
+    assert!(code.contains("cancel_if_invalid = yes"));
+    assert!(code.contains("completion_reward = {"));
+}
+
+#[test]
 fn requirement_scope_keeps_korean_revolution_prompt_narrow() {
     let text = "依据钢铁雄心4技能去按照韩国之春.xlsx生成一个韩国革命的mod，事件不少于4个，民族精神不少于5个（不准用python），游戏时间是1936，是反抗日本的起义以后的国策";
     let scope = requirement_scope_contract(text, true, "KOR", "kor_spring");
@@ -845,6 +880,14 @@ fn requirement_scope_keeps_korean_revolution_prompt_narrow() {
         .contains(&"localisation/english".to_string()));
     assert!(json.contains("\"events\": 4"));
     assert!(json.contains("\"national_spirits\": 5"));
+    assert!(scope
+        .rules
+        .iter()
+        .any(|rule| rule.contains("must submit structured focus, decision, event")));
+    assert!(scope.rules.iter().any(|rule| {
+        rule.contains("General requests such as create a mod")
+            && rule.contains("explicit request to handwrite")
+    }));
 }
 
 #[test]

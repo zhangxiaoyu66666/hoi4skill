@@ -9,8 +9,40 @@ pub(crate) fn cmd_parse_focus_layout(args: &[String]) -> Result<(), String> {
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("focus");
     let text = read_utf8_lossy(&normalize_path(&input)?)?;
-    let json = parse_focus_layout_json(&text, tag, prefix);
-    write_or_print(&json, value(&map, "output"))
+    let mut layout = parse_focus_layout_with_rewards(&text, tag, prefix);
+    if let Some(tree_id) = value(&map, "tree-id") {
+        layout.tree_id = tree_id.to_string();
+    }
+    let rendered = match value(&map, "format").unwrap_or("json") {
+        "json" | "plan" if value(&map, "tree-id").is_none() => {
+            parse_focus_layout_json(&text, tag, prefix)
+        }
+        "json" | "plan" => focus_layout_json(&layout, tag, prefix),
+        "focus-tree" | "focus_tree" | "script" | "code" | "txt" => render_focus_tree(&layout, tag),
+        other => {
+            return Err(format!(
+                "unknown focus layout format: {other}; use json or focus-tree"
+            ))
+        }
+    };
+    write_or_print(&rendered, value(&map, "output"))
+}
+
+pub(crate) fn cmd_render_focus_code(args: &[String]) -> Result<(), String> {
+    let mut forwarded = args.to_vec();
+    if !forwarded
+        .iter()
+        .any(|arg| arg == "--format" || arg.starts_with("--format="))
+    {
+        forwarded.push("--format".to_string());
+        forwarded.push("focus-tree".to_string());
+    }
+    cmd_parse_focus_layout(&forwarded)
+}
+
+pub(crate) fn parse_focus_layout_json(text: &str, tag: &str, prefix: &str) -> String {
+    let layout = parse_focus_layout_with_rewards(text, tag, prefix);
+    focus_layout_json(&layout, tag, prefix)
 }
 
 #[derive(Clone)]
@@ -324,57 +356,6 @@ pub(crate) fn prose_effect_hint(effect: &str) -> String {
     } else {
         format!("{}。", hints.join("，"))
     }
-}
-
-pub(crate) fn parse_focus_layout_json(text: &str, tag: &str, prefix: &str) -> String {
-    let layout = parse_focus_layout_with_rewards(text, tag, prefix);
-
-    let mut out = String::new();
-    out.push_str("{\n");
-    out.push_str(&format!("  \"tag\": {},\n", json_str(tag)));
-    out.push_str(&format!("  \"prefix\": {},\n", json_str(prefix)));
-    out.push_str(&format!("  \"tree_id\": {},\n", json_str(&layout.tree_id)));
-    out.push_str("  \"rows\": [\n");
-    for (i, row) in layout.rows.iter().enumerate() {
-        comma(&mut out, i, "    ");
-        out.push_str(&format!(
-            "{{\"y\": {}, \"tokens\": {}, \"focuses\": {}}}",
-            row.y,
-            json_array(&row.tokens),
-            json_array(&row.focus_ids)
-        ));
-    }
-    out.push_str("\n  ],\n  \"focuses\": [\n");
-    for (i, f) in layout.focuses.iter().enumerate() {
-        comma(&mut out, i, "    ");
-        out.push_str(&format!(
-            "{{\"title\": {}, \"id\": {}, \"icon\": {}, \"x\": {}, \"y\": {}, \"worksheet_x\": {}, \"worksheet_y\": {}, \"relative_position_id\": {}, \"row\": {}, \"column\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}}}",
-            json_str(&f.title),
-            json_str(&f.id),
-            json_optional_str(f.icon.as_deref()),
-            f.relative_x.unwrap_or(f.x),
-            f.relative_y.unwrap_or(f.y),
-            f.x,
-            f.y,
-            json_optional_str(f.relative_position_id.as_deref()),
-            f.row,
-            f.column,
-            json_array(&f.prerequisite),
-            json_array(&f.mutually_exclusive)
-        ));
-    }
-    out.push_str("\n  ],\n  \"mutually_exclusive\": [\n");
-    for (i, (left, right, row)) in layout.mutuals.iter().enumerate() {
-        comma(&mut out, i, "    ");
-        out.push_str(&format!(
-            "{{\"left\": {}, \"right\": {}, \"row\": {}}}",
-            json_str(left),
-            json_str(right),
-            row
-        ));
-    }
-    out.push_str("\n  ]\n}\n");
-    out
 }
 
 pub(crate) fn cmd_apply_focus_layout(args: &[String]) -> Result<(), String> {

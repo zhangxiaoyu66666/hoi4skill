@@ -33,6 +33,9 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
             super::cmd_register_gfx_icons(&args)
         }
         "parse-focus-layout" => super::cmd_parse_focus_layout(&args),
+        "render-focus-code" | "generate-focus-code" | "focus-template-code" => {
+            super::cmd_render_focus_code(&args)
+        }
         "apply-focus-layout" => super::cmd_apply_focus_layout(&args),
         "parse-focus-excel" | "parse-focus-xlsx" | "focus-excel-skeleton" => {
             super::cmd_parse_focus_excel(&args)

@@ -787,6 +787,8 @@ pub(crate) fn mod_knowledge_rules(
         "If a fact is absent from the knowledge_base, report it as unknown instead of inventing it.".to_string(),
         "A new mod authorizes a new folder, not every HOI4 subsystem; create only files directly required by the user's request or unavoidable runtime wiring.".to_string(),
         "Do not create empty placeholder files, speculative country definitions, country history, initial units, characters, extra localisation languages, states, decisions, technologies, or GUI files unless explicitly requested.".to_string(),
+        "For focuses, decisions, events, and national spirits, the model may author only structured layout/card input; Rust generators must emit and apply the Clausewitz code unless the user explicitly requests direct manual Clausewitz/file editing.".to_string(),
+        "A general request to create, complete, fix, or extend a mod is not permission for manual script editing. Without an explicit user request to handwrite/directly edit those files, extend the generator first instead of bypassing it with manual code.".to_string(),
         "Mod display names belong in descriptor.mod and the launcher-side .mod file; never create *_mod_name localisation keys.".to_string(),
         "Generated content must preserve nearby file style and must not overwrite unrelated existing files.".to_string(),
         "When creating a standalone mod country or country leader, prefer modern common/characters plus history recruit_character unless the user explicitly requests legacy create_country_leader.".to_string(),

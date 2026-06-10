@@ -19,6 +19,10 @@ User prose
 
 Do not jump from prose directly to `.txt` files when the request has more than one moving part.
 
+For national focuses, decisions, events, and national spirits, never jump from prose or a plan to hand-written Clausewitz code unless the user explicitly requests direct manual Clausewitz/file editing. Convert the request to structured layout/cards, then let the Rust writer concatenate the standard templates. If the writer lacks a needed field, extend the writer before continuing.
+
+"Create a mod", "make it complete", "fix it", "continue", and similar outcome requests are not manual-edit authorization. The exception must come from the user's literal request to handwrite Clausewitz code or directly edit the generated script file.
+
 Do not treat a "verifiable demo" or conservative skeleton as a completed feature. For player-facing HOI4 content, extract route narrative and style first, then finish titles, descriptions, localisation, script wiring, validation, and the final report. Never answer with an excuse that the prose will be added later.
 
 For focus copy, write from the internal first-person perspective of the country, route, faction, party, army, government, or interest group. Do not output third-party observer, encyclopedia, historian, or outside commentary.
@@ -36,6 +40,7 @@ hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states o
 hoi4skill run-workflow --input "M:\path\copy.txt" --tag SOV --prefix sov_nep --dry-run --output workflow_plan.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --output workflow_report.json
 hoi4skill run-workflow --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_nep --sheet FocusTree --dry-run --output workflow_plan.json
+hoi4skill render-focus-code --input "M:\path\layout.txt" --tag SOV --prefix sov_nep --output focus_tree.txt
 ```
 
 For spreadsheet input, the workbook is the layout authority. Cell titles and occupied coordinates are immutable: do not rewrite focus names, split or merge cells, invent extra focuses, remove focuses, or aesthetically recenter rows. Use the structured layout carried by `run-workflow` or call `apply-focus-excel`; do not rebuild the tree manually from the Markdown preview. The generated layout anchors every later focus to the opening focus with an offset. Never use a parent as `relative_position_id` while also copying the worksheet's absolute `x/y`, because HOI4 will compound the offset and spread deeper branches apart.
@@ -58,6 +63,14 @@ The report contains:
 - `changed_files`: files created or edited when `--mod-root` is supplied and `--dry-run` is not set.
 - `validation`: static validation result after writes or against the supplied mod root.
 - `next_steps`: what to check before in-game testing.
+
+Template ownership:
+
+- `common/national_focus`: `apply-focus-excel`, `apply-focus-layout`, `render-focus-code`, or `run-workflow`
+- `common/decisions` and `common/ideas`: `apply-feature-cards` or `run-workflow`
+- `events`: `apply-event-cards` or `run-workflow`
+
+The model edits the structured source and reruns the command. It does not patch generated script blocks unless the user explicitly requested direct manual script editing.
 
 ## Input Contract
 
