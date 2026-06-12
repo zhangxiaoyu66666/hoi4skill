@@ -14,7 +14,6 @@ pub(crate) struct RequirementScopeContract {
     pub(crate) minimum_events: Option<usize>,
     pub(crate) minimum_ideas: Option<usize>,
     pub(crate) planned_files: Vec<String>,
-    pub(crate) forbidden_tools: Vec<String>,
     pub(crate) forbidden_without_explicit_request: Vec<String>,
     pub(crate) rules: Vec<String>,
 }
@@ -1560,21 +1559,6 @@ pub(crate) fn requirement_scope_contract(
     forbidden_without_explicit_request.sort();
     forbidden_without_explicit_request.dedup();
 
-    let mut forbidden_tools = vec![
-        "python/py/python3 for reading spreadsheets, parsing HOI4 files, generating mod files, or validation"
-            .to_string(),
-        "pip/conda/uv package installation for this HOI4 workflow".to_string(),
-        "PowerShell ImportExcel or other external Excel importer modules".to_string(),
-        "ad-hoc helper scripts that bypass hoi4skill Rust commands".to_string(),
-    ];
-    if request_forbids_python(text) {
-        forbidden_tools.push(
-            "the literal request forbids Python; do not even probe Python availability".to_string(),
-        );
-    }
-    forbidden_tools.sort();
-    forbidden_tools.dedup();
-
     RequirementScopeContract {
         authorized_systems,
         minimum_events: requested_minimum(text, &["事件", "event", "events"]),
@@ -1589,15 +1573,10 @@ pub(crate) fn requirement_scope_contract(
             ],
         ),
         planned_files,
-        forbidden_tools,
         forbidden_without_explicit_request,
         rules: vec![
             "A new mod authorizes a new folder, not every HOI4 subsystem.".to_string(),
             "Create only files required by explicit requirements or unavoidable runtime wiring."
-                .to_string(),
-            "Use hoi4skill Rust commands for workbook import, generation, validation, icon/resource lookup, and error-log analysis; do not replace them with Python, PowerShell modules, or one-off scripts."
-                .to_string(),
-            "Run `hoi4skill detect-hoi4-path` before generation that needs game evidence; if it returns no valid selected path, stop and ask only for the HOI4 install path. Do not offer manual creation, unvalidated generation, or skipping hoi4skill validation."
                 .to_string(),
             "Do not create empty placeholder files or speculative country/history/unit/character files."
                 .to_string(),
@@ -1615,23 +1594,6 @@ pub(crate) fn requirement_scope_contract(
                 .to_string(),
         ],
     }
-}
-
-pub(crate) fn request_forbids_python(text: &str) -> bool {
-    let lower = text.to_ascii_lowercase();
-    lower.contains("no python")
-        || lower.contains("without python")
-        || lower.contains("not use python")
-        || lower.contains("do not use python")
-        || lower.contains("don't use python")
-        || text.contains("不准用python")
-        || text.contains("不准用 Python")
-        || text.contains("不能用python")
-        || text.contains("不能用 Python")
-        || text.contains("禁止用python")
-        || text.contains("禁止用 Python")
-        || text.contains("不要用python")
-        || text.contains("不要用 Python")
 }
 
 fn requested_minimum(text: &str, nouns: &[&str]) -> Option<usize> {
@@ -1675,7 +1637,7 @@ fn requested_minimum(text: &str, nouns: &[&str]) -> Option<usize> {
 
 pub(crate) fn requirement_scope_contract_json(scope: &RequirementScopeContract) -> String {
     format!(
-        "{{\"minimal_modification\": true, \"authorized_systems\": {}, \"minimums\": {{\"events\": {}, \"national_spirits\": {}}}, \"planned_files\": {}, \"forbidden_tools\": {}, \"forbidden_without_explicit_request\": {}, \"rules\": {}}}",
+        "{{\"minimal_modification\": true, \"authorized_systems\": {}, \"minimums\": {{\"events\": {}, \"national_spirits\": {}}}, \"planned_files\": {}, \"forbidden_without_explicit_request\": {}, \"rules\": {}}}",
         json_array(&scope.authorized_systems),
         scope
             .minimum_events
@@ -1686,7 +1648,6 @@ pub(crate) fn requirement_scope_contract_json(scope: &RequirementScopeContract) 
             .map(|value| value.to_string())
             .unwrap_or_else(|| "null".to_string()),
         json_array(&scope.planned_files),
-        json_array(&scope.forbidden_tools),
         json_array(&scope.forbidden_without_explicit_request),
         json_array(&scope.rules)
     )

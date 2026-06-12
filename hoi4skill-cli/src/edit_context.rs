@@ -173,10 +173,6 @@ pub(crate) fn prepare_edit_context_markdown(
     ));
     out.push_str("\n### Planned Files\n\n");
     push_markdown_list(&mut out, &scope_contract.planned_files);
-    out.push_str("\n### Forbidden Tools And Fallbacks\n\n");
-    push_markdown_list(&mut out, &scope_contract.forbidden_tools);
-    out.push_str("- If `hoi4skill detect-hoi4-path` has no valid `selected`, ask the user for the HOI4 install path only.\n");
-    out.push_str("- Do not offer manual mod creation, unvalidated generation, or skipping `hoi4skill validate` as an option.\n");
     out.push_str("\n### Forbidden Without Explicit Request\n\n");
     push_markdown_list(&mut out, &scope_contract.forbidden_without_explicit_request);
     out.push_str("\n### Scope Rules\n\n");
