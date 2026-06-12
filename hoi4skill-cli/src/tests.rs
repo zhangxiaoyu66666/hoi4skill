@@ -926,6 +926,17 @@ fn requirement_scope_keeps_korean_revolution_prompt_narrow() {
         .rules
         .iter()
         .any(|rule| rule.contains("must submit structured focus, decision, event")));
+    assert!(scope
+        .forbidden_tools
+        .iter()
+        .any(|tool| tool.contains("literal request forbids Python")));
+    assert!(json.contains("\"forbidden_tools\""));
+    assert!(json.contains("do not even probe Python availability"));
+    assert!(scope.rules.iter().any(|rule| {
+        rule.contains("detect-hoi4-path")
+            && rule.contains("Do not offer manual creation")
+            && rule.contains("skipping hoi4skill validation")
+    }));
     assert!(scope.rules.iter().any(|rule| {
         rule.contains("General requests such as create a mod")
             && rule.contains("explicit request to handwrite")
@@ -1034,6 +1045,9 @@ fn prepare_edit_context_packages_model_preflight_context() {
     assert!(context.contains("common/national_focus and localisation/simp_chinese"));
     assert!(context.contains("common/technologies and localisation"));
     assert!(context.contains("common/scripted_effects state-scope helpers only"));
+    assert!(context.contains("### Forbidden Tools And Fallbacks"));
+    assert!(context.contains("PowerShell ImportExcel"));
+    assert!(context.contains("Do not offer manual mod creation"));
     assert!(context.contains("### Missing Evidence To Resolve"));
     assert!(context.contains("### Verification Steps"));
     assert!(context.contains("plan-history-edit"));

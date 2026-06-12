@@ -16,6 +16,19 @@ Before any other HOI4 command in a new agent session, run this skill's bundled b
 - It never deletes a directory without a verified matching `SKILL.md`. If the current copy cannot be inferred, it refuses automatic deletion instead of guessing.
 - After cleanup, continue using the same bundled binary. Never fall back to a backup, versioned-old, cached, or repository-copy skill.
 
+## Tool And Path Gate
+
+This skill is Rust-only. Do not use Python, `py`, `python3`, `pip`, `conda`, `uv`, PowerShell `ImportExcel`, or ad-hoc helper scripts to read spreadsheets, parse HOI4 files, generate mod files, validate output, or inspect error logs.
+
+Before generated HOI4 content that needs game evidence, run:
+
+`hoi4skill detect-hoi4-path`
+
+- If the JSON has a valid `selected` path, use it as `--game-root`.
+- If `selected` is `null`, stop and ask the user only for the Hearts of Iron IV install path.
+- Do not offer "manual creation", "no game validation", "skip hoi4skill validation", or similar fallback choices.
+- A descriptor-only skeleton can be scaffolded without a game root, but any national focus, event, decision, national spirit, history, country, icon/resource, or validation-sensitive content must wait for indexed game evidence.
+
 ## Country TAG Evidence Gate
 
 This gate runs before scaffolding, parsing a workbook, choosing a prefix, or writing any content.
@@ -87,6 +100,7 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - Prefer the user's provided folder.
    - If no folder exists, create a minimal descriptor-only skeleton with `hoi4skill scaffold`; content writers create only the directories required by authorized systems.
    - Treat the folder containing `descriptor.mod` as the mod root.
+   - Run the Tool And Path Gate before generating content. If `detect-hoi4-path` cannot find a valid game root, ask for the game install path; do not offer manual/no-validation generation.
 2. Resolve the country TAG, then build a modification knowledge base before editing.
    - Run the Country TAG Evidence Gate above for both new and existing mods. This is the fast local knowledge-base bootstrap and must finish before any `--tag` is passed to a parser/writer.
    - Run `hoi4skill mod-knowledge <mod-root-or-launcher.mod> --output mod_knowledge.json`.
@@ -168,6 +182,7 @@ Read only the reference needed for the current task:
 - `references/file-map.md`: folder and file locations for common HOI4 systems.
 - `references/mod-knowledge.md`: pre-edit mod/submod classification and knowledge-base rules to avoid hallucinating tags, namespaces, sprites, and dependency content.
 - `references/clausewitz-code-library.md`: locally build and query source-attributed real HOI4 code blocks before generation.
+- `references/ai-clausewitz-guardrails.md`: hard gates for other AI tools so they submit structured inputs instead of freehand Clausewitz script.
 - `references/copy-to-code-workflow.md`: full pipeline from player-facing prose to Feature Plan, HOI4 file plan, code generation, validation, and repair.
 - `references/implementation-patterns.md`: ID naming, one-sentence request handling, and common feature patterns.
 - `references/focus-tree-layout.md`: plain-text focus tree sketch syntax, including row/column layout and `互斥` branch handling.
