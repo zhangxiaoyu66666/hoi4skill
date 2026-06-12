@@ -13,6 +13,7 @@ User prose
   -> Script IDs and localisation keys
   -> Code generation
   -> Static validation
+  -> Local codebase/index validation
   -> User text alignment check
   -> In-game test notes
   -> Error-log repair loop
@@ -41,8 +42,9 @@ hoi4skill prepare-edit-context --input "M:\path\copy.txt" --mod-root "M:\path\ex
 hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod" --output history_plan.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --tag SOV --prefix sov_nep --dry-run --output workflow_plan.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --output workflow_report.json
+hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --game-root "C:\path\Hearts of Iron IV" --final-check --output workflow_report.json
 hoi4skill check-text-alignment --mod-root "M:\path\mod" --input "M:\path\copy.txt" --expect-title "用户指定标题" --output text_alignment.json
-hoi4skill validate "M:\path\mod" --text-source "M:\path\copy.txt" --expect-title "用户指定标题"
+hoi4skill validate "M:\path\mod" --game-root "C:\path\Hearts of Iron IV" --strict-code-index --text-source "M:\path\copy.txt" --expect-title "用户指定标题"
 hoi4skill run-workflow --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_nep --sheet FocusTree --dry-run --output workflow_plan.json
 hoi4skill render-focus-code --input "M:\path\layout.txt" --tag SOV --prefix sov_nep --output focus_tree.txt
 ```
@@ -72,6 +74,8 @@ The report contains:
 - `next_steps`: what to check before in-game testing.
 
 After generation, if the user supplied a file, workbook, focus title, event title, decision title, national-spirit title, or other player-visible text, run the text-alignment check before the final answer. This is a literal text-preservation gate: the command reads expected titles/text from the source and verifies they appear in generated localisation or stable script identifiers. Do not "improve" or rename the user's titles unless the user explicitly asks for rewriting.
+
+Final validation must also compare generated code against the local game/dependency codebase. Use `--strict-code-index` or `--final-check` with `--game-root`; include every authorized dependency with `--mod-path`. If the code index is missing or a generated effect, modifier, sprite, idea picture, technology, equipment, sub-unit, wargoal, country tag, or focus reference is absent from the index, treat the result as failed and fix the structured source/writer output before answering.
 
 Template ownership:
 

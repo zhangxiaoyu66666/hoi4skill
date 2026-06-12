@@ -24,6 +24,11 @@ For HOI4 work in this repository:
   decision title, national-spirit title, or other player-visible text, run
   `hoi4skill check-text-alignment` or `hoi4skill validate --text-source <file>`
   before the final answer. Missing user-provided text is an unfinished result.
+- Final HOI4 output must be checked against the local game/dependency codebase:
+  use `hoi4skill validate <mod> --game-root <HOI4 root> --strict-code-index`
+  (or `run-workflow ... --game-root <HOI4 root> --final-check`). If a generated
+  effect, modifier, sprite, picture, technology, tag, or other indexed symbol is
+  absent from the code index, report it as a bug the AI must fix.
 - Do not create country tags, country history, state history, initial units,
   characters, English localisation, GUI, technologies, or other extra systems
   unless the literal user request authorizes them.

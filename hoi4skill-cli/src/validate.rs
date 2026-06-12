@@ -21,7 +21,12 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during validation".to_string());
     }
-    let mut reporter = validate_mod(&root, game_index.as_ref())?;
+    let options = ValidationOptions {
+        strict_code_index: map.flags.contains("strict-code-index")
+            || map.flags.contains("final-check")
+            || map.flags.contains("require-code-index"),
+    };
+    let mut reporter = validate_mod_with_options(&root, game_index.as_ref(), options)?;
     if let Some(request) = value(&map, "request") {
         check_request_scope_for_new_mod(&root, request, &mut reporter);
     }
@@ -77,9 +82,23 @@ pub(crate) fn check_request_scope_for_new_mod(root: &Path, request: &str, report
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn validate_mod(
     root: &Path,
     game_index: Option<&GameIndex>,
+) -> Result<Reporter, String> {
+    validate_mod_with_options(root, game_index, ValidationOptions::default())
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct ValidationOptions {
+    pub(crate) strict_code_index: bool,
+}
+
+pub(crate) fn validate_mod_with_options(
+    root: &Path,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
 ) -> Result<Reporter, String> {
     let mut reporter = Reporter::default();
     let mut ids: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
@@ -126,7 +145,13 @@ pub(crate) fn validate_mod(
                 collect_country_tag_refs(&file, &text, &mut tag_refs);
                 collect_focus_refs(&file, &text, &mut focus_refs, &mut local_focus_ids);
                 collect_game_data_refs(&file, &text, &mut game_data_refs);
-                check_script_semantics(&file, &text, game_index, &mut reporter);
+                check_script_semantics_with_options(
+                    &file,
+                    &text,
+                    game_index,
+                    options,
+                    &mut reporter,
+                );
             } else if matches!(ext.as_str(), "yml" | "yaml") {
                 let text = read_utf8_lossy(&file)?;
                 if norm.contains("/localisation/") {
@@ -151,6 +176,12 @@ pub(crate) fn validate_mod(
                 .collect::<Vec<_>>()
                 .join(", ")
         ));
+    }
+    if options.strict_code_index && game_index.is_none() {
+        reporter.error(
+            "strict code index validation requires --game-root, and --mod-path for every dependency mod; final output cannot be accepted without checking generated code against the local HOI4/dependency codebase"
+                .to_string(),
+        );
     }
 
     for (id, paths) in ids {
@@ -190,10 +221,10 @@ pub(crate) fn validate_mod(
         }
     }
     for (sprite, paths) in gfx_refs {
-        if !is_known_sprite(&sprite, &sprite_names, game_index) {
+        if !is_known_sprite_with_options(&sprite, &sprite_names, game_index, options) {
             report_paths(
                 &mut reporter,
-                game_index.is_some(),
+                game_index.is_some() || options.strict_code_index,
                 format!(
                     "GFX key {sprite} is referenced but not defined in this mod or indexed roots"
                 ),
@@ -208,11 +239,11 @@ pub(crate) fn validate_mod(
     for (picture, paths) in idea_picture_refs {
         let known = local_idea_pictures.contains(&picture)
             || game_index.is_some_and(|index| index.idea_pictures.contains(&picture))
-            || picture == "generic_production_bonus";
+            || (!options.strict_code_index && picture == "generic_production_bonus");
         if !known {
             report_paths(
                 &mut reporter,
-                game_index.is_some(),
+                game_index.is_some() || options.strict_code_index,
                 format!(
                     "idea picture {picture} requires a registered GFX_idea_{picture} sprite in this mod or indexed roots"
                 ),
@@ -259,6 +290,7 @@ pub(crate) fn validate_mod(
             &index.traits,
             &mut reporter,
             true,
+            options.strict_code_index,
         );
         report_unknown_index_refs_if_indexed(
             "equipment type",
@@ -266,6 +298,7 @@ pub(crate) fn validate_mod(
             &index.equipment_types,
             &mut reporter,
             true,
+            options.strict_code_index,
         );
         report_unknown_index_refs_if_indexed(
             "technology",
@@ -273,6 +306,7 @@ pub(crate) fn validate_mod(
             &index.technologies,
             &mut reporter,
             true,
+            options.strict_code_index,
         );
         report_unknown_index_refs_if_indexed(
             "technology category",
@@ -280,6 +314,7 @@ pub(crate) fn validate_mod(
             &index.technology_categories,
             &mut reporter,
             true,
+            options.strict_code_index,
         );
         report_unknown_index_refs_if_indexed(
             "sub unit",
@@ -287,6 +322,7 @@ pub(crate) fn validate_mod(
             &index.sub_units,
             &mut reporter,
             true,
+            options.strict_code_index,
         );
         report_unknown_index_refs_if_indexed(
             "wargoal type",
@@ -294,6 +330,7 @@ pub(crate) fn validate_mod(
             &index.wargoal_types,
             &mut reporter,
             true,
+            options.strict_code_index,
         );
         report_unknown_index_refs_if_indexed(
             "modifier",
@@ -301,6 +338,7 @@ pub(crate) fn validate_mod(
             &index.modifiers,
             &mut reporter,
             true,
+            options.strict_code_index,
         );
     }
     let mut known_focus_ids = local_focus_ids;
@@ -1136,8 +1174,21 @@ pub(crate) fn report_unknown_index_refs_if_indexed(
     known: &BTreeSet<String>,
     reporter: &mut Reporter,
     as_error: bool,
+    strict_code_index: bool,
 ) {
     if known.is_empty() {
+        if strict_code_index && !refs.is_empty() {
+            for (key, paths) in refs {
+                report_paths(
+                    reporter,
+                    true,
+                    format!(
+                        "{label} {key} cannot be verified because the strict code index has no `{label}` entries; rebuild the index from the HOI4 game root and required dependency mods"
+                    ),
+                    paths,
+                );
+            }
+        }
         return;
     }
     report_unknown_index_refs(label, refs, known, reporter, as_error);
@@ -1259,11 +1310,30 @@ pub(crate) fn is_known_vanilla_gfx(sprite: &str) -> bool {
         )
 }
 
+#[allow(dead_code)]
 pub(crate) fn is_known_sprite(
     sprite: &str,
     local_sprites: &BTreeSet<String>,
     game_index: Option<&GameIndex>,
 ) -> bool {
+    is_known_sprite_with_options(
+        sprite,
+        local_sprites,
+        game_index,
+        ValidationOptions::default(),
+    )
+}
+
+pub(crate) fn is_known_sprite_with_options(
+    sprite: &str,
+    local_sprites: &BTreeSet<String>,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+) -> bool {
+    if options.strict_code_index {
+        return local_sprites.contains(sprite)
+            || game_index.is_some_and(|index| index.sprites.contains(sprite));
+    }
     local_sprites.contains(sprite)
         || game_index.is_some_and(|index| index.sprites.contains(sprite))
         || is_known_vanilla_gfx(sprite)
@@ -1273,10 +1343,27 @@ pub(crate) fn is_dynamic_tag_ref(tag: &str) -> bool {
     matches!(tag, "TAG" | "ROOT" | "FROM" | "PREV")
 }
 
+#[allow(dead_code)]
 pub(crate) fn check_script_semantics(
     path: &Path,
     text: &str,
     game_index: Option<&GameIndex>,
+    reporter: &mut Reporter,
+) {
+    check_script_semantics_with_options(
+        path,
+        text,
+        game_index,
+        ValidationOptions::default(),
+        reporter,
+    )
+}
+
+pub(crate) fn check_script_semantics_with_options(
+    path: &Path,
+    text: &str,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
     reporter: &mut Reporter,
 ) {
     let norm = slash_path(path);
@@ -1294,7 +1381,7 @@ pub(crate) fn check_script_semantics(
     if norm.contains("/events/") {
         check_event_fields(path, &cleaned, reporter);
     }
-    check_effect_contexts(path, &cleaned, game_index, reporter);
+    check_effect_contexts(path, &cleaned, game_index, options, reporter);
     check_trigger_contexts(path, &cleaned, reporter);
     check_suspicious_assignments(path, &cleaned, game_index, reporter);
 }
@@ -1584,6 +1671,7 @@ pub(crate) fn check_effect_contexts(
     path: &Path,
     text: &str,
     game_index: Option<&GameIndex>,
+    options: ValidationOptions,
     reporter: &mut Reporter,
 ) {
     for name in [
@@ -1632,7 +1720,7 @@ pub(crate) fn check_effect_contexts(
                     ));
                 }
             }
-            check_unknown_effect_keys(path, name, &block, game_index, reporter);
+            check_unknown_effect_keys(path, name, &block, game_index, options, reporter);
         }
     }
 }
@@ -1642,12 +1730,25 @@ pub(crate) fn check_unknown_effect_keys(
     context: &str,
     block: &str,
     game_index: Option<&GameIndex>,
+    options: ValidationOptions,
     reporter: &mut Reporter,
 ) {
     let Some(index) = game_index else {
         return;
     };
     if index.effects.is_empty() {
+        if options.strict_code_index {
+            for key in direct_assignment_keys(block) {
+                report_unverifiable_effect_key(path, context, &key, reporter);
+            }
+            for (scope, scoped_block) in direct_child_blocks(block) {
+                if is_effect_scope_key_without_effect_docs(&scope, index) {
+                    for key in direct_assignment_keys(&scoped_block) {
+                        report_unverifiable_effect_key(path, context, &key, reporter);
+                    }
+                }
+            }
+        }
         return;
     }
     for key in direct_assignment_keys(block) {
@@ -1660,6 +1761,27 @@ pub(crate) fn check_unknown_effect_keys(
             }
         }
     }
+}
+
+pub(crate) fn report_unverifiable_effect_key(
+    path: &Path,
+    context: &str,
+    key: &str,
+    reporter: &mut Reporter,
+) {
+    if !is_effect_key_candidate(key) {
+        return;
+    }
+    reporter.error(format!(
+        "{}: effect context `{context}` uses effect-like key `{key}`, but strict code index has no indexed effects; rebuild the index from `documentation/effects_documentation.md` or load the required game/dependency code before final output",
+        path.display()
+    ));
+}
+
+pub(crate) fn is_effect_scope_key_without_effect_docs(key: &str, index: &GameIndex) -> bool {
+    matches!(key, "ROOT" | "FROM" | "PREV" | "THIS")
+        || index.country_tags.contains(key)
+        || looks_like_tag(key)
 }
 
 pub(crate) fn report_unknown_effect_key(

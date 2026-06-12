@@ -57,10 +57,15 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during workflow generation".to_string());
     }
+    let validation_options = ValidationOptions {
+        strict_code_index: map.flags.contains("strict-code-index")
+            || map.flags.contains("final-check")
+            || map.flags.contains("require-code-index"),
+    };
     let mut workflow_input = workflow_input_from_path(&input, sheet, tag, prefix)?;
     append_explicit_request(&mut workflow_input, value(&map, "request"));
     enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
-    let json = run_workflow_json_with_focus_layout(
+    let json = run_workflow_json_with_focus_layout_options(
         &workflow_input.text,
         workflow_input.focus_layout.as_ref(),
         mod_root.as_deref(),
@@ -69,6 +74,7 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
         tree_id,
         dry_run,
         game_index.as_ref(),
+        validation_options,
     )?;
     write_or_print(&json, value(&map, "output"))
 }
@@ -1310,8 +1316,16 @@ pub(crate) fn run_workflow_json(
     dry_run: bool,
     game_index: Option<&GameIndex>,
 ) -> Result<String, String> {
-    run_workflow_json_with_focus_layout(
-        text, None, mod_root, tag, prefix, tree_id, dry_run, game_index,
+    run_workflow_json_with_focus_layout_options(
+        text,
+        None,
+        mod_root,
+        tag,
+        prefix,
+        tree_id,
+        dry_run,
+        game_index,
+        ValidationOptions::default(),
     )
 }
 
@@ -1325,6 +1339,31 @@ pub(crate) fn run_workflow_json_with_focus_layout(
     tree_id: Option<&str>,
     dry_run: bool,
     game_index: Option<&GameIndex>,
+) -> Result<String, String> {
+    run_workflow_json_with_focus_layout_options(
+        text,
+        supplied_focus_layout,
+        mod_root,
+        tag,
+        prefix,
+        tree_id,
+        dry_run,
+        game_index,
+        ValidationOptions::default(),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_workflow_json_with_focus_layout_options(
+    text: &str,
+    supplied_focus_layout: Option<&FocusLayout>,
+    mod_root: Option<&Path>,
+    tag: &str,
+    prefix: &str,
+    tree_id: Option<&str>,
+    dry_run: bool,
+    game_index: Option<&GameIndex>,
+    validation_options: ValidationOptions,
 ) -> Result<String, String> {
     let feature_text = extract_card_text(text, FEATURE_CARD_HEADERS);
     let event_text = extract_card_text(text, &["事件"]);
@@ -1397,7 +1436,11 @@ pub(crate) fn run_workflow_json_with_focus_layout(
         .collect::<Vec<_>>();
 
     let validation = if let Some(root) = mod_root {
-        Some(validate_mod(root, game_index)?)
+        Some(validate_mod_with_options(
+            root,
+            game_index,
+            validation_options,
+        )?)
     } else {
         None
     };

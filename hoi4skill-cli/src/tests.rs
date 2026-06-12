@@ -3888,6 +3888,74 @@ fn validator_rejects_unknown_effect_keys_against_indexed_docs() {
 }
 
 #[test]
+fn strict_code_index_requires_game_root_before_final_check() {
+    let root = unique_temp_dir("strict-code-index-requires-root");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Strict Code Index\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+
+    let report = validate_mod_with_options(
+        &root,
+        None,
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(report
+        .errors
+        .iter()
+        .any(|error| { error.contains("strict code index validation requires --game-root") }));
+}
+
+#[test]
+fn strict_code_index_rejects_unverified_generated_code_refs() {
+    let root = unique_temp_dir("strict-code-index-unverified-refs");
+    fs::create_dir_all(root.join("common").join("national_focus")).unwrap();
+    fs::create_dir_all(root.join("common").join("ideas")).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Strict Code Refs\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("common")
+            .join("national_focus")
+            .join("bad_focus.txt"),
+        "focus_tree = {\n id = tst_focus\n country = { factor = 0 modifier = { add = 10 tag = KOR } }\n focus = {\n  id = KOR_strict_test\n  icon = GFX_goal_generic_fake_socialism\n  x = 0\n  y = 0\n  cost = 10\n  ai_will_do = { factor = 100 }\n  available = { }\n  bypass = { }\n  cancel_if_invalid = yes\n  continue_if_invalid = no\n  available_if_capitulated = no\n  completion_reward = { add_political_power = 50 }\n }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("common").join("ideas").join("bad_ideas.txt"),
+        "ideas = { country = { tst_strict_idea = { picture = generic_production_bonus modifier = { stability_factor = 0.05 } } } }\n",
+    )
+    .unwrap();
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+
+    let report = validate_mod_with_options(
+        &root,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    let errors = report.errors.join("\n");
+    assert!(errors.contains("GFX key GFX_goal_generic_fake_socialism"));
+    assert!(errors.contains("idea picture generic_production_bonus"));
+    assert!(errors.contains("effect-like key `add_political_power`"));
+    assert!(errors.contains("modifier stability_factor cannot be verified"));
+}
+
+#[test]
 fn text_alignment_reports_missing_user_titles() {
     let root = unique_temp_dir("text-alignment-missing-title");
     fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
