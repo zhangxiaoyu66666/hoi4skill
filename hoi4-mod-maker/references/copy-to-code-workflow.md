@@ -77,6 +77,8 @@ After generation, if the user supplied a file, workbook, focus title, event titl
 
 Final validation must also compare generated code against the local game/dependency codebase. Use `--strict-code-index` or `--final-check` with `--game-root`; include every authorized dependency with `--mod-path`. If the code index is missing or a generated effect, modifier, sprite, idea picture, technology, equipment, sub-unit, wargoal, country tag, or focus reference is absent from the index, treat the result as failed and fix the structured source/writer output before answering.
 
+Direct writer commands are not an escape hatch. When using `apply-focus-layout`, `apply-focus-excel`, `apply-feature-cards`, or `apply-event-cards` as the final write step, pass `--final-check`; the command will run post-apply validation and use the input file as the default text-alignment source.
+
 Template ownership:
 
 - `common/national_focus`: `apply-focus-excel`, `apply-focus-layout`, `render-focus-code`, or `run-workflow`

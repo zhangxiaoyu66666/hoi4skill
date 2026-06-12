@@ -5,11 +5,11 @@ use crate::*;
 
 pub(crate) fn cmd_parse_focus_layout(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
-    let input = require_value(&map, "input")?;
+    let input = normalize_path(&require_value(&map, "input")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
     enforce_tag_request_contract(&map, tag, None)?;
     let prefix = value(&map, "prefix").unwrap_or("focus");
-    let text = read_utf8_lossy(&normalize_path(&input)?)?;
+    let text = read_utf8_lossy(&input)?;
     let mut layout = parse_focus_layout_with_rewards(&text, tag, prefix);
     if let Some(tree_id) = value(&map, "tree-id") {
         layout.tree_id = tree_id.to_string();
@@ -361,7 +361,7 @@ pub(crate) fn prose_effect_hint(effect: &str) -> String {
 
 pub(crate) fn cmd_apply_focus_layout(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
-    let input = require_value(&map, "input")?;
+    let input = normalize_path(&require_value(&map, "input")?)?;
     let mod_root = normalize_path(&require_value(&map, "mod-root")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("focus");
@@ -376,7 +376,7 @@ pub(crate) fn cmd_apply_focus_layout(args: &[String]) -> Result<(), String> {
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during focus layout application".to_string());
     }
-    let text = read_utf8_lossy(&normalize_path(&input)?)?;
+    let text = read_utf8_lossy(&input)?;
     let mut layout = parse_focus_layout_with_rewards(&text, tag, prefix);
     if let Some(tree_id) = tree_id {
         layout.tree_id = tree_id.to_string();
@@ -393,9 +393,11 @@ pub(crate) fn cmd_apply_focus_layout(args: &[String]) -> Result<(), String> {
             println!("  {}", path.display());
         }
     }
+    run_post_apply_checks(&mod_root, &map, game_index.as_ref(), Some(&input))?;
     Ok(())
 }
 
+#[allow(dead_code)]
 pub(crate) fn apply_focus_layout_to_mod(
     mod_root: &Path,
     layout: &FocusLayout,

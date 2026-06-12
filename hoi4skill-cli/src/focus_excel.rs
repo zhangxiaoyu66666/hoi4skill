@@ -69,15 +69,25 @@ pub(crate) fn cmd_apply_focus_excel(args: &[String]) -> Result<(), String> {
     let input = normalize_path(&require_value(&map, "input")?)?;
     let mod_root = normalize_path(&require_value(&map, "mod-root")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
-    enforce_tag_request_contract(&map, tag, None)?;
     let prefix = value(&map, "prefix").unwrap_or("focus");
     let sheet = value(&map, "sheet");
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+        .transpose()?;
+    enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err("--mod-path requires --game-root during Excel focus application".to_string());
+    }
     let mut layout = read_focus_excel_layout(&input, sheet, tag, prefix)?;
     if let Some(tree_id) = value(&map, "tree-id") {
         layout.tree_id = tree_id.to_string();
     }
 
-    let changed = apply_focus_layout_to_mod(&mod_root, &layout, tag, prefix)?;
+    let changed =
+        apply_focus_layout_to_mod_with_index(&mod_root, &layout, tag, prefix, game_index.as_ref())?;
     println!(
         "Applied Excel focus layout: {} focuses",
         layout.focuses.len()
@@ -90,6 +100,7 @@ pub(crate) fn cmd_apply_focus_excel(args: &[String]) -> Result<(), String> {
             println!("  {}", path.display());
         }
     }
+    run_post_apply_checks(&mod_root, &map, game_index.as_ref(), Some(&input))?;
     Ok(())
 }
 

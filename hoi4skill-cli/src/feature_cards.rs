@@ -5,11 +5,11 @@ use crate::*;
 
 pub(crate) fn cmd_parse_feature_cards(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
-    let input = require_value(&map, "input")?;
+    let input = normalize_path(&require_value(&map, "input")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
     enforce_tag_request_contract(&map, tag, None)?;
     let prefix = value(&map, "prefix").unwrap_or("mod");
-    let text = read_utf8_lossy(&normalize_path(&input)?)?;
+    let text = read_utf8_lossy(&input)?;
     let json = parse_decision_idea_cards_json(&text, tag, prefix);
     write_or_print(&json, value(&map, "output"))
 }
@@ -151,7 +151,7 @@ pub(crate) fn feature_card_suggestions(
 
 pub(crate) fn cmd_apply_feature_cards(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
-    let input = require_value(&map, "input")?;
+    let input = normalize_path(&require_value(&map, "input")?)?;
     let mod_root = normalize_path(&require_value(&map, "mod-root")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("mod");
@@ -165,7 +165,7 @@ pub(crate) fn cmd_apply_feature_cards(args: &[String]) -> Result<(), String> {
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during feature-card generation".to_string());
     }
-    let text = read_utf8_lossy(&normalize_path(&input)?)?;
+    let text = read_utf8_lossy(&input)?;
     let cards = parse_cards(&text, FEATURE_CARD_HEADERS);
     let changed =
         apply_feature_cards_to_mod_with_index(&mod_root, &cards, tag, prefix, game_index.as_ref())?;
@@ -179,6 +179,7 @@ pub(crate) fn cmd_apply_feature_cards(args: &[String]) -> Result<(), String> {
             println!("  {}", path.display());
         }
     }
+    run_post_apply_checks(&mod_root, &map, game_index.as_ref(), Some(&input))?;
     Ok(())
 }
 

@@ -57,11 +57,7 @@ pub(crate) fn cmd_run_workflow(args: &[String]) -> Result<(), String> {
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during workflow generation".to_string());
     }
-    let validation_options = ValidationOptions {
-        strict_code_index: map.flags.contains("strict-code-index")
-            || map.flags.contains("final-check")
-            || map.flags.contains("require-code-index"),
-    };
+    let validation_options = validation_options_from_args(&map);
     let mut workflow_input = workflow_input_from_path(&input, sheet, tag, prefix)?;
     append_explicit_request(&mut workflow_input, value(&map, "request"));
     enforce_tag_request_contract(&map, tag, game_index.as_ref())?;

@@ -29,6 +29,10 @@ For HOI4 work in this repository:
   (or `run-workflow ... --game-root <HOI4 root> --final-check`). If a generated
   effect, modifier, sprite, picture, technology, tag, or other indexed symbol is
   absent from the code index, report it as a bug the AI must fix.
+- If a low-level writer is used directly (`apply-focus-layout`,
+  `apply-focus-excel`, `apply-feature-cards`, or `apply-event-cards`), pass
+  `--game-root <HOI4 root> --final-check` so the command cannot bypass final
+  code-index and text-alignment checks.
 - Do not create country tags, country history, state history, initial units,
   characters, English localisation, GUI, technologies, or other extra systems
   unless the literal user request authorizes them.

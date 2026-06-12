@@ -21,11 +21,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during validation".to_string());
     }
-    let options = ValidationOptions {
-        strict_code_index: map.flags.contains("strict-code-index")
-            || map.flags.contains("final-check")
-            || map.flags.contains("require-code-index"),
-    };
+    let options = validation_options_from_args(&map);
     let mut reporter = validate_mod_with_options(&root, game_index.as_ref(), options)?;
     if let Some(request) = value(&map, "request") {
         check_request_scope_for_new_mod(&root, request, &mut reporter);
@@ -36,6 +32,56 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
         Ok(())
     } else {
         Err("validation failed".to_string())
+    }
+}
+
+pub(crate) fn validation_options_from_args(map: &ArgMap) -> ValidationOptions {
+    ValidationOptions {
+        strict_code_index: map.flags.contains("strict-code-index")
+            || map.flags.contains("final-check")
+            || map.flags.contains("require-code-index"),
+    }
+}
+
+pub(crate) fn should_run_final_checks(map: &ArgMap) -> bool {
+    validation_options_from_args(map).strict_code_index
+        || has_text_alignment_args(map)
+        || map.flags.contains("check-output")
+        || map.flags.contains("check-output-text")
+}
+
+pub(crate) fn run_post_apply_checks(
+    mod_root: &Path,
+    map: &ArgMap,
+    game_index: Option<&GameIndex>,
+    default_text_source: Option<&Path>,
+) -> Result<(), String> {
+    if !should_run_final_checks(map) {
+        return Ok(());
+    }
+    let mut reporter =
+        validate_mod_with_options(mod_root, game_index, validation_options_from_args(map))?;
+    if has_text_alignment_args(map) {
+        check_text_alignment_from_validate_args(mod_root, map, &mut reporter)?;
+    } else if let Some(input) = default_text_source {
+        let tag = value(map, "tag").unwrap_or("TAG");
+        let prefix = value(map, "prefix").unwrap_or("mod");
+        let expected = expected_texts_from_path(input, value(map, "sheet"), tag, prefix)?;
+        for item in text_alignment_report(mod_root, expected)?.missing() {
+            reporter.error(format!(
+                "text alignment missing user-provided text `{}` from {}",
+                item.expected.text, item.expected.source
+            ));
+        }
+    }
+    reporter.print();
+    if reporter.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(
+            "post-apply final checks failed; fix the generated output before claiming completion"
+                .to_string(),
+        )
     }
 }
 

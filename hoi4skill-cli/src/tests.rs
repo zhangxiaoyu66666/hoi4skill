@@ -3956,6 +3956,35 @@ fn strict_code_index_rejects_unverified_generated_code_refs() {
 }
 
 #[test]
+fn apply_commands_final_check_runs_post_apply_validation() {
+    let root = unique_temp_dir("apply-final-check");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Apply Final Check\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    let input = root.join("cards.txt");
+    fs::write(&input, "民族精神：测试精神\n效果：稳定度+5%\n").unwrap();
+
+    let err = cmd_apply_feature_cards(&[
+        "--input".to_string(),
+        input.display().to_string(),
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--tag".to_string(),
+        "KOR".to_string(),
+        "--prefix".to_string(),
+        "kor_test".to_string(),
+        "--final-check".to_string(),
+    ])
+    .unwrap_err();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("post-apply final checks failed"));
+}
+
+#[test]
 fn text_alignment_reports_missing_user_titles() {
     let root = unique_temp_dir("text-alignment-missing-title");
     fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
