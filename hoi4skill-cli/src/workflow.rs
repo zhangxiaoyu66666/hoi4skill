@@ -1401,6 +1401,14 @@ pub(crate) fn run_workflow_json_with_focus_layout(
     } else {
         None
     };
+    let text_alignment = if let Some(root) = mod_root {
+        Some(text_alignment_report(
+            root,
+            expected_texts_from_workflow_input(text, focus_layout.as_ref()),
+        )?)
+    } else {
+        None
+    };
     let next_steps = workflow_next_steps(
         mod_root.is_some(),
         dry_run,
@@ -1441,6 +1449,10 @@ pub(crate) fn run_workflow_json_with_focus_layout(
     out.push_str(&format!(
         "  \"validation\": {},\n",
         workflow_validation_json(validation.as_ref())
+    ));
+    out.push_str(&format!(
+        "  \"text_alignment\": {},\n",
+        workflow_text_alignment_json(text_alignment.as_ref())
     ));
     out.push_str(&format!("  \"next_steps\": {}\n", json_array(&next_steps)));
     out.push_str("}\n");
@@ -1818,6 +1830,14 @@ pub(crate) fn workflow_validation_json(reporter: Option<&Reporter>) -> String {
     } else {
         "{\"ran\": false, \"ok\": null, \"status\": null, \"errors\": [], \"warnings\": []}"
             .to_string()
+    }
+}
+
+pub(crate) fn workflow_text_alignment_json(report: Option<&TextAlignmentReport>) -> String {
+    if let Some(report) = report {
+        text_alignment_report_json(report).trim().to_string()
+    } else {
+        "{\"ran\": false}".to_string()
     }
 }
 

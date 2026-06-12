@@ -25,6 +25,7 @@
 - **GFX 图标注册**：辅助把图标注册到 `interface/*.gfx`。
 - **游戏 / MOD 索引构建**：索引国家 tag、sprite、state、province、technology 等引用信息。
 - **Clausewitz 对照表**：从本地游戏文档索引 effect / modifier，并输出模型可读的常见意图到真实语法对照表。
+- **用户文本对照检查**：把用户给出的文件、表格、国策名、事件名、决议名、民族精神名等玩家可见文本，与生成后的 MOD 本地化 / 脚本输出做简单文本对照。
 - **历史文件编辑计划**：在修改 `history/states` 等危险区域前，先生成编辑计划，避免乱猜 state id / province id。
 - **`error.log` 反向分析**：读取 HOI4 报错日志，辅助定位和修复 MOD 问题。
 - **本地化快速翻译**：读取任意 `localisation/<source_language>`，对照目标语言键名，生成任意目标语言的翻译 prompt / yml 骨架，并支持写回后查漏。
@@ -64,6 +65,8 @@ hoi4skill build-clausewitz-library --game-root "C:\path\Hearts of Iron IV" --cod
 hoi4skill query-clausewitz-library --system event --query "uprising country event"
 hoi4skill prepare-edit-context --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output edit_context.md
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output workflow_report.json
+hoi4skill check-text-alignment --mod-root "M:\path\existing_mod" --input "M:\path\copy.txt" --expect-title "国策标题"
+hoi4skill validate "M:\path\existing_mod" --text-source "M:\path\copy.txt" --expect-title "事件标题"
 hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --output history_plan.json
 hoi4skill parse-focus-excel --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_excel --sheet FocusTree --output focus_review.md
 hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from english --to simp_chinese --format prompt --output loc_translate_prompt.md

@@ -13,6 +13,7 @@ User prose
   -> Script IDs and localisation keys
   -> Code generation
   -> Static validation
+  -> User text alignment check
   -> In-game test notes
   -> Error-log repair loop
 ```
@@ -40,6 +41,8 @@ hoi4skill prepare-edit-context --input "M:\path\copy.txt" --mod-root "M:\path\ex
 hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --mod-path "M:\path\dependency.mod" --output history_plan.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --tag SOV --prefix sov_nep --dry-run --output workflow_plan.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\mod" --tag SOV --prefix sov_nep --output workflow_report.json
+hoi4skill check-text-alignment --mod-root "M:\path\mod" --input "M:\path\copy.txt" --expect-title "用户指定标题" --output text_alignment.json
+hoi4skill validate "M:\path\mod" --text-source "M:\path\copy.txt" --expect-title "用户指定标题"
 hoi4skill run-workflow --input "M:\path\focus_tree.xlsx" --tag SOV --prefix sov_nep --sheet FocusTree --dry-run --output workflow_plan.json
 hoi4skill render-focus-code --input "M:\path\layout.txt" --tag SOV --prefix sov_nep --output focus_tree.txt
 ```
@@ -65,7 +68,10 @@ The report contains:
 - `plans`: parsed Feature Plans before file writes.
 - `changed_files`: files created or edited when `--mod-root` is supplied and `--dry-run` is not set.
 - `validation`: static validation result after writes or against the supplied mod root.
+- `text_alignment`: simple text preservation report when `run-workflow` has both source input and `--mod-root`.
 - `next_steps`: what to check before in-game testing.
+
+After generation, if the user supplied a file, workbook, focus title, event title, decision title, national-spirit title, or other player-visible text, run the text-alignment check before the final answer. This is a literal text-preservation gate: the command reads expected titles/text from the source and verifies they appear in generated localisation or stable script identifiers. Do not "improve" or rename the user's titles unless the user explicitly asks for rewriting.
 
 Template ownership:
 

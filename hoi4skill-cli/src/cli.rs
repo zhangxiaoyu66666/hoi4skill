@@ -17,6 +17,9 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
         "validate" => super::cmd_validate(&args),
         "detect-hoi4-path" => super::cmd_detect_hoi4_path(&args),
         "build-game-index" => super::cmd_build_game_index(&args),
+        "check-text-alignment" | "text-alignment" | "check-output-text" => {
+            super::cmd_check_text_alignment(&args)
+        }
         "clausewitz-reference" | "code-reference" | "syntax-reference" => {
             super::cmd_clausewitz_reference(&args)
         }

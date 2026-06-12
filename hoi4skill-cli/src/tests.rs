@@ -3888,6 +3888,71 @@ fn validator_rejects_unknown_effect_keys_against_indexed_docs() {
 }
 
 #[test]
+fn text_alignment_reports_missing_user_titles() {
+    let root = unique_temp_dir("text-alignment-missing-title");
+    fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
+    fs::write(
+        target_localisation_path(&root, "KOR"),
+        "\u{feff}l_simp_chinese:\n  KOR_industry:0 \"工业复兴\"\n  kor_event.1.t:0 \"工人大会\"\n  kor_event.1.a:0 \"召开大会\"\n",
+    )
+    .unwrap();
+    let input = root.join("input.txt");
+    fs::write(
+        &input,
+        "国策树：\n工业复兴 | kor_industry\n\n事件：工人大会\n选项A：召开大会\n\n民族精神：革命遗产\n",
+    )
+    .unwrap();
+
+    let mut map = ArgMap {
+        flags: BTreeSet::new(),
+        values: HashMap::new(),
+        value_lists: HashMap::new(),
+        positionals: Vec::new(),
+    };
+    map.value_lists
+        .insert("text-source".to_string(), vec![input.display().to_string()]);
+    let report = text_alignment_report_from_args(&root, &map).unwrap();
+    let json = text_alignment_report_json(&report);
+    fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(report.expected.len(), 4);
+    assert_eq!(report.matched_count(), 3);
+    assert_eq!(report.missing().len(), 1);
+    assert!(json.contains("\"text\": \"革命遗产\""));
+    assert!(json.contains("\"missing_count\": 1"));
+}
+
+#[test]
+fn validate_can_fail_on_text_alignment_source() {
+    let root = unique_temp_dir("validate-text-alignment");
+    fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
+    fs::write(
+        target_localisation_path(&root, "KOR"),
+        "\u{feff}l_simp_chinese:\n  KOR_industry:0 \"工业复兴\"\n",
+    )
+    .unwrap();
+    let input = root.join("input.txt");
+    fs::write(&input, "国策：工业复兴\n事件：缺失事件\n").unwrap();
+
+    let map = parse_args(&[
+        root.display().to_string(),
+        "--text-source".to_string(),
+        input.display().to_string(),
+    ]);
+    let mut reporter = validate_mod(&root, None).unwrap();
+    check_text_alignment_from_validate_args(&root, &map, &mut reporter).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(reporter.errors.iter().any(|error| {
+        error.contains("text alignment missing user-provided text `缺失事件`")
+    }));
+    assert!(!reporter
+        .errors
+        .iter()
+        .any(|error| error.contains("`工业复兴`")));
+}
+
+#[test]
 fn clausewitz_reference_table_marks_indexed_primitives() {
     let mut index = GameIndex::default();
     index.effects.insert("add_opinion_modifier".to_string());

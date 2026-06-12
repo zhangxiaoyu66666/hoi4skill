@@ -25,6 +25,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
     if let Some(request) = value(&map, "request") {
         check_request_scope_for_new_mod(&root, request, &mut reporter);
     }
+    check_text_alignment_from_validate_args(&root, &map, &mut reporter)?;
     reporter.print();
     if reporter.errors.is_empty() {
         Ok(())
