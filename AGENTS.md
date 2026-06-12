@@ -13,6 +13,9 @@ For HOI4 work in this repository:
 - Before generated HOI4 content that needs game evidence, run
   `hoi4skill detect-hoi4-path`. If no valid `selected` path is returned, ask
   only for the Hearts of Iron IV install path.
+- When a task needs Clausewitz syntax or gameplay effect evidence, use the
+  local game index and `hoi4skill clausewitz-reference --game-root <HOI4 root>`
+  or `prepare-edit-context --game-root <HOI4 root>` before final script output.
 - Do not offer manual mod creation, unvalidated generation, or skipping
   `hoi4skill validate` as a fallback.
 - For national focuses, decisions, events, and national spirits, models provide

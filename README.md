@@ -24,6 +24,7 @@
 - **卡片式内容解析与写入**：支持决议、民族精神、事件、科技、特殊 GUI、scripted helper、state-effect 等内容。
 - **GFX 图标注册**：辅助把图标注册到 `interface/*.gfx`。
 - **游戏 / MOD 索引构建**：索引国家 tag、sprite、state、province、technology 等引用信息。
+- **Clausewitz 对照表**：从本地游戏文档索引 effect / modifier，并输出模型可读的常见意图到真实语法对照表。
 - **历史文件编辑计划**：在修改 `history/states` 等危险区域前，先生成编辑计划，避免乱猜 state id / province id。
 - **`error.log` 反向分析**：读取 HOI4 报错日志，辅助定位和修复 MOD 问题。
 - **本地化快速翻译**：读取任意 `localisation/<source_language>`，对照目标语言键名，生成任意目标语言的翻译 prompt / yml 骨架，并支持写回后查漏。
@@ -47,6 +48,7 @@ hoi4skill-cli/target/release/hoi4skill.exe
 ```text
 hoi4skill-cli/target/release/hoi4skill.exe --help
 hoi4skill-cli/target/release/hoi4skill.exe doctor-skill-install --fix
+hoi4skill-cli/target/release/hoi4skill.exe clausewitz-reference --game-root "C:\path\Hearts of Iron IV"
 hoi4skill-cli/target/release/hoi4skill.exe build-clausewitz-library --game-root "C:\path\Hearts of Iron IV"
 hoi4skill-cli/target/release/hoi4skill.exe query-clausewitz-library --system focus --query "socialist workers revolution"
 ```
@@ -56,6 +58,7 @@ hoi4skill-cli/target/release/hoi4skill.exe query-clausewitz-library --system foc
 ```text
 hoi4skill scaffold --name "My HOI4 Mod" --output "M:\path\my_mod" --launcher-file
 hoi4skill mod-knowledge "M:\path\existing_mod" --mod-path "M:\path\dependency.mod" --output mod_knowledge.json
+hoi4skill clausewitz-reference --game-root "C:\path\Hearts of Iron IV" --output clausewitz_reference.md
 hoi4skill build-clausewitz-library --game-root "C:\path\Hearts of Iron IV"
 hoi4skill build-clausewitz-library --game-root "C:\path\Hearts of Iron IV" --code-mod-path "M:\path\requested_mod" --request "加载 requested_mod 的模组代码作为参考"
 hoi4skill query-clausewitz-library --system event --query "uprising country event"

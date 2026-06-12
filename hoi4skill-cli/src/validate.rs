@@ -1293,7 +1293,7 @@ pub(crate) fn check_script_semantics(
     if norm.contains("/events/") {
         check_event_fields(path, &cleaned, reporter);
     }
-    check_effect_contexts(path, &cleaned, reporter);
+    check_effect_contexts(path, &cleaned, game_index, reporter);
     check_trigger_contexts(path, &cleaned, reporter);
     check_suspicious_assignments(path, &cleaned, game_index, reporter);
 }
@@ -1579,7 +1579,12 @@ pub(crate) fn direct_assignment_keys(block: &str) -> Vec<String> {
     keys
 }
 
-pub(crate) fn check_effect_contexts(path: &Path, text: &str, reporter: &mut Reporter) {
+pub(crate) fn check_effect_contexts(
+    path: &Path,
+    text: &str,
+    game_index: Option<&GameIndex>,
+    reporter: &mut Reporter,
+) {
     for name in [
         "complete_effect",
         "completion_reward",
@@ -1626,8 +1631,89 @@ pub(crate) fn check_effect_contexts(path: &Path, text: &str, reporter: &mut Repo
                     ));
                 }
             }
+            check_unknown_effect_keys(path, name, &block, game_index, reporter);
         }
     }
+}
+
+pub(crate) fn check_unknown_effect_keys(
+    path: &Path,
+    context: &str,
+    block: &str,
+    game_index: Option<&GameIndex>,
+    reporter: &mut Reporter,
+) {
+    let Some(index) = game_index else {
+        return;
+    };
+    if index.effects.is_empty() {
+        return;
+    }
+    for key in direct_assignment_keys(block) {
+        report_unknown_effect_key(path, context, &key, index, reporter);
+    }
+    for (scope, scoped_block) in direct_child_blocks(block) {
+        if is_effect_scope_key(&scope, index) {
+            for key in direct_assignment_keys(&scoped_block) {
+                report_unknown_effect_key(path, context, &key, index, reporter);
+            }
+        }
+    }
+}
+
+pub(crate) fn report_unknown_effect_key(
+    path: &Path,
+    context: &str,
+    key: &str,
+    index: &GameIndex,
+    reporter: &mut Reporter,
+) {
+    if !is_effect_key_candidate(key) {
+        return;
+    }
+    if is_effect_scope_key(key, index) {
+        return;
+    }
+    if index.effects.contains(key) {
+        return;
+    }
+    reporter.error(format!(
+        "{}: effect context `{context}` uses unknown effect `{key}`; use a real effect from `documentation/effects_documentation.md` or a verified scripted effect",
+        path.display()
+    ));
+}
+
+pub(crate) fn is_effect_scope_key(key: &str, index: &GameIndex) -> bool {
+    matches!(key, "ROOT" | "FROM" | "PREV" | "THIS")
+        || index.country_tags.contains(key)
+        || looks_like_tag(key)
+}
+
+pub(crate) fn is_effect_key_candidate(key: &str) -> bool {
+    if !is_identifier_like(key) {
+        return false;
+    }
+    !matches!(
+        key,
+        "name"
+            | "title"
+            | "desc"
+            | "picture"
+            | "id"
+            | "trigger"
+            | "ai_chance"
+            | "factor"
+            | "base"
+            | "modifier"
+            | "limit"
+            | "days"
+            | "random"
+            | "is_triggered_only"
+            | "fire_only_once"
+            | "mean_time_to_happen"
+            | "immediate"
+            | "option"
+    )
 }
 
 pub(crate) fn check_trigger_contexts(path: &Path, text: &str, reporter: &mut Reporter) {

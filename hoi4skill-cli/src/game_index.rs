@@ -29,6 +29,7 @@ pub(crate) struct GameIndex {
     pub(crate) technology_categories: BTreeSet<String>,
     pub(crate) sub_units: BTreeSet<String>,
     pub(crate) wargoal_types: BTreeSet<String>,
+    pub(crate) effects: BTreeSet<String>,
     pub(crate) modifiers: BTreeSet<String>,
 }
 
@@ -194,6 +195,9 @@ pub(crate) fn collect_game_index_root(index: &mut GameIndex, root: &Path) -> Res
         } else if ext == "md" && norm.ends_with("/documentation/modifiers_documentation.md") {
             let text = read_utf8_lossy(&file)?;
             collect_markdown_heading_identifiers(&text, &mut index.modifiers);
+        } else if ext == "md" && norm.ends_with("/documentation/effects_documentation.md") {
+            let text = read_utf8_lossy(&file)?;
+            collect_markdown_heading_identifiers(&text, &mut index.effects);
         } else if ext == "gfx" && norm.contains("/interface/") {
             let text = read_utf8_lossy(&file)?;
             collect_sprite_names(&text, &mut index.sprites);
@@ -338,10 +342,14 @@ pub(crate) fn collect_markdown_heading_identifiers(text: &str, entries: &mut BTr
             .next()
             .unwrap_or("")
             .trim_matches('`');
-        if is_identifier_like(key) {
+        if is_identifier_like(key) && !is_documentation_section_heading(key) {
             entries.insert(key.to_string());
         }
     }
+}
+
+pub(crate) fn is_documentation_section_heading(key: &str) -> bool {
+    matches!(key, "Effects" | "Modifiers" | "Table")
 }
 
 pub(crate) fn collect_technology_categories(text: &str, entries: &mut BTreeSet<String>) {
@@ -471,11 +479,12 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
         .collect::<Vec<_>>();
     let sub_units = index.sub_units.iter().cloned().collect::<Vec<_>>();
     let wargoal_types = index.wargoal_types.iter().cloned().collect::<Vec<_>>();
+    let effects = index.effects.iter().cloned().collect::<Vec<_>>();
     let modifiers = index.modifiers.iter().cloned().collect::<Vec<_>>();
     let state_ids = index.state_ids.iter().copied().collect::<Vec<_>>();
     let province_ids = index.province_ids.iter().copied().collect::<Vec<_>>();
     format!(
-        "{{\n  \"game\": {{\"id\": {}, \"display_name\": {}}},\n  \"game_root\": {},\n  \"indexed_roots\": {},\n  \"country_tags\": {},\n  \"state_ids\": {},\n  \"state_names\": {},\n  \"province_ids\": {},\n  \"sprites\": {},\n  \"focus_goal_sprites\": {},\n  \"idea_pictures\": {},\n  \"event_pictures\": {},\n  \"decision_icons\": {},\n  \"decision_category_pictures\": {},\n  \"leader_portraits\": {},\n  \"buildings\": {},\n  \"building_max_levels\": {},\n  \"resources\": {},\n  \"ideologies\": {},\n  \"traits\": {},\n  \"equipment_types\": {},\n  \"technologies\": {},\n  \"technology_categories\": {},\n  \"sub_units\": {},\n  \"wargoal_types\": {},\n  \"modifiers\": {},\n  \"counts\": {{\"indexed_roots\": {}, \"country_tags\": {}, \"state_ids\": {}, \"state_names\": {}, \"province_ids\": {}, \"sprites\": {}, \"focus_goal_sprites\": {}, \"idea_pictures\": {}, \"event_pictures\": {}, \"decision_icons\": {}, \"decision_category_pictures\": {}, \"leader_portraits\": {}, \"buildings\": {}, \"building_max_levels\": {}, \"resources\": {}, \"ideologies\": {}, \"traits\": {}, \"equipment_types\": {}, \"technologies\": {}, \"technology_categories\": {}, \"sub_units\": {}, \"wargoal_types\": {}, \"modifiers\": {}}}\n}}\n",
+        "{{\n  \"game\": {{\"id\": {}, \"display_name\": {}}},\n  \"game_root\": {},\n  \"indexed_roots\": {},\n  \"country_tags\": {},\n  \"state_ids\": {},\n  \"state_names\": {},\n  \"province_ids\": {},\n  \"sprites\": {},\n  \"focus_goal_sprites\": {},\n  \"idea_pictures\": {},\n  \"event_pictures\": {},\n  \"decision_icons\": {},\n  \"decision_category_pictures\": {},\n  \"leader_portraits\": {},\n  \"buildings\": {},\n  \"building_max_levels\": {},\n  \"resources\": {},\n  \"ideologies\": {},\n  \"traits\": {},\n  \"equipment_types\": {},\n  \"technologies\": {},\n  \"technology_categories\": {},\n  \"sub_units\": {},\n  \"wargoal_types\": {},\n  \"effects\": {},\n  \"modifiers\": {},\n  \"counts\": {{\"indexed_roots\": {}, \"country_tags\": {}, \"state_ids\": {}, \"state_names\": {}, \"province_ids\": {}, \"sprites\": {}, \"focus_goal_sprites\": {}, \"idea_pictures\": {}, \"event_pictures\": {}, \"decision_icons\": {}, \"decision_category_pictures\": {}, \"leader_portraits\": {}, \"buildings\": {}, \"building_max_levels\": {}, \"resources\": {}, \"ideologies\": {}, \"traits\": {}, \"equipment_types\": {}, \"technologies\": {}, \"technology_categories\": {}, \"sub_units\": {}, \"wargoal_types\": {}, \"effects\": {}, \"modifiers\": {}}}\n}}\n",
         json_str(HOI4_PROFILE.id),
         json_str(HOI4_PROFILE.display_name),
         json_str(&index.game_root.display().to_string()),
@@ -501,6 +510,7 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
         json_array(&technology_categories),
         json_array(&sub_units),
         json_array(&wargoal_types),
+        json_array(&effects),
         json_array(&modifiers),
         index.indexed_roots.len(),
         index.country_tags.len(),
@@ -524,6 +534,7 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
         index.technology_categories.len(),
         index.sub_units.len(),
         index.wargoal_types.len(),
+        index.effects.len(),
         index.modifiers.len()
     )
 }

@@ -202,6 +202,8 @@ pub(crate) fn prepare_edit_context_markdown(
     if let Some(index) = game_index {
         out.push_str("\n## Indexed Game/Dependency Resources\n\n");
         out.push_str(&render_indexed_resource_summary(index, 40));
+        out.push_str("\n## Clausewitz Syntax Reference Table\n\n");
+        out.push_str(&render_clausewitz_reference_table(Some(index)));
     }
 
     if let Some(libraries) = code_libraries {
@@ -305,6 +307,16 @@ pub(crate) fn render_indexed_resource_summary(index: &GameIndex, limit: usize) -
         "- leader_portraits: {} total; sample: {}\n",
         index.leader_portraits.len(),
         sample_btree_strings(&index.leader_portraits, limit)
+    ));
+    out.push_str(&format!(
+        "- effects: {} total; sample: {}\n",
+        index.effects.len(),
+        sample_btree_strings(&index.effects, limit)
+    ));
+    out.push_str(&format!(
+        "- modifiers: {} total; sample: {}\n",
+        index.modifiers.len(),
+        sample_btree_strings(&index.modifiers, limit)
     ));
     out
 }

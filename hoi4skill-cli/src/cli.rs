@@ -17,6 +17,9 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
         "validate" => super::cmd_validate(&args),
         "detect-hoi4-path" => super::cmd_detect_hoi4_path(&args),
         "build-game-index" => super::cmd_build_game_index(&args),
+        "clausewitz-reference" | "code-reference" | "syntax-reference" => {
+            super::cmd_clausewitz_reference(&args)
+        }
         "build-clausewitz-library" | "build-code-library" => {
             super::cmd_build_clausewitz_library(&args)
         }

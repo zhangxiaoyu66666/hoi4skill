@@ -3580,7 +3580,12 @@ fn game_index_collects_tags_states_and_sprites() {
     fs::write(
         root.join("documentation")
             .join("modifiers_documentation.md"),
-        "## stability_factor\n\n## political_power_factor\n",
+        "## Modifiers\n\n## Table\n\n## stability_factor\n\n## political_power_factor\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("documentation").join("effects_documentation.md"),
+        "## Effects\n\n## Table\n\n## add_political_power\n\n## add_opinion_modifier\n\n## create_unit\n",
     )
     .unwrap();
     fs::write(
@@ -3658,7 +3663,11 @@ spriteType = { name = "GFX_portrait_GER_wilhelm_ii" texturefile = "gfx/leaders/G
     assert!(index.technology_categories.contains("tech_infantry"));
     assert!(index.sub_units.contains("infantry"));
     assert!(index.wargoal_types.contains("annex_everything"));
+    assert!(index.effects.contains("add_political_power"));
+    assert!(index.effects.contains("add_opinion_modifier"));
+    assert!(!index.effects.contains("Effects"));
     assert!(index.modifiers.contains("stability_factor"));
+    assert!(!index.modifiers.contains("Modifiers"));
     assert!(json.contains("\"country_tags\": [\"ITA\", \"SOV\"]"));
     assert!(json.contains("\"state_ids\": [64]"));
     assert!(json.contains("\"state_names\": {\"STATE_64\": 64}"));
@@ -3687,6 +3696,9 @@ spriteType = { name = "GFX_portrait_GER_wilhelm_ii" texturefile = "gfx/leaders/G
     assert!(json.contains("\"technology_categories\": [\"infantry\", \"tech_infantry\"]"));
     assert!(json.contains("\"sub_units\": [\"artillery_brigade\", \"infantry\"]"));
     assert!(json.contains("\"wargoal_types\": [\"annex_everything\", \"puppet_wargoal_focus\"]"));
+    assert!(json.contains(
+        "\"effects\": [\"add_opinion_modifier\", \"add_political_power\", \"create_unit\"]"
+    ));
     assert!(json.contains("\"modifiers\": [\"political_power_factor\", \"stability_factor\"]"));
 }
 
@@ -3830,6 +3842,70 @@ fn game_index_helpers_distinguish_known_and_unknown_refs() {
         .warnings
         .iter()
         .any(|warning| warning.contains("arms_factory level 6 exceeds game max_level 5")));
+}
+
+#[test]
+fn validator_rejects_unknown_effect_keys_against_indexed_docs() {
+    let root = unique_temp_dir("validate-unknown-effects");
+    fs::create_dir_all(root.join("events")).unwrap();
+    fs::create_dir_all(root.join("common").join("national_focus")).unwrap();
+    fs::write(
+        root.join("events").join("bad_events.txt"),
+        "add_namespace = tst\ncountry_event = {\n id = tst.1\n is_triggered_only = yes\n option = {\n  name = tst.1.a\n  add_stability = 0.05\n  add_army_org = 0.1\n  spawn_units = { division = { division = \"infantry\" } }\n  USA = { add_opinion = KOR = 20 }\n }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("common")
+            .join("national_focus")
+            .join("bad_focus.txt"),
+        "focus_tree = {\n id = tst_focus\n country = { factor = 0 modifier = { add = 10 tag = KOR } }\n focus = {\n  id = KOR_bad_reward\n  icon = GFX_goal_unknown\n  x = 0\n  y = 0\n  cost = 10\n  ai_will_do = { factor = 100 }\n  available = { }\n  bypass = { }\n  cancel_if_invalid = yes\n  continue_if_invalid = no\n  available_if_capitulated = no\n  completion_reward = { add_modifier = { mystery = yes } }\n }\n}\n",
+    )
+    .unwrap();
+
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+    index.country_tags.insert("USA".to_string());
+    for effect in [
+        "add_stability",
+        "country_event",
+        "news_event",
+        "add_opinion_modifier",
+        "create_unit",
+    ] {
+        index.effects.insert(effect.to_string());
+    }
+
+    let report = validate_mod(&root, Some(&index)).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    let errors = report.errors.join("\n");
+    assert!(errors.contains("unknown effect `add_army_org`"));
+    assert!(errors.contains("unknown effect `spawn_units`"));
+    assert!(errors.contains("unknown effect `add_opinion`"));
+    assert!(errors.contains("unknown effect `add_modifier`"));
+    assert!(!errors.contains("unknown effect `add_stability`"));
+    assert!(!errors.contains("unknown effect `USA`"));
+}
+
+#[test]
+fn clausewitz_reference_table_marks_indexed_primitives() {
+    let mut index = GameIndex::default();
+    index.effects.insert("add_opinion_modifier".to_string());
+    index.effects.insert("create_unit".to_string());
+    index.effects.insert("add_political_power".to_string());
+    index.modifiers.insert("stability_factor".to_string());
+    index
+        .focus_goal_sprites
+        .insert("GFX_goal_workers".to_string());
+    index.idea_pictures.insert("workers_council".to_string());
+
+    let markdown = render_clausewitz_reference_table(Some(&index));
+
+    assert!(markdown.contains("add_opinion_modifier (indexed)"));
+    assert!(markdown.contains("create_unit (indexed)"));
+    assert!(markdown.contains("stability_factor (indexed)"));
+    assert!(markdown.contains("USA = { add_opinion = KOR = 20 }"));
+    assert!(markdown.contains("picture = bare_name_for_GFX_idea_bare_name"));
 }
 
 #[test]

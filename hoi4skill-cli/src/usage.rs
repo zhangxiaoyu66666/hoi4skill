@@ -13,6 +13,7 @@ Usage:
   hoi4skill validate "M:\path\mod" [--request "literal user request"]
   hoi4skill validate "M:\path\mod" --game-root "C:\path\Hearts of Iron IV" [--mod-path "M:\path\dependency.mod"] [--request "literal user request"]
   hoi4skill build-game-index --game-root "C:\path\Hearts of Iron IV" [--mod-path "M:\path\dependency.mod"] [--output game_index.json]
+  hoi4skill clausewitz-reference [--game-root "C:\path\Hearts of Iron IV"] [--mod-path "M:\path\dependency.mod"] [--output reference.md]
   hoi4skill build-clausewitz-library --game-root "C:\path\Hearts of Iron IV" [--code-mod-path "M:\path\explicitly-requested-mod"] [--request "literal user request"] [--output "C:\path\clausewitz-library"]
   hoi4skill query-clausewitz-library --query "communist national focus" [--system focus|event|idea|decision|character|history|scripted_effect] [--library "C:\path\clausewitz-library"] [--mod-library "C:\path\authorized-mod-library"] [--max-results 6]
   hoi4skill resolve-country-tag --text "给韩国制作国策" --game-root "C:\path\Hearts of Iron IV" [--tag KOR] [--source-root "M:\path\source_mod"] [--mod-path "M:\path\dependency.mod"] [--allow-new-tag] [--output tag_resolution.json]
