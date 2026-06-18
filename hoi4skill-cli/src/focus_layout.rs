@@ -7,13 +7,28 @@ pub(crate) fn cmd_parse_focus_layout(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let input = normalize_path(&require_value(&map, "input")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
-    enforce_tag_request_contract(&map, tag, None)?;
     let prefix = value(&map, "prefix").unwrap_or("focus");
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+        .transpose()?;
+    enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err("--mod-path requires --game-root during focus layout parsing".to_string());
+    }
     let text = read_utf8_lossy(&input)?;
     let mut layout = parse_focus_layout_with_rewards(&text, tag, prefix);
     if let Some(tree_id) = value(&map, "tree-id") {
         layout.tree_id = tree_id.to_string();
     }
+    let local_root = value(&map, "mod-root")
+        .map(normalize_path)
+        .transpose()?
+        .or_else(|| input.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."));
+    enforce_strict_focus_layout_gate(&map, &local_root, &layout, tag, game_index.as_ref())?;
     let rendered = match value(&map, "format").unwrap_or("json") {
         "json" | "plan" if value(&map, "tree-id").is_none() => {
             parse_focus_layout_json(&text, tag, prefix)
@@ -381,6 +396,7 @@ pub(crate) fn cmd_apply_focus_layout(args: &[String]) -> Result<(), String> {
     if let Some(tree_id) = tree_id {
         layout.tree_id = tree_id.to_string();
     }
+    enforce_strict_focus_layout_gate(&map, &mod_root, &layout, tag, game_index.as_ref())?;
     let changed =
         apply_focus_layout_to_mod_with_index(&mod_root, &layout, tag, prefix, game_index.as_ref())?;
 
@@ -395,6 +411,81 @@ pub(crate) fn cmd_apply_focus_layout(args: &[String]) -> Result<(), String> {
     }
     run_post_apply_checks(&mod_root, &map, game_index.as_ref(), Some(&input))?;
     Ok(())
+}
+
+pub(crate) fn enforce_strict_focus_layout_gate(
+    map: &ArgMap,
+    mod_root: &Path,
+    layout: &FocusLayout,
+    tag: &str,
+    game_index: Option<&GameIndex>,
+) -> Result<(), String> {
+    let options = validation_options_from_args(map);
+    enforce_strict_focus_layout_gate_with_options(options, mod_root, layout, tag, game_index)
+}
+
+pub(crate) fn enforce_strict_focus_layout_gate_with_options(
+    options: ValidationOptions,
+    mod_root: &Path,
+    layout: &FocusLayout,
+    tag: &str,
+    game_index: Option<&GameIndex>,
+) -> Result<(), String> {
+    if !options.strict_code_index {
+        return Ok(());
+    }
+    let Some(index) = game_index else {
+        return Err(
+            "strict focus layout generation requires --game-root before writing files".to_string(),
+        );
+    };
+    let icon_catalog = collect_focus_goal_icon_catalog(mod_root, Some(index))?;
+    let mut checked = layout.clone();
+    assign_indexed_focus_icons(&mut checked, mod_root, Some(index), tag)?;
+    let mut errors = Vec::new();
+    for focus in &checked.focuses {
+        let icon = focus.icon.as_deref().unwrap_or("GFX_goal_unknown");
+        if icon == "GFX_goal_unknown" || !icon_catalog.contains(icon) {
+            errors.push(format!(
+                "focus `{}` uses unresolved focus icon `{icon}`; index a real GFX_goal/GFX_focus sprite or provide a verified icon before final generation",
+                focus.title
+            ));
+        }
+        for line in &focus.completion_reward {
+            if let Some(marker) = unresolved_generation_marker(line) {
+                errors.push(format!(
+                    "focus `{}` completion_reward contains unresolved marker `{marker}`: {}",
+                    focus.title, line
+                ));
+            }
+            let trimmed = line.trim();
+            if trimmed.starts_with('#') || trimmed.is_empty() {
+                continue;
+            }
+            if let Some(key) = assignment_key(trimmed) {
+                if index.effects.is_empty() {
+                    errors.push(format!(
+                        "focus `{}` completion_reward uses effect-like key `{key}`, but strict code index has no indexed effects; rebuild the index from `documentation/effects_documentation.md` or load the required game/dependency code before final generation",
+                        focus.title
+                    ));
+                } else if !index.effects.contains(key) {
+                    let related = related_code_symbols_text(index, key, Some("effect"));
+                    errors.push(format!(
+                        "focus `{}` completion_reward maps to unindexed effect `{key}`; verify it with `check-code-symbol --kind effect` before final generation{}",
+                        focus.title, related
+                    ));
+                }
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "strict focus layout generation blocked unresolved AI mappings:\n{}",
+            errors.join("\n")
+        ))
+    }
 }
 
 #[allow(dead_code)]
@@ -914,20 +1005,14 @@ pub(crate) fn render_focus_block(focus: &FocusNode) -> String {
         "\t\ty = {}\n",
         focus.relative_y.unwrap_or(focus.y)
     ));
-    if focus.prerequisite.is_empty() {
-        out.push_str("\t\t# prerequisite = { focus = <parent focus id> }\n");
-    } else {
-        for parent in &focus.prerequisite {
-            out.push_str(&format!("\t\tprerequisite = {{ focus = {parent} }}\n"));
-        }
+    for parent in &focus.prerequisite {
+        out.push_str(&format!("\t\tprerequisite = {{ focus = {parent} }}\n"));
     }
     for other in &focus.mutually_exclusive {
         out.push_str(&format!("\t\tmutually_exclusive = {{ focus = {other} }}\n"));
     }
     if let Some(relative_id) = &focus.relative_position_id {
         out.push_str(&format!("\t\trelative_position_id = {relative_id}\n"));
-    } else {
-        out.push_str("\t\t# relative_position_id = <focus id for relative placement>\n");
     }
     out.push_str("\t\tcost = 10\n");
     out.push_str("\t\tai_will_do = {\n\t\t\tfactor = 100\n\t\t}\n\n");

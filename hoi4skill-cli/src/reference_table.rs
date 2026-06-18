@@ -50,12 +50,40 @@ pub(crate) struct ReferenceRow {
 #[derive(Copy, Clone)]
 pub(crate) enum ReferenceKind {
     Effect,
+    Trigger,
     Modifier,
     ResourceRule,
 }
 
 pub(crate) fn reference_rows() -> Vec<ReferenceRow> {
     vec![
+        ReferenceRow {
+            intent: "战争中条件",
+            system: "trigger/available/limit",
+            kind: ReferenceKind::Trigger,
+            primitive: "has_war",
+            use_shape: "has_war = yes",
+            avoid: "complete_effect = { has_war = yes }",
+            notes: "trigger 只能写在条件上下文，不是执行效果。",
+        },
+        ReferenceRow {
+            intent: "完成国策条件",
+            system: "trigger/available/limit",
+            kind: ReferenceKind::Trigger,
+            primitive: "has_completed_focus",
+            use_shape: "has_completed_focus = TAG_focus_id",
+            avoid: "completion_reward = { has_completed_focus = TAG_focus_id }",
+            notes: "focus id 必须来自当前 mod 或索引依赖。",
+        },
+        ReferenceRow {
+            intent: "拥有民族精神条件",
+            system: "trigger/available/limit",
+            kind: ReferenceKind::Trigger,
+            primitive: "has_idea",
+            use_shape: "has_idea = my_spirit_idea",
+            avoid: "complete_effect = { has_idea = my_spirit_idea }",
+            notes: "检查状态用 has_idea；添加/移除状态用 add_ideas/remove_ideas。",
+        },
         ReferenceRow {
             intent: "政治点增减",
             system: "focus/event/decision effect",
@@ -200,6 +228,7 @@ pub(crate) fn verified_primitive(row: &ReferenceRow, index: Option<&GameIndex>) 
     };
     let ok = match row.kind {
         ReferenceKind::Effect => index.effects.contains(row.primitive),
+        ReferenceKind::Trigger => index.triggers.contains(row.primitive),
         ReferenceKind::Modifier => index.modifiers.contains(row.primitive),
         ReferenceKind::ResourceRule => match row.primitive {
             "focus_goal_sprites" => !index.focus_goal_sprites.is_empty(),

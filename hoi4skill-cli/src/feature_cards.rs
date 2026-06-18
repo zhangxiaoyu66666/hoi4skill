@@ -7,19 +7,35 @@ pub(crate) fn cmd_parse_feature_cards(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let input = normalize_path(&require_value(&map, "input")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
-    enforce_tag_request_contract(&map, tag, None)?;
     let prefix = value(&map, "prefix").unwrap_or("mod");
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+        .transpose()?;
+    enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err("--mod-path requires --game-root during feature-card parsing".to_string());
+    }
     let text = read_utf8_lossy(&input)?;
+    let cards = parse_cards(&text, FEATURE_CARD_HEADERS);
+    enforce_strict_feature_card_gate(&map, &cards, tag, prefix, game_index.as_ref())?;
     let json = parse_decision_idea_cards_json(&text, tag, prefix);
     write_or_print(&json, value(&map, "output"))
 }
 
 pub(crate) fn parse_decision_idea_cards_json(text: &str, tag: &str, prefix: &str) -> String {
     let cards = parse_cards(text, FEATURE_CARD_HEADERS);
+    let safety_suggestions = feature_cards_safety_suggestions(&cards, tag, prefix);
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str(&format!("  \"prefix\": {},\n", json_str(prefix)));
     out.push_str(&format!("  \"tag\": {},\n", json_str(tag)));
+    out.push_str(&format!(
+        "  \"safety\": {},\n",
+        suggestions_safety_json(&safety_suggestions)
+    ));
     out.push_str("  \"features\": [\n");
     for (idx, card) in cards.iter().enumerate() {
         comma(&mut out, idx, "    ");
@@ -65,17 +81,41 @@ pub(crate) fn parse_decision_idea_cards_json(text: &str, tag: &str, prefix: &str
             join_existing_fields(&card.fields, &["条件", "可见", "可用", "前置", "前置国策"]);
         let suggestions = feature_card_suggestions(card, ty, &id, target, condition.as_deref());
         out.push_str(&format!(
-            "{{\"type\": {}, \"title\": {}, \"target\": {}, \"id\": {}, \"fields\": {}, \"files\": {}, \"suggestions\": {}}}",
+            "{{\"type\": {}, \"title\": {}, \"target\": {}, \"id\": {}, \"fields\": {}, \"files\": {}, \"suggestions\": {}, \"safety\": {}}}",
             json_str(ty),
             json_str(&card.title),
             json_str(target),
             json_str(&id),
             json_object(&card.fields),
             json_array(&files),
-            suggestions_json(&suggestions)
+            suggestions_json(&suggestions),
+            suggestions_safety_json(&suggestions)
         ));
     }
     out.push_str("\n  ]\n}\n");
+    out
+}
+
+pub(crate) fn feature_cards_safety_suggestions(
+    cards: &[Card],
+    tag: &str,
+    prefix: &str,
+) -> Vec<Suggestion> {
+    let mut out = Vec::new();
+    for (idx, card) in cards.iter().enumerate() {
+        let ty = feature_card_type(&card.kind).unwrap_or("feature");
+        let id = feature_card_id(card, prefix, ty, idx);
+        let target = card.fields.get("目标").map(String::as_str).unwrap_or(tag);
+        let condition =
+            join_existing_fields(&card.fields, &["条件", "可见", "可用", "前置", "前置国策"]);
+        out.extend(feature_card_suggestions(
+            card,
+            ty,
+            &id,
+            target,
+            condition.as_deref(),
+        ));
+    }
     out
 }
 
@@ -89,7 +129,7 @@ pub(crate) fn feature_card_suggestions(
     match ty {
         "decision" | "idea" => suggest_common(
             ty,
-            card.fields.get("效果").map(String::as_str).unwrap_or(""),
+            &feature_effect_text(card),
             card.fields.get("花费").map(String::as_str),
             card.fields
                 .get("冷却")
@@ -149,6 +189,11 @@ pub(crate) fn feature_card_suggestions(
     }
 }
 
+pub(crate) fn feature_effect_text(card: &Card) -> String {
+    join_existing_fields(&card.fields, &["效果", "效应", "效果描述", "llm", "LLM"])
+        .unwrap_or_default()
+}
+
 pub(crate) fn cmd_apply_feature_cards(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let input = normalize_path(&require_value(&map, "input")?)?;
@@ -167,6 +212,7 @@ pub(crate) fn cmd_apply_feature_cards(args: &[String]) -> Result<(), String> {
     }
     let text = read_utf8_lossy(&input)?;
     let cards = parse_cards(&text, FEATURE_CARD_HEADERS);
+    enforce_strict_feature_card_gate(&map, &cards, tag, prefix, game_index.as_ref())?;
     let changed =
         apply_feature_cards_to_mod_with_index(&mod_root, &cards, tag, prefix, game_index.as_ref())?;
 
@@ -181,6 +227,134 @@ pub(crate) fn cmd_apply_feature_cards(args: &[String]) -> Result<(), String> {
     }
     run_post_apply_checks(&mod_root, &map, game_index.as_ref(), Some(&input))?;
     Ok(())
+}
+
+pub(crate) fn enforce_strict_feature_card_gate(
+    map: &ArgMap,
+    cards: &[Card],
+    tag: &str,
+    prefix: &str,
+    game_index: Option<&GameIndex>,
+) -> Result<(), String> {
+    let options = validation_options_from_args(map);
+    enforce_strict_feature_card_gate_with_options(options, cards, tag, prefix, game_index)
+}
+
+pub(crate) fn enforce_strict_feature_card_gate_with_options(
+    options: ValidationOptions,
+    cards: &[Card],
+    tag: &str,
+    prefix: &str,
+    game_index: Option<&GameIndex>,
+) -> Result<(), String> {
+    if !options.strict_code_index {
+        return Ok(());
+    }
+    if game_index.is_none() {
+        return Err(
+            "strict feature-card generation requires --game-root before writing files".to_string(),
+        );
+    }
+    let mut errors = Vec::new();
+    for (idx, card) in cards.iter().enumerate() {
+        let ty = feature_card_type(&card.kind).unwrap_or("feature");
+        let id = feature_card_id(card, prefix, ty, idx);
+        let target = card.fields.get("目标").map(String::as_str).unwrap_or(tag);
+        let condition =
+            join_existing_fields(&card.fields, &["条件", "可见", "可用", "前置", "前置国策"]);
+        let mut suggestions = feature_card_suggestions(card, ty, &id, target, condition.as_deref());
+        suggestions.extend(feature_card_inner_code_suggestions(
+            card,
+            ty,
+            target,
+            condition.as_deref(),
+        ));
+        errors.extend(unresolved_suggestion_errors_with_index(
+            &format!("{} `{}`", card.kind, card.title),
+            &suggestions,
+            game_index,
+        ));
+        if let Some(index) = game_index {
+            errors.extend(missing_code_index_category_errors(
+                &format!("{} `{}`", card.kind, card.title),
+                &suggestions,
+                index,
+            ));
+            errors.extend(unindexed_suggestion_errors(
+                &format!("{} `{}`", card.kind, card.title),
+                &suggestions,
+                index,
+            ));
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "strict feature-card generation blocked unresolved AI mappings:\n{}",
+            errors.join("\n")
+        ))
+    }
+}
+
+pub(crate) fn feature_card_inner_code_suggestions(
+    card: &Card,
+    ty: &str,
+    target: &str,
+    condition: Option<&str>,
+) -> Vec<Suggestion> {
+    match ty {
+        "scripted_effect" => {
+            let effect_text = join_existing_fields(&card.fields, &["效果", "动作", "内容", "执行"])
+                .unwrap_or_default();
+            suggest_common("scripted_effect", &effect_text, None, None, None, None)
+        }
+        "scripted_trigger" => {
+            let trigger_text = join_existing_fields(
+                &card.fields,
+                &["条件", "触发", "可用", "可见", "限制", "内容"],
+            )
+            .unwrap_or_default();
+            split_cn_list(&trigger_text)
+                .into_iter()
+                .flat_map(suggest_trigger)
+                .collect()
+        }
+        "state_effect" => state_card_suggestions(card, target)
+            .into_iter()
+            .map(materialize_state_effect_suggestion_for_gate)
+            .collect(),
+        "gui" => card
+            .fields
+            .get("效果")
+            .map(|effect| {
+                vec![Suggestion::new(
+                    "raw_effect",
+                    effect,
+                    effect,
+                    "Scripted GUI effects need an explicit action binding before final code.",
+                )]
+            })
+            .unwrap_or_default(),
+        _ => condition
+            .into_iter()
+            .flat_map(suggest_trigger)
+            .collect::<Vec<_>>(),
+    }
+}
+
+pub(crate) fn materialize_state_effect_suggestion_for_gate(suggestion: Suggestion) -> Suggestion {
+    if suggestion.kind == "state_effect_candidate" {
+        if let Some(code) = materialize_state_effect(&suggestion) {
+            return Suggestion::new(
+                &suggestion.kind,
+                &code,
+                &suggestion.source,
+                &suggestion.note,
+            );
+        }
+    }
+    suggestion
 }
 
 #[cfg(test)]
@@ -785,9 +959,10 @@ pub(crate) fn render_decision_inner_block_with_icon(
         .or_else(|| card.fields.get("持续"))
         .and_then(|s| parse_int(s));
     let condition = join_existing_fields(&card.fields, &["条件", "可用", "前置", "前置国策"]);
+    let effect_text = feature_effect_text(card);
     let suggestions = suggest_common(
         "decision",
-        card.fields.get("效果").map(String::as_str).unwrap_or(""),
+        &effect_text,
         None,
         None,
         condition.as_deref(),
@@ -855,9 +1030,10 @@ pub(crate) fn render_idea_inner_block_with_picture(
     idea_id: &str,
     picture: &str,
 ) -> String {
+    let effect_text = feature_effect_text(card);
     let suggestions = suggest_common(
         "idea",
-        card.fields.get("效果").map(String::as_str).unwrap_or(""),
+        &effect_text,
         None,
         None,
         None,

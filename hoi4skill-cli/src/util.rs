@@ -46,6 +46,69 @@ pub(crate) fn suggestions_json(values: &[Suggestion]) -> String {
     )
 }
 
+pub(crate) fn suggestions_safety_json(values: &[Suggestion]) -> String {
+    suggestions_safety_json_with_extra_blockers(values, &[])
+}
+
+pub(crate) fn suggestions_safety_json_with_extra_blockers(
+    values: &[Suggestion],
+    extra_blockers: &[String],
+) -> String {
+    let mut blockers = suggestions_safety_blockers(values);
+    blockers.extend(extra_blockers.iter().cloned());
+    let requires_mapping = values.iter().any(|suggestion| {
+        suggestion.kind == "raw_effect"
+            || suggestion.kind == "raw_trigger"
+            || suggestion
+                .note
+                .contains("Needs Codex mapping before final code")
+    });
+    let has_placeholder = values
+        .iter()
+        .any(|suggestion| suggestion.code.contains('<') || suggestion.code.contains('>'));
+    let status = if blockers.is_empty() {
+        "verified_shape"
+    } else {
+        "blocked"
+    };
+    format!(
+        "{{\"status\": {}, \"final_code_allowed\": {}, \"requires_mapping\": {}, \"has_placeholder\": {}, \"blockers\": {}}}",
+        json_str(status),
+        json_bool(blockers.is_empty()),
+        json_bool(requires_mapping),
+        json_bool(has_placeholder),
+        json_array(&blockers)
+    )
+}
+
+pub(crate) fn suggestions_safety_blockers(values: &[Suggestion]) -> Vec<String> {
+    let mut blockers = Vec::new();
+    for suggestion in values {
+        if suggestion.kind == "raw_effect" || suggestion.kind == "raw_trigger" {
+            blockers.push(format!(
+                "{} `{}` must be mapped to a verified code-catalog entry",
+                suggestion.kind, suggestion.source
+            ));
+        }
+        if suggestion.code.contains('<') || suggestion.code.contains('>') {
+            blockers.push(format!(
+                "`{}` contains unresolved placeholder code `{}`",
+                suggestion.source, suggestion.code
+            ));
+        }
+        if suggestion
+            .note
+            .contains("Needs Codex mapping before final code")
+        {
+            blockers.push(format!(
+                "`{}` needs Codex mapping before final code",
+                suggestion.source
+            ));
+        }
+    }
+    blockers
+}
+
 pub(crate) fn html_escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")

@@ -19,6 +19,5290 @@ fn write_test_skill(path: &Path, name: &str) {
     .unwrap();
 }
 
+#[test]
+fn large_mod_blueprint_round_trips_generated_yaml() {
+    let source = "name: New Order Rising\ncountries: RUS, GER\nregions: east asia, europe\nsystems: black monday, faction congress";
+    let blueprint = plan_large_mod_blueprint(source, "New Order Rising", "NOR", "simp_chinese");
+    let yaml = blueprint.to_yaml();
+    let parsed = parse_large_mod_blueprint(&yaml).unwrap();
+
+    assert_eq!(parsed.name, "New Order Rising");
+    assert_eq!(parsed.acronym, "NOR");
+    assert_eq!(parsed.default_language, "simp_chinese");
+    assert_eq!(parsed.countries.len(), 2);
+    assert_eq!(parsed.countries[0].id, "rus");
+    assert_eq!(parsed.regions[0].id, "east_asia");
+    assert_eq!(parsed.systems[0].id, "black_monday");
+    assert!(yaml.contains("hoi4skill.large_mod_blueprint.v1"));
+}
+
+#[test]
+fn large_mod_commands_create_project_and_work_packages() {
+    let root = unique_temp_dir("large-mod-project");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let packages = root.join("packages");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: political crisis".to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_split_work_packages(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        packages.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    assert!(mod_root.join("descriptor.mod").exists());
+    assert!(mod_root.join(".hoi4skill/large_mod_blueprint.yml").exists());
+    assert!(mod_root.join(".hoi4skill/project.json").exists());
+    assert!(mod_root.join("common/national_focus").is_dir());
+    assert!(mod_root.join("localisation/simp_chinese").is_dir());
+    assert!(packages.join("country_rus.md").exists());
+    assert!(packages.join("region_europe.md").exists());
+    assert!(packages.join("system_political_crisis.md").exists());
+
+    let manifest = read_utf8_lossy(&packages.join("manifest.json")).unwrap();
+    assert!(manifest.contains("\"schema\": \"hoi4skill.large_mod_work_packages.v1\""));
+    assert!(manifest.contains("\"package_count\": 4"));
+}
+
+#[test]
+fn large_mod_ownership_map_marks_shared_edit_surfaces() {
+    let root = unique_temp_dir("large-mod-ownership-map");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("ownership_map.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_large_mod_ownership_map(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_ownership_map.v1\""));
+    assert!(json.contains("\"package_count\": 4"));
+    assert!(json.contains("\"shared_path_count\""));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"identity_terms\": [\"RUS\", \"country_rus\", \"rus\", \"tgc_rus\"]"));
+    assert!(json.contains("\"path\": \"events\""));
+    assert!(json.contains("\"owner_count\": 3"));
+    assert!(json.contains("\"path\": \"localisation/simp_chinese\""));
+    assert!(json.contains("\"owner_count\": 4"));
+    assert!(json.contains("\"requires_identity_terms\": true"));
+    assert!(json.contains("split-changed-work-packages"));
+    assert!(json.contains("Do not assign shared paths by directory prefix alone"));
+}
+
+#[test]
+fn large_mod_dependency_graph_orders_system_country_region_packages() {
+    let root = unique_temp_dir("large-mod-dependency-graph");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("dependency_graph.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_large_mod_dependency_graph(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_dependency_graph.v1\""));
+    assert!(json.contains("\"package_count\": 4"));
+    assert!(json.contains("\"cycle_count\": 0"));
+    assert!(json.contains("\"id\": \"system_black_monday\""));
+    assert!(json.contains("\"layer\": 1"));
+    assert!(json.contains("\"name\": \"system_contracts\""));
+    assert!(json.contains("\"package\": \"country_rus\""));
+    assert!(json.contains("\"depends_on\": \"system_black_monday\""));
+    assert!(json.contains("\"package\": \"region_europe\""));
+    assert!(json.contains("\"depends_on\": \"country_rus\""));
+    assert!(json.contains("\"name\": \"country_content\""));
+    assert!(json.contains("\"name\": \"regional_integration\""));
+    assert!(json.contains("large-mod-ci-plan"));
+    assert!(json.contains("Do not schedule a package before its dependency layer"));
+}
+
+#[test]
+fn large_mod_milestone_plan_groups_packages_by_production_phase() {
+    let root = unique_temp_dir("large-mod-milestone-plan");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("milestone_plan.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_large_mod_milestone_plan(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_milestone_plan.v1\""));
+    assert!(json.contains("\"package_count\": 4"));
+    assert!(json.contains("\"milestone_count\": 5"));
+    assert!(json.contains("\"phase\": \"system_contracts\""));
+    assert!(json.contains("\"packages\": [\"system_black_monday\"]"));
+    assert!(json.contains("\"phase\": \"country_content\""));
+    assert!(json.contains("\"packages\": [\"country_rus\", \"country_ger\"]"));
+    assert!(json.contains("\"phase\": \"regional_integration\""));
+    assert!(json.contains("\"packages\": [\"region_europe\"]"));
+    assert!(json.contains("\"required_reports\": [\"ownership_map.json\", \"dependency_graph.json\", \"ci_plan.json\"]"));
+    assert!(json.contains("large-mod-dependency-graph"));
+    assert!(json.contains("large-mod-release-gate"));
+    assert!(json.contains("Do not advance a milestone while any listed required report is missing"));
+}
+
+#[test]
+fn large_mod_execution_queue_respects_dependency_handoffs() {
+    let root = unique_temp_dir("large-mod-execution-queue");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("execution_queue.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        ("changed_system_black_monday.txt", "common/scripted_effects/tgc_black_monday.txt\n"),
+        (
+            "plan_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_system_black_monday.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_system_black_monday.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_large_mod_execution_queue(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_execution_queue.v1\""));
+    assert!(json.contains("\"package_count\": 3"));
+    assert!(json.contains("\"completed_count\": 1"));
+    assert!(json.contains("\"ready_to_start_count\": 1"));
+    assert!(json.contains("\"blocked_count\": 1"));
+    assert!(json.contains("\"id\": \"system_black_monday\""));
+    assert!(json.contains("\"status\": \"completed\""));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"status\": \"ready_to_start\""));
+    assert!(json.contains("\"depends_on\": [\"system_black_monday\"]"));
+    assert!(json.contains("\"id\": \"region_europe\""));
+    assert!(json.contains("\"status\": \"blocked_by_dependencies\""));
+    assert!(json.contains("\"blocked_by\": [\"country_rus\"]"));
+    assert!(json.contains("work-package-claim --mod-root"));
+    assert!(json.contains("work-package-start-brief --mod-root"));
+    assert!(json.contains("work-package-start-briefs --mod-root"));
+    assert!(json.contains("work-package-claims --mod-root"));
+    assert!(json.contains("work-package-dispatch-board --mod-root"));
+    assert!(json.contains("--ready-only"));
+    assert!(json.contains("generate-work-package --mod-root"));
+    assert!(json.contains("Do not start a package while status is blocked_by_dependencies"));
+}
+
+#[test]
+fn work_package_start_brief_summarizes_ready_package_boundaries() {
+    let root = unique_temp_dir("work-package-start-brief");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("start_country_rus.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        ("changed_system_black_monday.txt", "common/scripted_effects/tgc_black_monday.txt\n"),
+        (
+            "plan_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_system_black_monday.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_system_black_monday.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_work_package_start_brief(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let markdown = read_utf8_lossy(&output).unwrap();
+    assert!(markdown.contains("# Work Package Start Brief: RUS Country Content"));
+    assert!(markdown.contains("`hoi4skill.work_package_start_brief.v1`"));
+    assert!(markdown.contains("- state: `ready_to_start`"));
+    assert!(markdown.contains("- package: `country_rus`"));
+    assert!(markdown.contains("- tag: `RUS`"));
+    assert!(markdown.contains("- namespace: `tgc_rus`"));
+    assert!(markdown.contains("- depends_on: `system_black_monday`"));
+    assert!(markdown.contains("- dependency_state: `clear`"));
+    assert!(markdown.contains("- `common/national_focus`"));
+    assert!(markdown.contains("- `tgc_rus`"));
+    assert!(markdown.contains("feature-context"));
+    assert!(markdown.contains("apply-focus-layout"));
+    assert!(markdown.contains("generate-work-package --mod-root"));
+    assert!(markdown.contains("work-package-handoff --mod-root"));
+    assert!(markdown.contains("## Code Authoring Contract"));
+    assert!(markdown.contains("AI outputs intent"));
+    assert!(markdown.contains("hoi4skill code-catalog"));
+    assert!(markdown.contains("hoi4skill compile-intent"));
+    assert!(markdown.contains("safety.final_code_allowed"));
+    assert!(markdown.contains("Do not start while `state` is `blocked_by_dependencies`"));
+}
+
+#[test]
+fn work_package_start_briefs_ready_only_writes_dispatch_manifest() {
+    let root = unique_temp_dir("work-package-start-briefs");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output_dir = root.join("start_briefs");
+    let output = root.join("start_briefs_manifest.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "changed_system_black_monday.txt",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+        ),
+        (
+            "plan_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_system_black_monday.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_system_black_monday.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_work_package_start_briefs(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--ready-only".to_string(),
+        "--output-dir".to_string(),
+        output_dir.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let manifest = read_utf8_lossy(&output).unwrap();
+    assert!(manifest.contains("\"schema\": \"hoi4skill.work_package_start_briefs.v1\""));
+    assert!(manifest.contains("\"ready_only\": true"));
+    assert!(manifest.contains("\"package_count\": 3"));
+    assert!(manifest.contains("\"generated_count\": 1"));
+    assert!(manifest.contains("\"skipped_count\": 2"));
+    assert!(manifest.contains("\"id\": \"country_rus\""));
+    assert!(manifest.contains("\"state\": \"ready_to_start\""));
+    assert!(manifest.contains("\"generated\": true"));
+    assert!(manifest.contains("\"id\": \"system_black_monday\""));
+    assert!(manifest.contains("\"state\": \"already_handed_off\""));
+    assert!(manifest.contains("\"generated\": false"));
+    assert!(manifest.contains("\"id\": \"region_europe\""));
+    assert!(manifest.contains("\"state\": \"blocked_by_dependencies\""));
+    assert!(manifest.contains("\"blocked_by\": [\"country_rus\"]"));
+    assert!(manifest.contains("Do not dispatch skipped packages"));
+    assert!(output_dir.join("start_country_rus.md").exists());
+    assert!(!output_dir.join("start_system_black_monday.md").exists());
+    assert!(!output_dir.join("start_region_europe.md").exists());
+    assert!(output_dir.join("manifest.json").exists());
+}
+
+#[test]
+fn work_package_authoring_pack_writes_start_plan_assets_context() {
+    let root = unique_temp_dir("work-package-authoring-pack");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output_dir = root.join("authoring_country_rus");
+    let manifest_output = root.join("authoring_manifest.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS".to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_work_package_authoring_pack(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--output-dir".to_string(),
+        output_dir.to_string_lossy().to_string(),
+        "--output".to_string(),
+        manifest_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    assert!(output_dir.join("start.md").exists());
+    assert!(output_dir.join("plan.json").exists());
+    assert!(output_dir.join("assets.md").exists());
+    assert!(output_dir.join("context.md").exists());
+    assert!(output_dir.join("manifest.json").exists());
+
+    let manifest = read_utf8_lossy(&manifest_output).unwrap();
+    assert!(manifest.contains("\"schema\": \"hoi4skill.work_package_authoring_pack.v1\""));
+    assert!(manifest.contains("\"state\": \"blocked_by_dependencies\""));
+    assert!(manifest.contains("\"blocked_by\": [\"system_political_paths\""));
+    assert!(manifest.contains("\"kind\": \"authoring_context\""));
+    assert!(manifest.contains("check-work-package-boundary --mod-root"));
+    assert!(manifest.contains("Do not write outside the allowed edit surface"));
+
+    let context = read_utf8_lossy(&output_dir.join("context.md")).unwrap();
+    assert!(context.contains("`hoi4skill.work_package_authoring_context.v1`"));
+    assert!(context.contains("## Allowed Edit Surface"));
+    assert!(context.contains("common/national_focus"));
+    assert!(context.contains("## Identity Terms"));
+    assert!(context.contains("`RUS`"));
+    assert!(context.contains("work-package-handoff --mod-root"));
+}
+
+#[test]
+fn work_package_claim_records_assignee_and_blocks_dependency_violations() {
+    let root = unique_temp_dir("work-package-claim");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let claim_output = root.join("claim_country_rus.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "changed_system_black_monday.txt",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+        ),
+        (
+            "plan_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_system_black_monday.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_system_black_monday.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--assignee".to_string(),
+        "codex-a".to_string(),
+        "--output".to_string(),
+        claim_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let claim = read_utf8_lossy(&claim_output).unwrap();
+    assert!(claim.contains("\"schema\": \"hoi4skill.work_package_claim.v1\""));
+    assert!(claim.contains("\"assignee\": \"codex-a\""));
+    assert!(claim.contains("\"can_start\": true"));
+    assert!(claim.contains("\"state\": \"ready_to_start\""));
+    assert!(claim.contains("\"id\": \"country_rus\""));
+    assert!(claim.contains("\"depends_on\": [\"system_black_monday\"]"));
+    assert!(claim.contains("work-package-start-brief --mod-root"));
+    assert!(claim.contains("Do not overwrite another active claim"));
+
+    let duplicate = cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--assignee".to_string(),
+        "codex-b".to_string(),
+        "--output".to_string(),
+        claim_output.to_string_lossy().to_string(),
+    ]);
+    assert!(duplicate.is_err());
+    assert!(duplicate.unwrap_err().contains("claim already exists"));
+
+    let blocked = cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "region_europe".to_string(),
+        "--assignee".to_string(),
+        "codex-region".to_string(),
+        "--output".to_string(),
+        root.join("claim_region_europe.json")
+            .to_string_lossy()
+            .to_string(),
+    ]);
+    assert!(blocked.is_err());
+    assert!(blocked
+        .unwrap_err()
+        .contains("blocked by dependencies: country_rus"));
+}
+
+#[test]
+fn work_package_release_claim_archives_active_claim_and_reopens_package() {
+    let root = unique_temp_dir("work-package-release-claim");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let release_output = root.join("release_country_rus.json");
+    let claims_output = root.join("claims_after_release.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nsystems: black monday".to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "changed_system_black_monday.txt",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+        ),
+        (
+            "plan_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_system_black_monday.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_system_black_monday.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--assignee".to_string(),
+        "codex-a".to_string(),
+    ])
+    .unwrap();
+    let active_claim = mod_root
+        .join(".hoi4skill")
+        .join("claims")
+        .join("claim_country_rus.json");
+    assert!(active_claim.exists());
+
+    let missing_reason = cmd_work_package_release_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--released-by".to_string(),
+        "codex-a".to_string(),
+    ]);
+    assert!(missing_reason.is_err());
+    assert!(missing_reason.unwrap_err().contains("missing --reason"));
+
+    cmd_work_package_release_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--released-by".to_string(),
+        "codex-a".to_string(),
+        "--reason".to_string(),
+        "handoff reassigned".to_string(),
+        "--output".to_string(),
+        release_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    assert!(!active_claim.exists());
+    let release = read_utf8_lossy(&release_output).unwrap();
+    assert!(release.contains("\"schema\": \"hoi4skill.work_package_claim_release.v1\""));
+    assert!(release.contains("\"previous_assignee\": \"codex-a\""));
+    assert!(release.contains("\"previous_state\": \"ready_to_start\""));
+    assert!(release.contains("\"released_by\": \"codex-a\""));
+    assert!(release.contains("\"reason\": \"handoff reassigned\""));
+    assert!(release.contains("work-package-dispatch-board --mod-root"));
+    assert!(release.contains("Do not treat release as package completion"));
+
+    cmd_work_package_claims(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        claims_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let claims = read_utf8_lossy(&claims_output).unwrap();
+    assert!(claims.contains("\"claimed_count\": 0"));
+    assert!(claims.contains("\"unclaimed_count\": 3"));
+    assert!(claims.contains("\"id\": \"country_rus\""));
+    assert!(claims.contains("\"claim_status\": \"unclaimed\""));
+    assert!(claims.contains("\"current_state\": \"ready_to_start\""));
+}
+
+#[test]
+fn work_package_claims_summarizes_claimed_and_unclaimed_packages() {
+    let root = unique_temp_dir("work-package-claims");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let claims_output = root.join("claims.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "changed_system_black_monday.txt",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+        ),
+        (
+            "plan_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_system_black_monday.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_system_black_monday.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--assignee".to_string(),
+        "codex-a".to_string(),
+    ])
+    .unwrap();
+
+    cmd_work_package_claims(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        claims_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&claims_output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.work_package_claims.v1\""));
+    assert!(json.contains("\"package_count\": 3"));
+    assert!(json.contains("\"claimed_count\": 1"));
+    assert!(json.contains("\"unclaimed_count\": 2"));
+    assert!(json.contains("\"stale_or_blocked_count\": 0"));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"claim_status\": \"claimed\""));
+    assert!(json.contains("\"assignee\": \"codex-a\""));
+    assert!(json.contains("\"current_state\": \"ready_to_start\""));
+    assert!(json.contains("\"id\": \"region_europe\""));
+    assert!(json.contains("\"claim_status\": \"unclaimed\""));
+    assert!(json.contains("\"current_state\": \"blocked_by_dependencies\""));
+    assert!(json.contains("work-package-start-briefs --mod-root"));
+    assert!(json.contains("Do not dispatch unclaimed packages"));
+}
+
+#[test]
+fn work_package_dispatch_board_renders_claims_for_human_coordination() {
+    let root = unique_temp_dir("work-package-dispatch-board");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let board_output = root.join("dispatch_board.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "changed_system_black_monday.txt",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+        ),
+        (
+            "plan_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_system_black_monday.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_system_black_monday.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--assignee".to_string(),
+        "codex-a".to_string(),
+    ])
+    .unwrap();
+
+    cmd_work_package_dispatch_board(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        board_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let markdown = read_utf8_lossy(&board_output).unwrap();
+    assert!(markdown.contains("# Work Package Dispatch Board: Test Grand Campaign"));
+    assert!(markdown.contains("`hoi4skill.work_package_dispatch_board.v1`"));
+    assert!(markdown.contains(
+        "- packages: `1` claimed, `3` unclaimed, `0` blocked/stale, `1` ready-unclaimed"
+    ));
+    assert!(
+        markdown.contains("| `country_rus` | `country` | codex-a | `claimed` | `ready_to_start` |")
+    );
+    assert!(markdown
+        .contains("| `country_ger` | `country` | unassigned | `unclaimed` | `ready_to_start` |"));
+    assert!(markdown.contains("| `region_europe` | `region` | unassigned | `unclaimed` | `blocked_by_dependencies` | country_rus, country_ger |"));
+    assert!(markdown.contains("## Ready To Claim"));
+    assert!(markdown.contains("work-package-claim --mod-root"));
+    assert!(markdown.contains("work-package-dispatch-board --mod-root"));
+    assert!(markdown
+        .contains("Do not assign a package whose current state is `blocked_by_dependencies`"));
+}
+
+#[test]
+fn large_mod_dispatch_gate_blocks_unclaimed_blocked_and_stale_claims() {
+    let root = unique_temp_dir("large-mod-dispatch-gate");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("dispatch_gate.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "system_black_monday".to_string(),
+        "--assignee".to_string(),
+        "codex-system".to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "changed_system_black_monday.txt",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+        ),
+        (
+            "plan_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_system_black_monday.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_system_black_monday.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--assignee".to_string(),
+        "codex-a".to_string(),
+    ])
+    .unwrap();
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "region_europe".to_string(),
+        "--assignee".to_string(),
+        "codex-region".to_string(),
+        "--allow-blocked".to_string(),
+    ])
+    .unwrap();
+
+    cmd_large_mod_dispatch_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_dispatch_gate.v1\""));
+    assert!(json.contains("\"dispatchable\": false"));
+    assert!(json.contains("\"package_count\": 4"));
+    assert!(json.contains("\"claim_count\": 3"));
+    assert!(json.contains("\"ready_unclaimed_count\": 1"));
+    assert!(json.contains("\"blocked_claim_count\": 1"));
+    assert!(json.contains("\"stale_claim_count\": 1"));
+    assert!(json.contains("\"blocking_count\": 3"));
+    assert!(json.contains("\"id\": \"country_ger\""));
+    assert!(json.contains("\"dispatch_status\": \"ready_unclaimed\""));
+    assert!(json.contains("\"ready_package_unclaimed\""));
+    assert!(json.contains("\"id\": \"region_europe\""));
+    assert!(json.contains("\"dispatch_status\": \"blocked_claim\""));
+    assert!(json.contains("\"claimed_package_is_not_ready\""));
+    assert!(json.contains("\"id\": \"system_black_monday\""));
+    assert!(json.contains("\"dispatch_status\": \"stale_claim\""));
+    assert!(json.contains("\"claim_exists_after_handoff\""));
+    assert!(json.contains("work-package-dispatch-board --mod-root"));
+    assert!(json.contains("work-package-release-claim --mod-root"));
+    assert!(json.contains("Do not dispatch ready packages"));
+}
+
+#[test]
+fn large_mod_evidence_pack_lists_release_and_package_artifacts() {
+    let root = unique_temp_dir("large-mod-evidence-pack");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("evidence_pack.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS".to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "mod_index.json",
+            "{\n  \"schema\": \"hoi4skill.mod_index.v1\"\n}\n",
+        ),
+        (
+            "ownership_map.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_ownership_map.v1\"\n}\n",
+        ),
+        (
+            "loc_audit.json",
+            "{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"missing_count\": 0\n}\n",
+        ),
+        (
+            "gfx_audit.json",
+            "{\n  \"schema\": \"hoi4skill.gfx_audit.v1\",\n  \"missing_sprites_count\": 0\n}\n",
+        ),
+        (
+            "logic_audit.json",
+            "{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"issue_count\": 0\n}\n",
+        ),
+        (
+            "validation.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        (
+            "regression_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_regression_gate.v1\",\n  \"regression_passed\": true,\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "work_package_status.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "readiness.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_readiness.v1\",\n  \"blocked_count\": 0,\n  \"missing_package_count\": 0\n}\n",
+        ),
+        (
+            "changed_country_rus.txt",
+            "events/rus_events.txt\ncommon/national_focus/RUS.txt\n",
+        ),
+        (
+            "plan_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_country_rus.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_country_rus.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_large_mod_evidence_pack(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_evidence_pack.v1\""));
+    assert!(json.contains("\"complete\": false"));
+    assert!(json.contains("\"missing_count\": 28"));
+    assert!(json.contains("\"needs_review_count\": 0"));
+    assert!(json.contains("\"kind\": \"required_report\""));
+    assert!(json.contains("\"path\": "));
+    assert!(json.contains("ownership_map.json"));
+    assert!(json.contains("\"kind\": \"package_changed\""));
+    assert!(json.contains("\"kind\": \"package_handoff\""));
+    assert!(json.contains("\"package\": \"country_rus\""));
+    assert!(json.contains("\"package\": \"region_core_region\""));
+    assert!(json.contains("\"status\": \"missing\""));
+    assert!(json.contains("large-mod-evidence-pack --mod-root"));
+    assert!(json.contains("large-mod-review-brief --mod-root"));
+}
+
+#[test]
+fn large_mod_review_brief_summarizes_blockers_for_human_review() {
+    let root = unique_temp_dir("large-mod-review-brief");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("review_brief.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "mod_index.json",
+            "{\n  \"schema\": \"hoi4skill.mod_index.v1\"\n}\n",
+        ),
+        (
+            "ownership_map.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_ownership_map.v1\"\n}\n",
+        ),
+        (
+            "loc_audit.json",
+            "{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"missing_count\": 0\n}\n",
+        ),
+        (
+            "gfx_audit.json",
+            "{\n  \"schema\": \"hoi4skill.gfx_audit.v1\",\n  \"missing_sprites_count\": 0\n}\n",
+        ),
+        (
+            "logic_audit.json",
+            "{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"issue_count\": 0\n}\n",
+        ),
+        (
+            "validation.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        (
+            "regression_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_regression_gate.v1\",\n  \"regression_passed\": true,\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "work_package_status.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "readiness.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_readiness.v1\",\n  \"blocked_count\": 0,\n  \"missing_package_count\": 0\n}\n",
+        ),
+        ("changed_country_rus.txt", "events/rus_events.txt\n"),
+        (
+            "plan_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_country_rus.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_country_rus.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_large_mod_review_brief(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let markdown = read_utf8_lossy(&output).unwrap();
+    assert!(markdown.contains("# Large Mod Review Brief: Test Grand Campaign"));
+    assert!(markdown.contains("`hoi4skill.large_mod_review_brief.v1`"));
+    assert!(markdown.contains("- decision: `blocked`"));
+    assert!(markdown.contains("- reports: `0` missing required, `0` needs review"));
+    assert!(markdown.contains("Package `region_europe` blocked"));
+    assert!(markdown.contains("| `mod_index.json` | `ok` |"));
+    assert!(markdown.contains("| `country_rus` | RUS Country Content | `ready` |"));
+    assert!(markdown.contains("| `region_europe` | europe Regional Integration | `blocked` |"));
+    assert!(markdown.contains("large-mod-evidence-pack --mod-root"));
+    assert!(markdown.contains("Do not approve while the decision is `blocked`"));
+}
+
+#[test]
+fn large_mod_release_bundle_and_brief_collect_candidate_artifacts() {
+    let root = unique_temp_dir("large-mod-release-bundle");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("release_bundle.json");
+    let brief_output = root.join("release_brief.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS".to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let packages = [
+        "country_rus",
+        "region_core_region",
+        "system_political_paths",
+        "system_economic_system",
+        "system_regional_crisis",
+    ];
+
+    fs::create_dir_all(mod_root.join(".hoi4skill").join("merge_gates")).unwrap();
+    for (name, text) in [
+        (
+            "mod_index.json",
+            "{\n  \"schema\": \"hoi4skill.mod_index.v1\"\n}\n",
+        ),
+        (
+            "ownership_map.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_ownership_map.v1\"\n}\n",
+        ),
+        (
+            "loc_audit.json",
+            "{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"missing_count\": 0\n}\n",
+        ),
+        (
+            "gfx_audit.json",
+            "{\n  \"schema\": \"hoi4skill.gfx_audit.v1\",\n  \"missing_sprites_count\": 0\n}\n",
+        ),
+        (
+            "logic_audit.json",
+            "{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"issue_count\": 0\n}\n",
+        ),
+        (
+            "validation.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        (
+            "regression_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_regression_gate.v1\",\n  \"regression_passed\": true,\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "work_package_status.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "readiness.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_readiness.v1\",\n  \"blocked_count\": 0,\n  \"missing_package_count\": 0\n}\n",
+        ),
+        (
+            "ci_plan.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_ci_plan.v1\"\n}\n",
+        ),
+        (
+            "dispatch_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_dispatch_gate.v1\",\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "merge_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_merge_gate.v1\",\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "review_queue.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_review_queue.v1\",\n  \"blocked_count\": 0\n}\n",
+        ),
+        (
+            "risk_register.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_risk_register.v1\"\n}\n",
+        ),
+        (
+            "evidence_pack.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_evidence_pack.v1\",\n  \"missing_count\": 0,\n  \"needs_review_count\": 0\n}\n",
+        ),
+        (
+            "release_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_release_gate.v1\",\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "regression_plan.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_regression_plan.v1\",\n  \"affected_packages\": [],\n  \"unassigned_count\": 0\n}\n",
+        ),
+        (
+            "regression_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_regression_gate.v1\",\n  \"regression_passed\": true,\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "next_actions.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_next_actions.v1\"\n}\n",
+        ),
+        (
+            "production_snapshot.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_production_snapshot.v1\",\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "playtest_plan.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_playtest_plan.v1\"\n}\n",
+        ),
+        (
+            "playtest_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_playtest_gate.v1\",\n  \"playtest_complete\": true,\n  \"missing_report_count\": 0,\n  \"needs_review_count\": 0\n}\n",
+        ),
+        ("review_brief.md", "# Large Mod Review Brief\n"),
+        ("production_brief.md", "# Large Mod Production Brief\n"),
+        ("playtest_brief.md", "# Large Mod Playtest Brief\n"),
+        ("regression_brief.md", "# Large Mod Regression Brief\n"),
+        ("release_notes.md", "# Release Notes Draft\n"),
+        ("dashboard.md", "# Large Mod Dashboard\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+    fs::write(
+        mod_root.join(".hoi4skill/merge_gates/manifest.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_merge_gates.v1\",\n  \"blocked_count\": 0\n}\n",
+    )
+    .unwrap();
+
+    for package in packages {
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("changed_{package}.txt")),
+            "events/rus_events.txt\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("plan_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("assets_{package}.md")),
+            "# Asset Pack Plan\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("boundary_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("status_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("validation_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("handoff_{package}.md")),
+            "# Work Package Handoff\n",
+        )
+        .unwrap();
+    }
+
+    cmd_large_mod_release_bundle(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_release_bundle.v1\""));
+    assert!(json.contains("\"release_candidate\": true"));
+    assert!(json.contains(&format!("\"package_count\": {}", packages.len())));
+    assert!(json.contains("\"missing_required_count\": 0"));
+    assert!(json.contains("\"needs_review_count\": 0"));
+    assert!(json.contains("\"kind\": \"release_report\""));
+    assert!(json.contains("\"kind\": \"package_merge_gates\""));
+    assert!(json.contains("\"kind\": \"playtest_gate\""));
+    assert!(json.contains("\"kind\": \"regression_gate\""));
+    assert!(json.contains("\"kind\": \"regression_brief\""));
+    assert!(json.contains("\"kind\": \"production_snapshot\""));
+    assert!(json.contains("\"kind\": \"production_brief\""));
+    assert!(json.contains("\"kind\": \"release_notes\""));
+    assert!(json.contains("\"kind\": \"package_handoff\""));
+    assert!(json.contains("\"package\": \"country_rus\""));
+    assert!(json.contains("\"package\": \"region_core_region\""));
+    assert!(json.contains("large-mod-release-bundle --mod-root"));
+    assert!(json.contains("large-mod-release-brief --mod-root"));
+    assert!(json.contains("Regenerate the release bundle after changing any package artifact"));
+
+    cmd_large_mod_release_brief(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        brief_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let markdown = read_utf8_lossy(&brief_output).unwrap();
+    assert!(markdown.contains("# Large Mod Release Brief: Test Grand Campaign"));
+    assert!(markdown.contains("`hoi4skill.large_mod_release_brief.v1`"));
+    assert!(markdown.contains("- decision: `release_candidate`"));
+    assert!(markdown.contains("| `package_handoff` |"));
+    assert!(markdown.contains("| `playtest_gate` |"));
+    assert!(markdown.contains("| `regression_gate` |"));
+    assert!(markdown.contains("| `production_snapshot` |"));
+    assert!(markdown.contains("| `release_report` |"));
+    assert!(markdown.contains("| `package_handoff` | `country_rus` | `present` |"));
+    assert!(markdown.contains("large-mod-release-bundle --mod-root"));
+    assert!(markdown.contains("Do not publish while the decision is `blocked`"));
+}
+
+#[test]
+fn large_mod_playtest_plan_prioritizes_ready_handoff_packages() {
+    let root = unique_temp_dir("large-mod-playtest-plan");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("playtest_plan.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        ("changed_country_rus.txt", "events/rus_events.txt\n"),
+        (
+            "plan_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_country_rus.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_country_rus.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_large_mod_playtest_plan(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_playtest_plan.v1\""));
+    assert!(json.contains("\"package_count\": 3"));
+    assert!(json.contains("\"ready_for_playtest_count\": 1"));
+    assert!(json.contains("\"blocked_count\": 2"));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"status\": \"ready_for_playtest\""));
+    assert!(json.contains("\"country_selection_smoke\""));
+    assert!(json.contains("\"id\": \"region_europe\""));
+    assert!(json.contains("\"regional_integration_smoke\""));
+    assert!(json.contains("\"id\": \"system_black_monday\""));
+    assert!(json.contains("\"system_regression_smoke\""));
+    assert!(json.contains("analyze-error-log --input <error.log>"));
+    assert!(json.contains("large-mod-release-brief --mod-root"));
+    assert!(json.contains("Do not schedule blocked packages for playtest"));
+}
+
+#[test]
+fn large_mod_playtest_gate_blocks_missing_and_failing_reports() {
+    let root = unique_temp_dir("large-mod-playtest-gate");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("playtest_gate.json");
+    let brief_output = root.join("playtest_brief.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for package in ["country_rus", "region_europe", "system_black_monday"] {
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("changed_{package}.txt")),
+            "events/test_events.txt\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("plan_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("assets_{package}.md")),
+            "# Asset Pack Plan\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("boundary_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("status_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("validation_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("handoff_{package}.md")),
+            "# Work Package Handoff\n",
+        )
+        .unwrap();
+    }
+    fs::write(
+        mod_root.join(".hoi4skill/playtest_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.playtest_report.v1\",\n  \"ok\": true\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/playtest_system_black_monday.json"),
+        "{\n  \"schema\": \"hoi4skill.playtest_report.v1\",\n  \"ok\": false,\n  \"error_count\": 1\n}\n",
+    )
+    .unwrap();
+
+    cmd_large_mod_playtest_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_playtest_gate.v1\""));
+    assert!(json.contains("\"playtest_complete\": false"));
+    assert!(json.contains("\"passed_count\": 1"));
+    assert!(json.contains("\"missing_report_count\": 1"));
+    assert!(json.contains("\"needs_review_count\": 1"));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"gate_status\": \"passed\""));
+    assert!(json.contains("\"id\": \"region_europe\""));
+    assert!(json.contains("\"missing_playtest_report\""));
+    assert!(json.contains("\"id\": \"system_black_monday\""));
+    assert!(json.contains("\"playtest_needs_review\""));
+    assert!(json.contains("large-mod-playtest-plan --mod-root"));
+    assert!(json.contains("Do not accept missing playtest reports"));
+
+    cmd_large_mod_playtest_brief(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        brief_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let markdown = read_utf8_lossy(&brief_output).unwrap();
+    assert!(markdown.contains("# Large Mod Playtest Brief: Test Grand Campaign"));
+    assert!(markdown.contains("`hoi4skill.large_mod_playtest_brief.v1`"));
+    assert!(markdown.contains("- decision: `blocked`"));
+    assert!(markdown.contains("region_europe: missing_playtest_report"));
+    assert!(markdown.contains("system_black_monday: playtest_needs_review"));
+    assert!(markdown.contains("| `country_rus` | `country` | `passed` |"));
+    assert!(markdown.contains("large-mod-playtest-gate --mod-root"));
+    assert!(markdown.contains("Do not approve playtest while the decision is `blocked`"));
+}
+
+#[test]
+fn work_package_playtest_report_writes_gate_compatible_json() {
+    let root = unique_temp_dir("work-package-playtest-report");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let gate_output = root.join("playtest_gate.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for package in ["country_rus", "region_europe", "system_black_monday"] {
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("changed_{package}.txt")),
+            "events/test_events.txt\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("plan_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("assets_{package}.md")),
+            "# Asset Pack Plan\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("boundary_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("status_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("validation_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("handoff_{package}.md")),
+            "# Work Package Handoff\n",
+        )
+        .unwrap();
+        cmd_work_package_playtest_report(&[
+            "--mod-root".to_string(),
+            mod_root.to_string_lossy().to_string(),
+            "--package".to_string(),
+            package.to_string(),
+            "--result".to_string(),
+            "passed".to_string(),
+            "--summary".to_string(),
+            format!("{package} smoke test passed"),
+            "--tester".to_string(),
+            "qa-a".to_string(),
+            "--evidence".to_string(),
+            format!("saves/{package}.hoi4"),
+        ])
+        .unwrap();
+    }
+
+    let report = read_utf8_lossy(&mod_root.join(".hoi4skill/playtest_country_rus.json")).unwrap();
+    assert!(report.contains("\"schema\": \"hoi4skill.playtest_report.v1\""));
+    assert!(report.contains("\"ok\": true"));
+    assert!(report.contains("\"status\": \"ok\""));
+    assert!(report.contains("\"finding_count\": 0"));
+    assert!(report.contains("\"tester\": \"qa-a\""));
+    assert!(report.contains("country_rus smoke test passed"));
+
+    let contradictory = cmd_work_package_playtest_report(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--result".to_string(),
+        "passed".to_string(),
+        "--finding".to_string(),
+        "unresolved issue".to_string(),
+    ]);
+    assert!(contradictory.is_err());
+    assert!(contradictory
+        .unwrap_err()
+        .contains("--finding requires --result needs_review"));
+
+    cmd_large_mod_playtest_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        gate_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let gate = read_utf8_lossy(&gate_output).unwrap();
+    assert!(gate.contains("\"playtest_complete\": true"));
+    assert!(gate.contains("\"passed_count\": 3"));
+    assert!(gate.contains("\"missing_report_count\": 0"));
+    assert!(gate.contains("\"needs_review_count\": 0"));
+}
+
+#[test]
+fn large_mod_release_notes_draft_uses_package_evidence_only() {
+    let root = unique_temp_dir("large-mod-release-notes");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("release_notes.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        ("changed_country_rus.txt", "events/rus_events.txt\n"),
+        (
+            "plan_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_country_rus.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_country_rus.md", "# Work Package Handoff\n"),
+        (
+            "playtest_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.playtest_report.v1\",\n  \"ok\": true,\n  \"summary\": [\"country smoke passed\"]\n}\n",
+        ),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_large_mod_release_notes(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let markdown = read_utf8_lossy(&output).unwrap();
+    assert!(markdown.contains("# Release Notes Draft: Test Grand Campaign"));
+    assert!(markdown.contains("`hoi4skill.large_mod_release_notes.v1`"));
+    assert!(markdown.contains("- status: `draft_requires_human_review`"));
+    assert!(markdown.contains("This draft is generated from package metadata"));
+    assert!(markdown.contains("## Country Packages"));
+    assert!(markdown.contains("`country_rus`: RUS Country Content"));
+    assert!(markdown.contains("playtest: `ok`"));
+    assert!(markdown.contains("schema=hoi4skill.playtest_report.v1"));
+    assert!(markdown.contains("Do not describe unimplemented gameplay"));
+    assert!(markdown.contains("large-mod-release-notes --mod-root"));
+}
+
+#[test]
+fn generate_work_package_dry_run_outputs_safe_execution_plan() {
+    let root = unique_temp_dir("generate-work-package");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("package_plan.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, German Empire\nregions: europe\nsystems: black monday".to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let blocked = cmd_generate_work_package(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+    ]);
+    assert!(blocked.is_err());
+    assert!(blocked
+        .unwrap_err()
+        .contains("generate-work-package is dry-run only"));
+
+    cmd_generate_work_package(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--dry-run".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.generate_work_package_plan.v1\""));
+    assert!(json.contains("\"dry_run\": true"));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"tag\": \"RUS\""));
+    assert!(json.contains("\"namespace\": \"tgc_rus\""));
+    assert!(json.contains("hoi4skill build-mod-index"));
+    assert!(json.contains("hoi4skill feature-context"));
+    assert!(json.contains("hoi4skill reserve-id"));
+    assert!(json.contains("hoi4skill loc-audit"));
+    assert!(json.contains("hoi4skill gfx-audit"));
+    assert!(json.contains("\"code_authoring_contract\""));
+    assert!(json.contains("\"schema\": \"hoi4skill.code_authoring_contract.v1\""));
+    assert!(json.contains("\"final_code_allowed\": false"));
+    assert!(json.contains("hoi4skill code-catalog"));
+    assert!(json.contains("hoi4skill compile-intent"));
+    assert!(json.contains("raw Clausewitz blocks not produced by Rust writers"));
+    assert!(json.contains("code index category"));
+    assert!(json.contains("hoi4skill apply-focus-layout"));
+    assert!(json.contains("hoi4skill apply-feature-cards"));
+    assert!(json.contains("hoi4skill apply-event-cards"));
+    assert!(json.contains("country tags, country history, state history"));
+    assert!(json.contains("strict-code-index"));
+}
+
+#[test]
+fn asset_pack_plan_outputs_work_package_asset_requirements() {
+    let root = unique_temp_dir("asset-pack-plan");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("assets.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_asset_pack_plan(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let markdown = read_utf8_lossy(&output).unwrap();
+    assert!(markdown.contains("# Asset Pack Plan: RUS Country Content"));
+    assert!(markdown.contains("`hoi4skill.asset_pack_plan.v1`"));
+    assert!(markdown.contains("- tag_hint: `RUS`"));
+    assert!(markdown.contains("- prefix_hint: `tgc_rus`"));
+    assert!(markdown.contains("`focus_icons`: 40 asset(s)"));
+    assert!(markdown.contains("`event_pictures`: 12 asset(s)"));
+    assert!(markdown.contains("GFX_goal_tgc_rus_<english_slug>"));
+    assert!(markdown.contains("gfx/event_pictures/tgc_rus_<english_slug>.dds"));
+    assert!(markdown.contains("register-gfx-icons"));
+    assert!(markdown.contains("gfx-audit"));
+    assert!(markdown.contains("Do not create portraits, characters, GUI, technologies"));
+}
+
+#[test]
+fn work_package_status_aggregates_packages_and_audit_reports() {
+    let root = unique_temp_dir("work-package-status");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("status.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_split_work_packages(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root
+            .join(".hoi4skill/work_packages")
+            .to_string_lossy()
+            .to_string(),
+    ])
+    .unwrap();
+
+    fs::write(
+        mod_root.join(".hoi4skill/loc_audit.json"),
+        "{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"missing_count\": 2\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/logic_audit.json"),
+        "{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"issue_count\": 1\n}\n",
+    )
+    .unwrap();
+
+    cmd_work_package_status(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.work_package_status.v1\""));
+    assert!(json.contains("\"status\": \"needs_review\""));
+    assert!(json.contains("\"package_count\": 4"));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"id\": \"system_black_monday\""));
+    assert!(json.contains("\"schema=hoi4skill.loc_audit.v1\""));
+    assert!(json.contains("\"missing_count=2\""));
+    assert!(json.contains("\"schema=hoi4skill.logic_audit.v1\""));
+    assert!(json.contains("\"issue_count=1\""));
+    assert!(json.contains("generate-work-package --mod-root"));
+    assert!(json.contains("asset-pack-plan --mod-root"));
+    assert!(json.contains("work-package-handoff --mod-root"));
+    assert!(json.contains("logic-audit"));
+
+    let filtered = root.join("status_filtered.json");
+    cmd_work_package_status(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--output".to_string(),
+        filtered.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let filtered_json = read_utf8_lossy(&filtered).unwrap();
+    assert!(filtered_json.contains("\"package_count\": 1"));
+    assert!(filtered_json.contains("\"id\": \"country_rus\""));
+    assert!(!filtered_json.contains("\"id\": \"country_ger\""));
+}
+
+#[test]
+fn check_work_package_boundary_reports_out_of_scope_changed_files() {
+    let root = unique_temp_dir("work-package-boundary");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("boundary.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let changed_file = root.join("changed.txt");
+    fs::write(
+        &changed_file,
+        "events/rus_events.txt\n# ignored comment\nhistory/states/64-Test.txt\n",
+    )
+    .unwrap();
+
+    cmd_check_work_package_boundary(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--changed".to_string(),
+        "common/national_focus/RUS.txt".to_string(),
+        "--changed".to_string(),
+        "events/ger_events.txt".to_string(),
+        "--changed".to_string(),
+        mod_root
+            .join(".hoi4skill/plan_country_rus.json")
+            .to_string_lossy()
+            .to_string(),
+        "--changed-file".to_string(),
+        changed_file.to_string_lossy().to_string(),
+        "--strict-names".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.work_package_boundary.v1\""));
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("\"strict_names\": true"));
+    assert!(json.contains("\"changed_count\": 5"));
+    assert!(json.contains("\"allowed_count\": 3"));
+    assert!(json.contains("\"violation_count\": 2"));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"identity_terms\": [\"RUS\", \"country_rus\", \"rus\", \"tgc_rus\"]"));
+    assert!(json.contains("\"path\": \"common/national_focus/RUS.txt\""));
+    assert!(json.contains("\"allowed_by\": \"common/national_focus\""));
+    assert!(json.contains("\"normalized\": \".hoi4skill/plan_country_rus.json\""));
+    assert!(json.contains("\"allowed_by\": \".hoi4skill/plan_country_rus.json\""));
+    assert!(json.contains("\"path\": \"events/ger_events.txt\""));
+    assert!(json.contains("\"allowed_by\": \"events\""));
+    assert!(json.contains("\"reason\": \"strict_name_mismatch\""));
+    assert!(json.contains("\"path\": \"history/states/64-Test.txt\""));
+    assert!(json.contains("\"allowed_by\": null"));
+    assert!(json.contains("\"reason\": \"prefix_not_allowed\""));
+    assert!(json.contains("Do not continue package generation"));
+}
+
+#[test]
+fn large_mod_ci_plan_outputs_global_package_and_final_gates() {
+    let root = unique_temp_dir("large-mod-ci-plan");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("ci_plan.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_large_mod_ci_plan(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--game-root".to_string(),
+        "C:/Games/Hearts of Iron IV".to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--strict-names".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_ci_plan.v1\""));
+    assert!(json.contains("\"strict_names\": true"));
+    assert!(json.contains("\"package_count\": 1"));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(!json.contains("\"id\": \"country_ger\""));
+    assert!(json.contains("build-mod-index"));
+    assert!(json.contains("large-mod-ownership-map"));
+    assert!(json.contains("large-mod-dependency-graph"));
+    assert!(json.contains(".hoi4skill/dependency_graph.json"));
+    assert!(json.contains("large-mod-milestone-plan"));
+    assert!(json.contains(".hoi4skill/milestone_plan.json"));
+    assert!(json.contains("large-mod-execution-queue"));
+    assert!(json.contains(".hoi4skill/execution_queue.json"));
+    assert!(json.contains("loc-audit"));
+    assert!(json.contains("gfx-audit"));
+    assert!(json.contains("logic-audit"));
+    assert!(json.contains("analyze-error-log"));
+    assert!(json.contains("check-work-package-boundary"));
+    assert!(json.contains("work-package-start-brief"));
+    assert!(json.contains(".hoi4skill/start_country_rus.md"));
+    assert!(json.contains("--strict-names"));
+    assert!(json.contains(".hoi4skill/changed_country_rus.txt"));
+    assert!(json.contains("generate-work-package"));
+    assert!(json.contains("asset-pack-plan"));
+    assert!(json.contains("validate"));
+    assert!(json.contains("work-package-readiness"));
+    assert!(json.contains(".hoi4skill/readiness.json"));
+    assert!(json.contains("work-package-handoff"));
+    assert!(json.contains(".hoi4skill/handoff_country_rus.md"));
+    assert!(json.contains("large-mod-dashboard"));
+    assert!(json.contains(".hoi4skill/dashboard.md"));
+    assert!(json.contains("large-mod-next-actions"));
+    assert!(json.contains(".hoi4skill/next_actions.json"));
+    assert!(json.contains(".hoi4skill/ownership_map.json"));
+    assert!(json.contains("large-mod-evidence-pack"));
+    assert!(json.contains(".hoi4skill/evidence_pack.json"));
+    assert!(json.contains("large-mod-review-brief"));
+    assert!(json.contains(".hoi4skill/review_brief.md"));
+    assert!(json.contains("--game-root C:/Games/Hearts of Iron IV"));
+    assert!(json.contains("strict-code-index"));
+    assert!(json.contains("Do not merge a package with boundary violations"));
+}
+
+#[test]
+fn large_mod_release_gate_blocks_missing_or_failing_reports() {
+    let root = unique_temp_dir("large-mod-release-gate");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("release_gate.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    fs::write(
+        mod_root.join(".hoi4skill/mod_index.json"),
+        "{\n  \"schema\": \"hoi4skill.mod_index.v1\"\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/ownership_map.json"),
+        "{\n  \"schema\": \"hoi4skill.large_mod_ownership_map.v1\"\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/loc_audit.json"),
+        "{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"missing_count\": 0\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/gfx_audit.json"),
+        "{\n  \"schema\": \"hoi4skill.gfx_audit.v1\",\n  \"missing_sprites_count\": 0\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/logic_audit.json"),
+        "{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"issue_count\": 0\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/validation.json"),
+        "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/work_package_status.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/readiness.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_readiness.v1\",\n  \"blocked_count\": 0,\n  \"missing_package_count\": 0\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/regression_gate.json"),
+        "{\n  \"schema\": \"hoi4skill.large_mod_regression_gate.v1\",\n  \"regression_passed\": true,\n  \"blocking_count\": 0\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/boundary_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": false,\n  \"violation_count\": 1\n}\n",
+    )
+    .unwrap();
+
+    cmd_large_mod_release_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_release_gate.v1\""));
+    assert!(json.contains("\"releasable\": false"));
+    assert!(json.contains("\"package_count\": 3"));
+    assert!(json.contains("\"missing_required_reports\": []"));
+    assert!(json.contains("\"blocking_count\": 1"));
+    assert!(json.contains("boundary_country_rus.json"));
+    assert!(json.contains("work-package-readiness"));
+    assert!(json.contains("large-mod-dashboard"));
+    assert!(json.contains("large-mod-next-actions"));
+    assert!(json.contains("ownership_map.json"));
+    assert!(json.contains("large-mod-evidence-pack"));
+    assert!(json.contains("large-mod-review-brief"));
+    assert!(json.contains("\"ok=false\""));
+    assert!(json.contains("\"violation_count=1\""));
+    assert!(json.contains("Do not release while any report has needs_review status"));
+}
+
+#[test]
+fn large_mod_release_gate_requires_clean_regression_gate() {
+    let root = unique_temp_dir("large-mod-release-regression-gate");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let missing_output = root.join("release_gate_missing_regression.json");
+    let failing_output = root.join("release_gate_failing_regression.json");
+    let passed_output = root.join("release_gate_passed_regression.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "mod_index.json",
+            "{\n  \"schema\": \"hoi4skill.mod_index.v1\"\n}\n",
+        ),
+        (
+            "ownership_map.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_ownership_map.v1\"\n}\n",
+        ),
+        (
+            "loc_audit.json",
+            "{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"missing_count\": 0\n}\n",
+        ),
+        (
+            "gfx_audit.json",
+            "{\n  \"schema\": \"hoi4skill.gfx_audit.v1\",\n  \"missing_sprites_count\": 0\n}\n",
+        ),
+        (
+            "logic_audit.json",
+            "{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"issue_count\": 0\n}\n",
+        ),
+        (
+            "validation.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        (
+            "work_package_status.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "readiness.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_readiness.v1\",\n  \"blocked_count\": 0,\n  \"missing_package_count\": 0\n}\n",
+        ),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_large_mod_release_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        missing_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let missing = read_utf8_lossy(&missing_output).unwrap();
+    assert!(missing.contains("\"releasable\": false"));
+    assert!(missing.contains("\"regression_gate.json\""));
+
+    fs::write(
+        mod_root.join(".hoi4skill/regression_gate.json"),
+        "{\n  \"schema\": \"hoi4skill.large_mod_regression_gate.v1\",\n  \"regression_passed\": false,\n  \"blocking_count\": 1\n}\n",
+    )
+    .unwrap();
+
+    cmd_large_mod_release_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        failing_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let failing = read_utf8_lossy(&failing_output).unwrap();
+    assert!(failing.contains("\"releasable\": false"));
+    assert!(failing.contains("regression_gate.json"));
+    assert!(failing.contains("\"blocking_count=1\""));
+
+    fs::write(
+        mod_root.join(".hoi4skill/regression_gate.json"),
+        "{\n  \"schema\": \"hoi4skill.large_mod_regression_gate.v1\",\n  \"regression_passed\": true,\n  \"blocking_count\": 0\n}\n",
+    )
+    .unwrap();
+
+    cmd_large_mod_release_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        passed_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let passed = read_utf8_lossy(&passed_output).unwrap();
+    assert!(passed.contains("\"releasable\": true"));
+    assert!(passed.contains("\"missing_required_reports\": []"));
+    assert!(passed.contains("\"blocking_count\": 0"));
+}
+
+#[test]
+fn identify_work_packages_maps_changed_files_to_strict_package_matches() {
+    let root = unique_temp_dir("identify-work-packages");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("changed_work_packages.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let changed_file = root.join("changed.txt");
+    fs::write(
+        &changed_file,
+        "events/rus_events.txt\ncommon/scripted_effects/black_monday_effects.txt\nhistory/states/64-Test.txt\n",
+    )
+    .unwrap();
+
+    cmd_identify_work_packages(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--changed".to_string(),
+        "events/ger_events.txt".to_string(),
+        "--changed-file".to_string(),
+        changed_file.to_string_lossy().to_string(),
+        "--strict-names".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.changed_work_packages.v1\""));
+    assert!(json.contains("\"strict_names\": true"));
+    assert!(json.contains("\"changed_count\": 4"));
+    assert!(json.contains("\"assigned_count\": 3"));
+    assert!(json.contains("\"unassigned_count\": 1"));
+    assert!(json.contains("\"ambiguous_count\": 0"));
+    assert!(json.contains(
+        "\"affected_packages\": [\"country_ger\", \"country_rus\", \"system_black_monday\"]"
+    ));
+    assert!(json.contains("\"path\": \"events/rus_events.txt\""));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"path\": \"events/ger_events.txt\""));
+    assert!(json.contains("\"id\": \"country_ger\""));
+    assert!(json.contains("\"path\": \"common/scripted_effects/black_monday_effects.txt\""));
+    assert!(json.contains("\"id\": \"system_black_monday\""));
+    assert!(json.contains("\"path\": \"history/states/64-Test.txt\""));
+    assert!(json.contains("\"status\": \"unassigned\""));
+    assert!(json.contains("check-work-package-boundary"));
+}
+
+#[test]
+fn split_changed_work_packages_writes_per_package_changed_files() {
+    let root = unique_temp_dir("split-changed-work-packages");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("split_changed.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    fs::write(
+        mod_root.join(".hoi4skill/changed_region_europe.txt"),
+        "events/stale.txt\n",
+    )
+    .unwrap();
+
+    let changed_file = root.join("changed.txt");
+    fs::write(
+        &changed_file,
+        "events/rus_events.txt\ncommon/scripted_effects/black_monday_effects.txt\nhistory/states/64-Test.txt\n",
+    )
+    .unwrap();
+
+    cmd_split_changed_work_packages(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--changed".to_string(),
+        "events/ger_events.txt".to_string(),
+        "--changed-file".to_string(),
+        changed_file.to_string_lossy().to_string(),
+        "--strict-names".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.split_changed_work_packages.v1\""));
+    assert!(json.contains("\"affected_package_count\": 3"));
+    assert!(json.contains("\"unassigned_count\": 1"));
+    assert!(json.contains("\"ambiguous_count\": 0"));
+    assert!(json.contains("changed_country_rus.txt"));
+    assert!(json.contains("changed_country_ger.txt"));
+    assert!(json.contains("changed_system_black_monday.txt"));
+    assert!(json.contains("check-work-package-boundary"));
+
+    let rus_changed =
+        read_utf8_lossy(&mod_root.join(".hoi4skill/changed_country_rus.txt")).unwrap();
+    let ger_changed =
+        read_utf8_lossy(&mod_root.join(".hoi4skill/changed_country_ger.txt")).unwrap();
+    let system_changed =
+        read_utf8_lossy(&mod_root.join(".hoi4skill/changed_system_black_monday.txt")).unwrap();
+    let region_changed =
+        read_utf8_lossy(&mod_root.join(".hoi4skill/changed_region_europe.txt")).unwrap();
+    let unassigned = read_utf8_lossy(&mod_root.join(".hoi4skill/changed_unassigned.txt")).unwrap();
+    let ambiguous = read_utf8_lossy(&mod_root.join(".hoi4skill/changed_ambiguous.txt")).unwrap();
+
+    assert_eq!(rus_changed, "events/rus_events.txt\n");
+    assert_eq!(ger_changed, "events/ger_events.txt\n");
+    assert_eq!(
+        system_changed,
+        "common/scripted_effects/black_monday_effects.txt\n"
+    );
+    assert_eq!(region_changed, "");
+    assert_eq!(unassigned, "history/states/64-Test.txt\n");
+    assert_eq!(ambiguous, "");
+}
+
+#[test]
+fn work_package_readiness_reports_ready_and_missing_packages() {
+    let root = unique_temp_dir("work-package-readiness");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("readiness.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    fs::write(
+        mod_root.join(".hoi4skill/changed_country_rus.txt"),
+        "events/rus_events.txt\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/plan_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/assets_country_rus.md"),
+        "# Asset Pack Plan\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/boundary_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/status_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/validation_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+    )
+    .unwrap();
+
+    cmd_work_package_readiness(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.work_package_readiness.v1\""));
+    assert!(json.contains("\"package_count\": 4"));
+    assert!(json.contains("\"ready_count\": 1"));
+    assert!(json.contains("\"blocked_count\": 3"));
+    assert!(json.contains("\"missing_package_count\": 3"));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"ready\": true"));
+    assert!(json.contains("\"id\": \"country_ger\""));
+    assert!(json.contains("\"missing_artifacts\": [\"changed\", \"plan\", \"assets\", \"boundary\", \"status\", \"validation\"]"));
+    assert!(json.contains("large-mod-release-gate"));
+}
+
+#[test]
+fn work_package_handoff_writes_author_ready_markdown() {
+    let root = unique_temp_dir("work-package-handoff");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("handoff.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    fs::write(
+        mod_root.join(".hoi4skill/changed_country_rus.txt"),
+        "events/rus_events.txt\ncommon/national_focus/RUS.txt\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/plan_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/assets_country_rus.md"),
+        "# Asset Pack Plan\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/boundary_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/status_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/validation_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+    )
+    .unwrap();
+
+    cmd_work_package_handoff(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let markdown = read_utf8_lossy(&output).unwrap();
+    assert!(markdown.contains("# Work Package Handoff: RUS Country Content"));
+    assert!(markdown.contains("`hoi4skill.work_package_handoff.v1`"));
+    assert!(markdown.contains("- package_id: `country_rus`"));
+    assert!(markdown.contains("- namespace: `tgc_rus`"));
+    assert!(markdown.contains("- tag_hint: `RUS`"));
+    assert!(markdown.contains("- `country_rus`"));
+    assert!(markdown.contains("- `common/national_focus`"));
+    assert!(markdown.contains("- `events/rus_events.txt`"));
+    assert!(markdown.contains("| `boundary` | `ok` |"));
+    assert!(markdown.contains("hoi4skill check-work-package-boundary --mod-root"));
+    assert!(markdown.contains("hoi4skill work-package-readiness --mod-root"));
+    assert!(markdown.contains("Do not edit files outside the allowed edit surface"));
+}
+
+#[test]
+fn work_package_review_checklist_tracks_handoff_acceptance() {
+    let root = unique_temp_dir("work-package-review-checklist");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let pre_output = root.join("review_checklist_pre.md");
+    let post_output = root.join("review_checklist_post.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nsystems: black monday".to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "changed_system_black_monday.txt",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+        ),
+        (
+            "plan_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_system_black_monday.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_system_black_monday.md", "# Work Package Handoff\n"),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--assignee".to_string(),
+        "codex-a".to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "changed_country_rus.txt",
+            "events/rus_events.txt\ncommon/national_focus/RUS.txt\n",
+        ),
+        (
+            "plan_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_country_rus.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_work_package_review_checklist(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--output".to_string(),
+        pre_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let pre = read_utf8_lossy(&pre_output).unwrap();
+    assert!(pre.contains("# Work Package Review Checklist: RUS Country Content"));
+    assert!(pre.contains("`hoi4skill.work_package_review_checklist.v1`"));
+    assert!(pre.contains("- decision: `ready_for_handoff`"));
+    assert!(pre.contains("- claim: `claimed` by `codex-a`"));
+    assert!(pre.contains("| `boundary` | `ok` |"));
+    assert!(pre.contains("| `handoff` | `missing` |"));
+    assert!(pre.contains("- Missing `handoff` artifact."));
+    assert!(pre.contains("- `events/rus_events.txt`"));
+    assert!(pre.contains("work-package-review-checklist --mod-root"));
+    assert!(pre.contains("Do not approve while decision is `blocked` or `ready_for_handoff`"));
+
+    cmd_work_package_handoff(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--output".to_string(),
+        mod_root
+            .join(".hoi4skill")
+            .join("handoff_country_rus.md")
+            .to_string_lossy()
+            .to_string(),
+    ])
+    .unwrap();
+
+    cmd_work_package_review_checklist(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--output".to_string(),
+        post_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let post = read_utf8_lossy(&post_output).unwrap();
+    assert!(post.contains("- decision: `approved`"));
+    assert!(post.contains("| `handoff` | `present` |"));
+    assert!(post.contains("- No required fixes found by the checklist."));
+    assert!(post.contains("large-mod-release-gate --mod-root"));
+}
+
+#[test]
+fn work_package_merge_gate_blocks_stale_claim_then_allows_release() {
+    let root = unique_temp_dir("work-package-merge-gate");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let blocked_output = root.join("merge_gate_blocked.json");
+    let released_output = root.join("claim_release.json");
+    let mergeable_output = root.join("merge_gate_mergeable.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nsystems: black monday".to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (package, changed) in [
+        (
+            "system_black_monday",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+        ),
+        (
+            "country_rus",
+            "events/rus_events.txt\ncommon/national_focus/RUS.txt\n",
+        ),
+    ] {
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("changed_{package}.txt")),
+            changed,
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("plan_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("assets_{package}.md")),
+            "# Asset Pack Plan\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("boundary_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("status_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("validation_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("handoff_{package}.md")),
+            "# Work Package Handoff\n",
+        )
+        .unwrap();
+    }
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--assignee".to_string(),
+        "codex-a".to_string(),
+    ])
+    .unwrap();
+
+    cmd_work_package_merge_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--output".to_string(),
+        blocked_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let blocked = read_utf8_lossy(&blocked_output).unwrap();
+    assert!(blocked.contains("\"schema\": \"hoi4skill.work_package_merge_gate.v1\""));
+    assert!(blocked.contains("\"mergeable\": false"));
+    assert!(blocked.contains("\"decision\": \"blocked\""));
+    assert!(blocked.contains("\"blocking_count\": 1"));
+    assert!(blocked.contains("\"name\": \"claim\""));
+    assert!(blocked.contains("\"status\": \"stale_claim_after_handoff\""));
+    assert!(blocked.contains("work-package-release-claim --mod-root"));
+    assert!(blocked.contains("Do not merge while an active claim remains after handoff"));
+
+    cmd_work_package_release_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--released-by".to_string(),
+        "codex-a".to_string(),
+        "--reason".to_string(),
+        "handoff accepted".to_string(),
+        "--output".to_string(),
+        released_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_work_package_merge_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--output".to_string(),
+        mergeable_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let mergeable = read_utf8_lossy(&mergeable_output).unwrap();
+    assert!(mergeable.contains("\"mergeable\": true"));
+    assert!(mergeable.contains("\"decision\": \"mergeable\""));
+    assert!(mergeable.contains("\"blocking_count\": 0"));
+    assert!(mergeable.contains("\"name\": \"handoff\""));
+    assert!(mergeable.contains("\"status\": \"present\""));
+    assert!(mergeable.contains("large-mod-release-gate --mod-root"));
+}
+
+#[test]
+fn work_package_merge_gates_writes_all_package_gate_artifacts() {
+    let root = unique_temp_dir("work-package-merge-gates");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output_dir = root.join("merge_gates");
+    let manifest_output = root.join("merge_gates_manifest.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nsystems: black monday".to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (package, changed) in [
+        (
+            "system_black_monday",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+        ),
+        (
+            "country_rus",
+            "events/rus_events.txt\ncommon/national_focus/RUS.txt\n",
+        ),
+    ] {
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("changed_{package}.txt")),
+            changed,
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("plan_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("assets_{package}.md")),
+            "# Asset Pack Plan\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("boundary_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("status_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("validation_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("handoff_{package}.md")),
+            "# Work Package Handoff\n",
+        )
+        .unwrap();
+    }
+
+    cmd_work_package_merge_gates(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output-dir".to_string(),
+        output_dir.to_string_lossy().to_string(),
+        "--output".to_string(),
+        manifest_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let manifest = read_utf8_lossy(&manifest_output).unwrap();
+    assert!(manifest.contains("\"schema\": \"hoi4skill.work_package_merge_gates.v1\""));
+    assert!(manifest.contains("\"package_count\": 3"));
+    assert!(manifest.contains("\"mergeable_count\": 2"));
+    assert!(manifest.contains("\"blocked_count\": 1"));
+    assert!(manifest.contains("\"id\": \"country_rus\""));
+    assert!(manifest.contains("\"id\": \"system_black_monday\""));
+    assert!(manifest.contains("\"id\": \"region_core_region\""));
+    assert!(manifest.contains("large-mod-merge-gate --mod-root"));
+    assert!(manifest.contains("Regenerate merge gates after changing package artifacts"));
+    assert!(output_dir.join("manifest.json").exists());
+    assert!(output_dir.join("merge_gate_country_rus.json").exists());
+    assert!(output_dir
+        .join("merge_gate_system_black_monday.json")
+        .exists());
+    assert!(output_dir
+        .join("merge_gate_region_core_region.json")
+        .exists());
+
+    let rus_gate = read_utf8_lossy(&output_dir.join("merge_gate_country_rus.json")).unwrap();
+    assert!(rus_gate.contains("\"schema\": \"hoi4skill.work_package_merge_gate.v1\""));
+    assert!(rus_gate.contains("\"mergeable\": true"));
+    let region_gate =
+        read_utf8_lossy(&output_dir.join("merge_gate_region_core_region.json")).unwrap();
+    assert!(region_gate.contains("\"mergeable\": false"));
+    assert!(region_gate.contains("\"name\": \"handoff\""));
+    assert!(region_gate.contains("\"status\": \"missing\""));
+}
+
+#[test]
+fn large_mod_merge_gate_summarizes_package_mergeability() {
+    let root = unique_temp_dir("large-mod-merge-gate");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("large_merge_gate.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (package, changed) in [
+        (
+            "system_black_monday",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+        ),
+        (
+            "country_rus",
+            "events/rus_events.txt\ncommon/national_focus/RUS.txt\n",
+        ),
+    ] {
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("changed_{package}.txt")),
+            changed,
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("plan_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("assets_{package}.md")),
+            "# Asset Pack Plan\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("boundary_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("status_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("validation_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("handoff_{package}.md")),
+            "# Work Package Handoff\n",
+        )
+        .unwrap();
+    }
+
+    cmd_large_mod_merge_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_merge_gate.v1\""));
+    assert!(json.contains("\"mergeable\": false"));
+    assert!(json.contains("\"decision\": \"blocked\""));
+    assert!(json.contains("\"package_count\": 4"));
+    assert!(json.contains("\"mergeable_count\": 2"));
+    assert!(json.contains("\"blocked_count\": 2"));
+    assert!(json.contains("\"id\": \"system_black_monday\""));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"id\": \"country_ger\""));
+    assert!(json.contains("\"blockers\": [\"missing_assets\", \"missing_boundary\", \"missing_changed\", \"missing_handoff\", \"missing_plan\", \"missing_status\", \"missing_validation\"]"));
+    assert!(json.contains("\"id\": \"region_europe\""));
+    assert!(json.contains("work-package-merge-gate --mod-root"));
+    assert!(json.contains("large-mod-release-gate --mod-root"));
+    assert!(json.contains("Do not merge the large-mod integration branch"));
+}
+
+#[test]
+fn large_mod_review_queue_prioritizes_merge_and_handoff_ready_packages() {
+    let root = unique_temp_dir("large-mod-review-queue");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("review_queue.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (package, changed, handoff) in [
+        (
+            "system_black_monday",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+            true,
+        ),
+        (
+            "country_rus",
+            "events/rus_events.txt\ncommon/national_focus/RUS.txt\n",
+            true,
+        ),
+        (
+            "country_ger",
+            "events/ger_events.txt\ncommon/national_focus/GER.txt\n",
+            false,
+        ),
+    ] {
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("changed_{package}.txt")),
+            changed,
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("plan_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("assets_{package}.md")),
+            "# Asset Pack Plan\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("boundary_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("status_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("validation_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        )
+        .unwrap();
+        if handoff {
+            fs::write(
+                mod_root
+                    .join(".hoi4skill")
+                    .join(format!("handoff_{package}.md")),
+                "# Work Package Handoff\n",
+            )
+            .unwrap();
+        }
+    }
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "region_europe".to_string(),
+        "--assignee".to_string(),
+        "codex-region".to_string(),
+        "--allow-blocked".to_string(),
+    ])
+    .unwrap();
+
+    cmd_large_mod_review_queue(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_review_queue.v1\""));
+    assert!(json.contains("\"package_count\": 4"));
+    assert!(json.contains("\"merge_ready_count\": 2"));
+    assert!(json.contains("\"handoff_ready_count\": 1"));
+    assert!(json.contains("\"blocked_count\": 1"));
+    assert!(json.contains("\"id\": \"country_rus\""));
+    assert!(json.contains("\"review_state\": \"merge_ready\""));
+    assert!(json.contains("\"id\": \"country_ger\""));
+    assert!(json.contains("\"review_state\": \"handoff_ready\""));
+    assert!(json.contains("\"id\": \"region_europe\""));
+    assert!(json.contains("\"review_state\": \"claim_blocked\""));
+    assert!(json.contains("work-package-review-checklist --mod-root"));
+    assert!(json.contains("work-package-handoff --mod-root"));
+    assert!(json.contains("work-package-release-claim --mod-root"));
+    assert!(json.contains("large-mod-merge-gate --mod-root"));
+    assert!(json.contains("Do not spend reviewer time"));
+}
+
+#[test]
+fn large_mod_dashboard_summarizes_reports_and_package_readiness() {
+    let root = unique_temp_dir("large-mod-dashboard");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("dashboard.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "mod_index.json",
+            "{\n  \"schema\": \"hoi4skill.mod_index.v1\"\n}\n",
+        ),
+        (
+            "ownership_map.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_ownership_map.v1\"\n}\n",
+        ),
+        (
+            "loc_audit.json",
+            "{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"missing_count\": 0\n}\n",
+        ),
+        (
+            "gfx_audit.json",
+            "{\n  \"schema\": \"hoi4skill.gfx_audit.v1\",\n  \"missing_sprites_count\": 0\n}\n",
+        ),
+        (
+            "logic_audit.json",
+            "{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"issue_count\": 0\n}\n",
+        ),
+        (
+            "validation.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        (
+            "regression_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_regression_gate.v1\",\n  \"regression_passed\": true,\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "work_package_status.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "readiness.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_readiness.v1\",\n  \"blocked_count\": 0,\n  \"missing_package_count\": 0\n}\n",
+        ),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+    fs::write(
+        mod_root.join(".hoi4skill/changed_country_rus.txt"),
+        "events/rus_events.txt\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/plan_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/assets_country_rus.md"),
+        "# Asset Pack Plan\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/boundary_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/status_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/validation_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+    )
+    .unwrap();
+
+    cmd_large_mod_dashboard(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let markdown = read_utf8_lossy(&output).unwrap();
+    assert!(markdown.contains("# Large Mod Dashboard: Test Grand Campaign"));
+    assert!(markdown.contains("`hoi4skill.large_mod_dashboard.v1`"));
+    assert!(markdown.contains("- release_ready: `no`"));
+    assert!(markdown.contains("- packages: `1` ready, `2` blocked, `3` total"));
+    assert!(markdown.contains("- reports: `0` missing required, `0` blocking"));
+    assert!(markdown.contains("| `ownership_map.json` | `ok` |"));
+    assert!(markdown.contains("| `country_rus` | RUS Country Content | `country` | `ready` |"));
+    assert!(markdown
+        .contains("| `region_europe` | europe Regional Integration | `region` | `blocked` |"));
+    assert!(markdown.contains("changed_region_europe.txt"));
+    assert!(markdown.contains("| `readiness.json` | `ok` |"));
+    assert!(markdown.contains("large-mod-release-gate --mod-root"));
+    assert!(markdown.contains("large-mod-evidence-pack --mod-root"));
+    assert!(markdown.contains("large-mod-review-brief --mod-root"));
+    assert!(markdown.contains("Use package handoff files"));
+}
+
+#[test]
+fn large_mod_next_actions_lists_blocking_and_handoff_work() {
+    let root = unique_temp_dir("large-mod-next-actions");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("next_actions.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "mod_index.json",
+            "{\n  \"schema\": \"hoi4skill.mod_index.v1\"\n}\n",
+        ),
+        (
+            "ownership_map.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_ownership_map.v1\"\n}\n",
+        ),
+        (
+            "loc_audit.json",
+            "{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"missing_count\": 0\n}\n",
+        ),
+        (
+            "gfx_audit.json",
+            "{\n  \"schema\": \"hoi4skill.gfx_audit.v1\",\n  \"missing_sprites_count\": 0\n}\n",
+        ),
+        (
+            "logic_audit.json",
+            "{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"issue_count\": 0\n}\n",
+        ),
+        (
+            "validation.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        (
+            "regression_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_regression_gate.v1\",\n  \"regression_passed\": true,\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "work_package_status.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "readiness.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_readiness.v1\",\n  \"blocked_count\": 0,\n  \"missing_package_count\": 0\n}\n",
+        ),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+    fs::write(
+        mod_root.join(".hoi4skill/changed_country_rus.txt"),
+        "events/rus_events.txt\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/plan_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/assets_country_rus.md"),
+        "# Asset Pack Plan\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/boundary_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/status_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/validation_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+    )
+    .unwrap();
+
+    cmd_large_mod_next_actions(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_next_actions.v1\""));
+    assert!(json.contains("\"blocking_count\": 12"));
+    assert!(json.contains("\"kind\": \"handoff_missing\""));
+    assert!(json.contains("\"blocking\": false"));
+    assert!(json.contains("\"package\": \"country_rus\""));
+    assert!(json.contains("\"package\": \"region_europe\""));
+    assert!(json.contains("\"kind\": \"missing_package_artifact\""));
+    assert!(json.contains("changed_region_europe.txt"));
+    assert!(json.contains("hoi4skill split-changed-work-packages --mod-root"));
+    assert!(json.contains("hoi4skill asset-pack-plan --mod-root"));
+    assert!(json.contains("Do not skip boundary or validation artifacts"));
+}
+
+#[test]
+fn large_mod_production_snapshot_and_brief_summarize_handoff_state() {
+    let root = unique_temp_dir("large-mod-production-snapshot");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let snapshot_output = root.join("production_snapshot.json");
+    let brief_output = root.join("production_brief.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "mod_index.json",
+            "{\n  \"schema\": \"hoi4skill.mod_index.v1\"\n}\n",
+        ),
+        (
+            "ownership_map.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_ownership_map.v1\"\n}\n",
+        ),
+        (
+            "loc_audit.json",
+            "{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"missing_count\": 0\n}\n",
+        ),
+        (
+            "gfx_audit.json",
+            "{\n  \"schema\": \"hoi4skill.gfx_audit.v1\",\n  \"missing_sprites_count\": 0\n}\n",
+        ),
+        (
+            "logic_audit.json",
+            "{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"issue_count\": 0\n}\n",
+        ),
+        (
+            "validation.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        (
+            "regression_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_regression_gate.v1\",\n  \"regression_passed\": true,\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "work_package_status.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "readiness.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_readiness.v1\",\n  \"blocked_count\": 0,\n  \"missing_package_count\": 0\n}\n",
+        ),
+        (
+            "risk_register.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_risk_register.v1\",\n  \"risk_count\": 0,\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "next_actions.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_next_actions.v1\",\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "changed_country_rus.txt",
+            "events/rus_events.txt\n",
+        ),
+        (
+            "changed_system_black_monday.txt",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+        ),
+        (
+            "plan_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        (
+            "plan_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        ),
+        ("assets_country_rus.md", "# Asset Pack Plan\n"),
+        ("assets_system_black_monday.md", "# Asset Pack Plan\n"),
+        (
+            "boundary_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "boundary_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        ),
+        (
+            "status_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "status_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "validation_country_rus.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        (
+            "validation_system_black_monday.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        ("handoff_country_rus.md", "# Work Package Handoff\n"),
+        (
+            "handoff_system_black_monday.md",
+            "# Work Package Handoff\n",
+        ),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--assignee".to_string(),
+        "codex-a".to_string(),
+        "--output".to_string(),
+        mod_root
+            .join(".hoi4skill/claims/claim_country_rus.json")
+            .to_string_lossy()
+            .to_string(),
+    ])
+    .unwrap();
+
+    cmd_large_mod_production_snapshot(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        snapshot_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let snapshot = read_utf8_lossy(&snapshot_output).unwrap();
+    assert!(snapshot.contains("\"schema\": \"hoi4skill.large_mod_production_snapshot.v1\""));
+    assert!(snapshot.contains("\"decision\": \"blocked\""));
+    assert!(snapshot.contains("\"ready_package_count\": 2"));
+    assert!(snapshot.contains("\"handoff_count\": 2"));
+    assert!(snapshot.contains("\"claimed_count\": 1"));
+    assert!(snapshot.contains("\"blocked_package_count\": 1"));
+    assert!(snapshot.contains("\"missing_required_report_count\": 0"));
+    assert!(snapshot.contains("\"kind\": \"risk_register\""));
+    assert!(snapshot.contains("\"kind\": \"next_actions\""));
+    assert!(snapshot.contains("\"stage\": \"handoff_ready\""));
+    assert!(snapshot.contains("\"stage\": \"blocked\""));
+    assert!(snapshot.contains("large-mod-production-brief --mod-root"));
+    assert!(
+        snapshot.contains("Do not hand off production while blocking_count is greater than zero")
+    );
+
+    cmd_large_mod_production_brief(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        brief_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let brief = read_utf8_lossy(&brief_output).unwrap();
+    assert!(brief.contains("# Large Mod Production Brief: Test Grand Campaign"));
+    assert!(brief.contains("`hoi4skill.large_mod_production_brief.v1`"));
+    assert!(brief.contains("- decision: `blocked`"));
+    assert!(brief.contains("| `country_rus` | `country` | `handoff_ready` |"));
+    assert!(brief.contains("| `region_europe` | `region` | `blocked` |"));
+    assert!(brief.contains("| `risk_register.json` | `risk_register` | `false` | `true` | `ok` |"));
+    assert!(brief.contains("large-mod-production-snapshot --mod-root"));
+    assert!(brief.contains("Do not use this snapshot as a substitute"));
+}
+
+#[test]
+fn large_mod_fix_queue_routes_reports_to_packages() {
+    let root = unique_temp_dir("large-mod-fix-queue");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("fix_queue.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    fs::write(
+        mod_root.join(".hoi4skill/error_log_country_rus.json"),
+        r#"{
+  "schema": "hoi4skill.error_log_report.v1",
+  "diagnostics_effective": 1,
+  "diagnostics": [
+    {"severity": "error", "category": "syntax", "file": "events/rus_events.txt", "line": 12, "message": "Unexpected token", "suggestion": "Check braces near the event."}
+  ]
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/validation_system_black_monday.json"),
+        r#"{
+  "schema": "hoi4skill.validation.v1",
+  "ok": false,
+  "error_count": 2
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/logic_audit.json"),
+        r#"{
+  "schema": "hoi4skill.logic_audit.v1",
+  "issue_count": 1
+}
+"#,
+    )
+    .unwrap();
+
+    cmd_large_mod_fix_queue(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_fix_queue.v1\""));
+    assert!(json.contains("\"healthy\": false"));
+    assert!(json.contains("\"item_count\": 3"));
+    assert!(json.contains("\"blocking_count\": 3"));
+    assert!(json.contains("\"high_count\": 2"));
+    assert!(json.contains("\"unassigned_count\": 1"));
+    assert!(json.contains("\"affected_packages\": [\"country_rus\", \"system_black_monday\"]"));
+    assert!(json.contains("\"package\": \"country_rus\""));
+    assert!(json.contains("\"kind\": \"error_log_syntax\""));
+    assert!(json.contains("events/rus_events.txt:12"));
+    assert!(json.contains("\"package\": \"system_black_monday\""));
+    assert!(json.contains("\"kind\": \"validation_failure\""));
+    assert!(json.contains("\"kind\": \"logic_audit\""));
+    assert!(json.contains("work-package-start-brief --mod-root"));
+    assert!(json.contains("large-mod-risk-register --mod-root"));
+    assert!(json.contains("Unassigned error-log items must be routed"));
+}
+
+#[test]
+fn large_mod_regression_plan_groups_fix_items_by_package() {
+    let root = unique_temp_dir("large-mod-regression-plan");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("regression_plan.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    fs::write(
+        mod_root.join(".hoi4skill/error_log_country_rus.json"),
+        r#"{
+  "schema": "hoi4skill.error_log_report.v1",
+  "diagnostics_effective": 1,
+  "diagnostics": [
+    {"severity": "error", "category": "syntax", "file": "events/rus_events.txt", "line": 12, "message": "Unexpected token", "suggestion": "Check braces near the event."}
+  ]
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/validation_system_black_monday.json"),
+        r#"{
+  "schema": "hoi4skill.validation.v1",
+  "ok": false,
+  "error_count": 2
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        mod_root.join(".hoi4skill/logic_audit.json"),
+        r#"{
+  "schema": "hoi4skill.logic_audit.v1",
+  "issue_count": 1
+}
+"#,
+    )
+    .unwrap();
+
+    cmd_large_mod_regression_plan(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_regression_plan.v1\""));
+    assert!(json.contains("\"healthy\": false"));
+    assert!(json.contains("\"fix_item_count\": 3"));
+    assert!(json.contains("\"scenario_count\": 3"));
+    assert!(json.contains("\"package_scenario_count\": 2"));
+    assert!(json.contains("\"unassigned_count\": 1"));
+    assert!(json.contains("\"affected_packages\": [\"country_rus\", \"system_black_monday\"]"));
+    assert!(json.contains("\"package\": \"country_rus\""));
+    assert!(json.contains("\"contexts\": [\"events/rus_events.txt:12\"]"));
+    assert!(json.contains("--changed events/rus_events.txt --strict-code-index"));
+    assert!(json.contains("error_log_country_rus.json"));
+    assert!(json.contains("\"package\": \"system_black_monday\""));
+    assert!(json.contains("validation_system_black_monday.json"));
+    assert!(json.contains("\"status\": \"routing_required\""));
+    assert!(json.contains("identify-work-packages --mod-root"));
+    assert!(json.contains("large-mod-playtest-gate --mod-root"));
+    assert!(json.contains("Do not close a fix queue item"));
+}
+
+#[test]
+fn large_mod_regression_gate_requires_clean_rerun_evidence() {
+    let root = unique_temp_dir("large-mod-regression-gate");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let blocked_output = root.join("regression_gate_blocked.json");
+    let passed_output = root.join("regression_gate_passed.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    fs::write(
+        mod_root.join(".hoi4skill/regression_plan.json"),
+        r#"{
+  "schema": "hoi4skill.large_mod_regression_plan.v1",
+  "affected_packages": ["country_rus", "system_black_monday"],
+  "unassigned_count": 0
+}
+"#,
+    )
+    .unwrap();
+
+    for package in ["country_rus", "system_black_monday"] {
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("boundary_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("validation_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true,\n  \"error_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("error_log_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.error_log_report.v1\",\n  \"diagnostics_effective\": 0,\n  \"diagnostics\": []\n}\n",
+        )
+        .unwrap();
+    }
+    fs::write(
+        mod_root.join(".hoi4skill/playtest_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.playtest_report.v1\",\n  \"ok\": true,\n  \"status\": \"passed\",\n  \"finding_count\": 0\n}\n",
+    )
+    .unwrap();
+
+    cmd_large_mod_regression_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        blocked_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let blocked = read_utf8_lossy(&blocked_output).unwrap();
+    assert!(blocked.contains("\"schema\": \"hoi4skill.large_mod_regression_gate.v1\""));
+    assert!(blocked.contains("\"regression_passed\": false"));
+    assert!(blocked.contains("\"blocking_count\": 1"));
+    assert!(blocked.contains("\"package\": \"system_black_monday\""));
+    assert!(blocked.contains("\"kind\": \"playtest\""));
+    assert!(blocked.contains("playtest_system_black_monday.json"));
+
+    fs::write(
+        mod_root.join(".hoi4skill/playtest_system_black_monday.json"),
+        "{\n  \"schema\": \"hoi4skill.playtest_report.v1\",\n  \"ok\": true,\n  \"status\": \"passed\",\n  \"finding_count\": 0\n}\n",
+    )
+    .unwrap();
+
+    cmd_large_mod_regression_gate(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        passed_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let passed = read_utf8_lossy(&passed_output).unwrap();
+    assert!(passed.contains("\"regression_passed\": true"));
+    assert!(passed.contains("\"blocking_count\": 0"));
+    assert!(passed.contains("\"affected_package_count\": 2"));
+    assert!(passed.contains("\"status\": \"passed\""));
+    assert!(passed.contains("large-mod-release-gate --mod-root"));
+    assert!(passed.contains("regression_passed=true"));
+}
+
+#[test]
+fn large_mod_regression_brief_summarizes_gate_blockers() {
+    let root = unique_temp_dir("large-mod-regression-brief");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("regression_brief.md");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    fs::write(
+        mod_root.join(".hoi4skill/regression_plan.json"),
+        r#"{
+  "schema": "hoi4skill.large_mod_regression_plan.v1",
+  "affected_packages": ["country_rus", "system_black_monday"],
+  "unassigned_count": 0
+}
+"#,
+    )
+    .unwrap();
+
+    for package in ["country_rus", "system_black_monday"] {
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("boundary_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("validation_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true,\n  \"error_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("error_log_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.error_log_report.v1\",\n  \"diagnostics_effective\": 0,\n  \"diagnostics\": []\n}\n",
+        )
+        .unwrap();
+    }
+    fs::write(
+        mod_root.join(".hoi4skill/playtest_country_rus.json"),
+        "{\n  \"schema\": \"hoi4skill.playtest_report.v1\",\n  \"ok\": true,\n  \"status\": \"passed\",\n  \"finding_count\": 0\n}\n",
+    )
+    .unwrap();
+
+    cmd_large_mod_regression_brief(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let markdown = read_utf8_lossy(&output).unwrap();
+    assert!(markdown.contains("`hoi4skill.large_mod_regression_brief.v1`"));
+    assert!(markdown.contains("- decision: `blocked`"));
+    assert!(markdown.contains("system_black_monday: playtest is missing"));
+    assert!(markdown.contains("| `country_rus` | `country` | `passed` |"));
+    assert!(markdown.contains("| `system_black_monday` | `system` | `blocked` |"));
+    assert!(markdown.contains("playtest:missing"));
+    assert!(markdown.contains("large-mod-regression-gate --mod-root"));
+    assert!(markdown.contains("large-mod-release-gate --mod-root"));
+    assert!(markdown.contains("Do not close regression while decision is `blocked`"));
+}
+
+#[test]
+fn large_mod_risk_register_prioritizes_release_and_dispatch_risks() {
+    let root = unique_temp_dir("large-mod-risk-register");
+    let blueprint_path = root.join("blueprint.yml");
+    let mod_root = root.join("mod");
+    let output = root.join("risk_register.json");
+
+    cmd_plan_large_mod(&[
+        "--text".to_string(),
+        "name: Test Grand Campaign\ncountries: RUS, GER\nregions: europe\nsystems: black monday"
+            .to_string(),
+        "--name".to_string(),
+        "Test Grand Campaign".to_string(),
+        "--acronym".to_string(),
+        "TGC".to_string(),
+        "--output".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    cmd_init_large_mod(&[
+        "--blueprint".to_string(),
+        blueprint_path.to_string_lossy().to_string(),
+        "--output".to_string(),
+        mod_root.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    for (name, text) in [
+        (
+            "mod_index.json",
+            "{\n  \"schema\": \"hoi4skill.mod_index.v1\"\n}\n",
+        ),
+        (
+            "ownership_map.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_ownership_map.v1\"\n}\n",
+        ),
+        (
+            "loc_audit.json",
+            "{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"missing_count\": 0\n}\n",
+        ),
+        (
+            "logic_audit.json",
+            "{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"issue_count\": 0\n}\n",
+        ),
+        (
+            "validation.json",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        (
+            "regression_gate.json",
+            "{\n  \"schema\": \"hoi4skill.large_mod_regression_gate.v1\",\n  \"regression_passed\": true,\n  \"blocking_count\": 0\n}\n",
+        ),
+        (
+            "work_package_status.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        ),
+        (
+            "readiness.json",
+            "{\n  \"schema\": \"hoi4skill.work_package_readiness.v1\",\n  \"blocked_count\": 0,\n  \"missing_package_count\": 0\n}\n",
+        ),
+    ] {
+        fs::write(mod_root.join(".hoi4skill").join(name), text).unwrap();
+    }
+
+    for (package, changed, validation) in [
+        (
+            "system_black_monday",
+            "common/scripted_effects/tgc_black_monday.txt\n",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        (
+            "country_ger",
+            "events/ger_events.txt\n",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": true\n}\n",
+        ),
+        (
+            "country_rus",
+            "events/rus_events.txt\n",
+            "{\n  \"schema\": \"hoi4skill.validation.v1\",\n  \"ok\": false,\n  \"error_count\": 1\n}\n",
+        ),
+    ] {
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("changed_{package}.txt")),
+            changed,
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("plan_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.generate_work_package_plan.v1\",\n  \"dry_run\": true\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("assets_{package}.md")),
+            "# Asset Pack Plan\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("boundary_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_boundary.v1\",\n  \"ok\": true,\n  \"violation_count\": 0\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("status_{package}.json")),
+            "{\n  \"schema\": \"hoi4skill.work_package_status.v1\",\n  \"status\": \"ok\"\n}\n",
+        )
+        .unwrap();
+        fs::write(
+            mod_root
+                .join(".hoi4skill")
+                .join(format!("validation_{package}.json")),
+            validation,
+        )
+        .unwrap();
+    }
+    fs::write(
+        mod_root.join(".hoi4skill/handoff_system_black_monday.md"),
+        "# Work Package Handoff\n",
+    )
+    .unwrap();
+
+    cmd_work_package_claim(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--package".to_string(),
+        "country_rus".to_string(),
+        "--assignee".to_string(),
+        "codex-a".to_string(),
+        "--allow-blocked".to_string(),
+    ])
+    .unwrap();
+
+    cmd_large_mod_risk_register(&[
+        "--mod-root".to_string(),
+        mod_root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.large_mod_risk_register.v1\""));
+    assert!(json.contains("\"healthy\": false"));
+    assert!(json.contains("\"package_count\": 4"));
+    assert!(json.contains("\"risk_count\": 11"));
+    assert!(json.contains("\"blocking_count\": 9"));
+    assert!(json.contains("\"high_count\": 6"));
+    assert!(json.contains("\"medium_count\": 5"));
+    assert!(json.contains("\"kind\": \"missing_required_report\""));
+    assert!(json.contains("gfx_audit.json"));
+    assert!(json.contains("\"kind\": \"package_artifact_needs_review\""));
+    assert!(json.contains("\"kind\": \"blocked_claim\""));
+    assert!(json.contains("\"kind\": \"ready_package_unclaimed\""));
+    assert!(json.contains("\"kind\": \"handoff_missing\""));
+    assert!(json.contains("\"package\": \"region_europe\""));
+    assert!(json.contains("work-package-release-claim --mod-root"));
+    assert!(json.contains("work-package-claim --mod-root"));
+    assert!(json.contains("large-mod-risk-register --mod-root"));
+    assert!(json.contains("Do not release while high severity or blocking risks remain"));
+}
+
+fn write_mod_index_fixture(name: &str) -> PathBuf {
+    let root = unique_temp_dir(name);
+    fs::create_dir_all(root.join("common/national_focus")).unwrap();
+    fs::create_dir_all(root.join("common/ideas")).unwrap();
+    fs::create_dir_all(root.join("common/decisions/categories")).unwrap();
+    fs::create_dir_all(root.join("common/scripted_effects")).unwrap();
+    fs::create_dir_all(root.join("common/country_tags")).unwrap();
+    fs::create_dir_all(root.join("events")).unwrap();
+    fs::create_dir_all(root.join("interface")).unwrap();
+    fs::create_dir_all(root.join("localisation/simp_chinese")).unwrap();
+
+    fs::write(
+        root.join("common/national_focus/tst.txt"),
+        r#"
+focus_tree = {
+  id = tst_focus
+  country = { factor = 0 modifier = { add = 10 tag = TST } }
+  focus = {
+    id = TST_rebuild_state
+    icon = GFX_goal_tst_rebuild
+    x = 0
+    y = 0
+    cost = 10
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("events/tst_events.txt"),
+        r#"
+add_namespace = tst
+country_event = {
+  id = tst.1
+  title = tst.1.t
+  desc = tst.1.d
+  picture = GFX_report_event_tst_rebuild
+  is_triggered_only = yes
+  option = { name = tst.1.a }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("common/ideas/tst_ideas.txt"),
+        r#"
+ideas = {
+  country = {
+    TST_rebuilding_spirit = {
+      picture = generic_production_bonus
+    }
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("common/decisions/categories/tst_categories.txt"),
+        r#"
+TST_rebuild_category = {
+  icon = GFX_decision_tst_rebuild
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("common/decisions/tst_decisions.txt"),
+        r#"
+TST_rebuild_category = {
+  TST_start_rebuild = {
+    icon = GFX_decision_tst_rebuild
+    cost = 25
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("common/scripted_effects/tst_effects.txt"),
+        r#"
+TST_rebuild_effect = {
+  add_political_power = 25
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("common/country_tags/tst_tags.txt"),
+        "TST = \"countries/TST.txt\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("interface/tst.gfx"),
+        r#"
+spriteTypes = {
+  spriteType = {
+    name = "GFX_goal_tst_rebuild"
+    texturefile = "gfx/interface/goals/tst_rebuild.dds"
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("localisation/simp_chinese/tst_l_simp_chinese.yml"),
+        "\u{feff}l_simp_chinese:\n TST_rebuild_state:0 \"重建国家\"\n tst.1.t:0 \"重建开始\"\n TST_rebuilding_spirit:0 \"重建精神\"\n",
+    )
+    .unwrap();
+    root
+}
+
+#[test]
+fn build_mod_index_collects_core_large_mod_symbols() {
+    let root = write_mod_index_fixture("mod-index");
+    let output = root.join("mod_index.json");
+    cmd_build_mod_index(&[
+        root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let json = read_utf8_lossy(&output).unwrap();
+
+    assert!(json.contains("\"schema\": \"hoi4skill.mod_index.v1\""));
+    assert!(json.contains("\"kind\": \"focus\", \"id\": \"TST_rebuild_state\""));
+    assert!(json.contains("\"kind\": \"event\", \"id\": \"tst.1\""));
+    assert!(json.contains("\"kind\": \"idea\", \"id\": \"TST_rebuilding_spirit\""));
+    assert!(json.contains("\"kind\": \"decision_category\", \"id\": \"TST_rebuild_category\""));
+    assert!(json.contains("\"kind\": \"decision\", \"id\": \"TST_start_rebuild\""));
+    assert!(json.contains("\"kind\": \"scripted_effect\", \"id\": \"TST_rebuild_effect\""));
+    assert!(json.contains("\"kind\": \"country_tag\", \"id\": \"TST\""));
+    assert!(json.contains("\"kind\": \"sprite\", \"id\": \"GFX_goal_tst_rebuild\""));
+    assert!(json.contains("\"kind\": \"localisation\", \"id\": \"TST_rebuild_state\""));
+    assert!(json.contains("\"by_kind\""));
+}
+
+#[test]
+fn query_symbol_finds_exact_and_contains_matches() {
+    let root = write_mod_index_fixture("query-symbol");
+    let exact = root.join("exact.json");
+    cmd_query_symbol(&[
+        root.to_string_lossy().to_string(),
+        "--symbol".to_string(),
+        "TST_rebuild_state".to_string(),
+        "--kind".to_string(),
+        "focus".to_string(),
+        "--output".to_string(),
+        exact.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let exact_json = read_utf8_lossy(&exact).unwrap();
+    assert!(exact_json.contains("\"schema\": \"hoi4skill.query_symbol.v1\""));
+    assert!(exact_json.contains("\"matches\": 1"));
+    assert!(exact_json.contains("\"kind\": \"focus\", \"id\": \"TST_rebuild_state\""));
+    assert!(!exact_json.contains("\"kind\": \"localisation\", \"id\": \"TST_rebuild_state\""));
+
+    let contains = root.join("contains.json");
+    cmd_query_symbol(&[
+        root.to_string_lossy().to_string(),
+        "--symbol".to_string(),
+        "rebuild".to_string(),
+        "--contains".to_string(),
+        "--max-results".to_string(),
+        "20".to_string(),
+        "--output".to_string(),
+        contains.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let contains_json = read_utf8_lossy(&contains).unwrap();
+    assert!(contains_json.contains("\"contains\": true"));
+    assert!(contains_json.contains("\"kind\": \"focus\", \"id\": \"TST_rebuild_state\""));
+    assert!(contains_json.contains("\"kind\": \"sprite\", \"id\": \"GFX_goal_tst_rebuild\""));
+    assert!(contains_json.contains("\"kind\": \"scripted_effect\", \"id\": \"TST_rebuild_effect\""));
+}
+
+#[test]
+fn impact_reports_seed_symbols_related_files_and_references() {
+    let root = write_mod_index_fixture("impact");
+    fs::write(
+        root.join("events/tst_followup.txt"),
+        r#"
+add_namespace = tst
+country_event = {
+  id = tst.2
+  title = tst.2.t
+  desc = tst.2.d
+  is_triggered_only = yes
+  immediate = { country_event = { id = tst.1 } }
+  option = { name = tst.2.a add_ideas = TST_rebuilding_spirit }
+}
+"#,
+    )
+    .unwrap();
+
+    let symbol_report = root.join("impact_symbol.json");
+    cmd_impact(&[
+        root.to_string_lossy().to_string(),
+        "--symbol".to_string(),
+        "tst.1".to_string(),
+        "--output".to_string(),
+        symbol_report.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let symbol_json = read_utf8_lossy(&symbol_report).unwrap();
+    assert!(symbol_json.contains("\"schema\": \"hoi4skill.impact.v1\""));
+    assert!(symbol_json.contains("\"query_symbol\": \"tst.1\""));
+    assert!(symbol_json.contains("\"kind\": \"event\", \"id\": \"tst.1\""));
+    assert!(symbol_json.contains("\"file\": \"events/tst_followup.txt\""));
+    assert!(symbol_json.contains("\"relation\": \"text_reference\""));
+    assert!(symbol_json.contains("analyze-error-log"));
+
+    let changed_report = root.join("impact_changed.json");
+    cmd_impact(&[
+        root.to_string_lossy().to_string(),
+        "--changed".to_string(),
+        "common/national_focus/tst.txt".to_string(),
+        "--output".to_string(),
+        changed_report.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let changed_json = read_utf8_lossy(&changed_report).unwrap();
+    assert!(changed_json.contains("\"changed_file\": \"common/national_focus/tst.txt\""));
+    assert!(changed_json.contains("\"kind\": \"focus\", \"id\": \"TST_rebuild_state\""));
+    assert!(changed_json.contains("\"affected_files\""));
+}
+
+#[test]
+fn reserve_id_suggests_non_colliding_event_and_focus_ids() {
+    let root = write_mod_index_fixture("reserve-id");
+
+    let event_ids = root.join("event_ids.json");
+    cmd_reserve_id(&[
+        root.to_string_lossy().to_string(),
+        "--kind".to_string(),
+        "event".to_string(),
+        "--namespace".to_string(),
+        "tst".to_string(),
+        "--count".to_string(),
+        "2".to_string(),
+        "--output".to_string(),
+        event_ids.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let event_json = read_utf8_lossy(&event_ids).unwrap();
+    assert!(event_json.contains("\"schema\": \"hoi4skill.reserve_id.v1\""));
+    assert!(event_json.contains("\"kind\": \"event\""));
+    assert!(event_json.contains("\"namespace\": \"tst\""));
+    assert!(event_json.contains("\"existing_event_max\": 1"));
+    assert!(event_json.contains("\"ids\": [\"tst.2\", \"tst.3\"]"));
+
+    let focus_ids = root.join("focus_ids.json");
+    cmd_reserve_id(&[
+        root.to_string_lossy().to_string(),
+        "--kind".to_string(),
+        "focus".to_string(),
+        "--tag".to_string(),
+        "TST".to_string(),
+        "--count".to_string(),
+        "2".to_string(),
+        "--output".to_string(),
+        focus_ids.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let focus_json = read_utf8_lossy(&focus_ids).unwrap();
+    assert!(focus_json.contains("\"kind\": \"focus\""));
+    assert!(focus_json.contains("\"prefix\": \"TST\""));
+    assert!(focus_json.contains("\"ids\": [\"TST_focus_001\", \"TST_focus_002\"]"));
+    assert!(focus_json.contains("Run hoi4skill build-mod-index again"));
+}
+
+#[test]
+fn check_namespace_reports_event_namespace_collisions_and_next_ids() {
+    let root = write_mod_index_fixture("check-namespace");
+    fs::write(
+        root.join("events/tst_duplicate.txt"),
+        r#"
+add_namespace = tst
+country_event = {
+  id = tst.1
+  title = tst.1.t
+  desc = tst.1.d
+  is_triggered_only = yes
+  option = { name = tst.1.a }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("events/other_no_namespace.txt"),
+        r#"
+country_event = {
+  id = other.1
+  title = other.1.t
+  desc = other.1.d
+  is_triggered_only = yes
+  option = { name = other.1.a }
+}
+"#,
+    )
+    .unwrap();
+
+    let output = root.join("namespace.json");
+    cmd_check_namespace(&[
+        root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.namespace_check.v1\""));
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("\"namespace\": \"tst\""));
+    assert!(json.contains("\"max_id\": 1"));
+    assert!(json.contains("\"next_id\": 2"));
+    assert!(json.contains("\"duplicate_event_id_count\": 1"));
+    assert!(json.contains("\"id\": \"tst.1\""));
+    assert!(json.contains("namespace tst is declared in multiple files"));
+    assert!(json.contains(
+        "event id other.1 appears in events/other_no_namespace.txt without add_namespace = other"
+    ));
+
+    let filtered = root.join("namespace_tst.json");
+    cmd_check_namespace(&[
+        root.to_string_lossy().to_string(),
+        "--namespace".to_string(),
+        "tst".to_string(),
+        "--output".to_string(),
+        filtered.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let filtered_json = read_utf8_lossy(&filtered).unwrap();
+    assert!(filtered_json.contains("\"namespace_filter\": \"tst\""));
+    assert!(filtered_json.contains("reserve-id <mod-root> --kind event --namespace tst"));
+    assert!(!filtered_json.contains("\"namespace\": \"other\""));
+}
+
+#[test]
+fn feature_context_writes_tag_and_system_markdown() {
+    let root = write_mod_index_fixture("feature-context");
+
+    let tag_context = root.join("tag_context.md");
+    cmd_feature_context(&[
+        root.to_string_lossy().to_string(),
+        "--tag".to_string(),
+        "TST".to_string(),
+        "--output".to_string(),
+        tag_context.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let tag_md = read_utf8_lossy(&tag_context).unwrap();
+    assert!(tag_md.contains("# HOI4 Feature Context"));
+    assert!(tag_md.contains("- tag: `TST`"));
+    assert!(tag_md.contains("`focus` `TST_rebuild_state`"));
+    assert!(tag_md.contains("`country_tag` `TST`"));
+    assert!(tag_md.contains("common/national_focus"));
+    assert!(tag_md.contains("Do not create country tags"));
+
+    let system_context = root.join("system_context.md");
+    cmd_feature_context(&[
+        root.to_string_lossy().to_string(),
+        "--system".to_string(),
+        "rebuild".to_string(),
+        "--output".to_string(),
+        system_context.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let system_md = read_utf8_lossy(&system_context).unwrap();
+    assert!(system_md.contains("- system: `rebuild`"));
+    assert!(system_md.contains("`TST_rebuild_state`"));
+    assert!(system_md.contains("`TST_rebuild_effect`"));
+    assert!(system_md.contains("query-symbol"));
+    assert!(system_md.contains("## Text References"));
+}
+
+#[test]
+fn validate_baseline_filters_existing_errors() {
+    let root = unique_temp_dir("validate-baseline");
+    fs::create_dir_all(root.join("localisation/simp_chinese")).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Baseline Test\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("localisation/simp_chinese/bad_l_simp_chinese.yml"),
+        "l_simp_chinese:\n TST_bad:0 \"坏文本\"\n",
+    )
+    .unwrap();
+
+    let baseline = root.join("baseline.json");
+    let first = cmd_validate(&[
+        root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        baseline.to_string_lossy().to_string(),
+    ]);
+    assert!(first.is_err());
+    let baseline_json = read_utf8_lossy(&baseline).unwrap();
+    assert!(baseline_json.contains("\"effective_errors\": 1"));
+    assert!(baseline_json.contains("localisation file has no UTF-8 BOM"));
+
+    let filtered = root.join("filtered.json");
+    let second = cmd_validate(&[
+        root.to_string_lossy().to_string(),
+        "--baseline".to_string(),
+        baseline.to_string_lossy().to_string(),
+        "--output".to_string(),
+        filtered.to_string_lossy().to_string(),
+    ]);
+    assert!(second.is_ok());
+    let filtered_json = read_utf8_lossy(&filtered).unwrap();
+    assert!(filtered_json.contains("\"total_errors\": 1"));
+    assert!(filtered_json.contains("\"effective_errors\": 0"));
+    assert!(filtered_json.contains("\"baseline_errors_filtered\": 1"));
+}
+
+#[test]
+fn validate_changed_only_filters_to_changed_files() {
+    let root = unique_temp_dir("validate-changed-only");
+    fs::create_dir_all(root.join("localisation/simp_chinese")).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Changed Test\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("localisation/simp_chinese/one_l_simp_chinese.yml"),
+        "l_simp_chinese:\n TST_one:0 \"一\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("localisation/simp_chinese/two_l_simp_chinese.yml"),
+        "l_simp_chinese:\n TST_two:0 \"二\"\n",
+    )
+    .unwrap();
+
+    let output = root.join("changed.json");
+    let result = cmd_validate(&[
+        root.to_string_lossy().to_string(),
+        "--changed-only".to_string(),
+        "--changed".to_string(),
+        "localisation/simp_chinese/one_l_simp_chinese.yml".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ]);
+    assert!(result.is_err());
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"total_errors\": 2"));
+    assert!(json.contains("\"effective_errors\": 1"));
+    assert!(json.contains("one_l_simp_chinese.yml"));
+    assert!(!json.contains("two_l_simp_chinese.yml"));
+}
+
+#[test]
+fn loc_audit_reports_missing_orphan_duplicate_and_changed_only() {
+    let root = unique_temp_dir("loc-audit");
+    fs::create_dir_all(root.join("common/national_focus")).unwrap();
+    fs::create_dir_all(root.join("localisation/simp_chinese")).unwrap();
+    fs::write(
+        root.join("common/national_focus/tst.txt"),
+        r#"
+focus_tree = {
+  id = tst_focus
+  focus = {
+    id = TST_focus_one
+    x = 0
+    y = 0
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("localisation/simp_chinese/tst_l_simp_chinese.yml"),
+        "\u{feff}l_simp_chinese:\n TST_focus_one:0 \"第一个国策\"\n TST_orphan:0 \"孤儿文本\"\n TST_duplicate:0 \"重复一\"\n TST_duplicate:0 \"重复二\"\n",
+    )
+    .unwrap();
+
+    let output = root.join("loc_audit.json");
+    cmd_loc_audit(&[
+        root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.loc_audit.v1\""));
+    assert!(json.contains("\"missing_count\": 1"));
+    assert!(json.contains("\"key\": \"TST_focus_one_desc\""));
+    assert!(json.contains("\"key\": \"TST_orphan\""));
+    assert!(json.contains("\"duplicate_count\": 1"));
+    assert!(json.contains("\"simp_chinese\": 1"));
+
+    let changed_output = root.join("loc_audit_changed.json");
+    cmd_loc_audit(&[
+        root.to_string_lossy().to_string(),
+        "--changed-only".to_string(),
+        "--changed".to_string(),
+        "common/national_focus/tst.txt".to_string(),
+        "--output".to_string(),
+        changed_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let changed_json = read_utf8_lossy(&changed_output).unwrap();
+    assert!(changed_json.contains("\"missing_count\": 1"));
+    assert!(changed_json.contains("\"key\": \"TST_focus_one_desc\""));
+    assert!(changed_json.contains("\"orphan_count\": 0"));
+    assert!(changed_json.contains("\"duplicate_count\": 0"));
+}
+
+#[test]
+fn loc_sync_report_compares_two_language_key_sets() {
+    let root = unique_temp_dir("loc-sync-report");
+    fs::create_dir_all(root.join("localisation/english")).unwrap();
+    fs::create_dir_all(root.join("localisation/simp_chinese")).unwrap();
+    fs::write(
+        root.join("localisation/english/tst_l_english.yml"),
+        "\u{feff}l_english:\n TST_focus:0 \"Focus\"\n TST_focus_desc:0 \"Desc\"\n TST_duplicate:0 \"One\"\n TST_duplicate:0 \"Two\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("localisation/simp_chinese/tst_l_simp_chinese.yml"),
+        "\u{feff}l_simp_chinese:\n TST_focus:0 \"国策\"\n TST_extra:0 \"额外\"\n",
+    )
+    .unwrap();
+
+    let output = root.join("loc_sync.json");
+    cmd_loc_sync_report(&[
+        root.to_string_lossy().to_string(),
+        "--from".to_string(),
+        "english".to_string(),
+        "--to".to_string(),
+        "simp_chinese".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.loc_sync_report.v1\""));
+    assert!(json.contains("\"from\": \"english\""));
+    assert!(json.contains("\"to\": \"simp_chinese\""));
+    assert!(json.contains("\"from_keys_total\": 3"));
+    assert!(json.contains("\"to_keys_total\": 2"));
+    assert!(json.contains("\"common_count\": 1"));
+    assert!(json.contains("\"missing_in_to_count\": 2"));
+    assert!(json.contains("\"key\": \"TST_focus_desc\""));
+    assert!(json.contains("\"key\": \"TST_duplicate\""));
+    assert!(json.contains("\"extra_in_to_count\": 1"));
+    assert!(json.contains("\"key\": \"TST_extra\""));
+    assert!(json.contains("\"duplicate_from_count\": 1"));
+    assert!(json
+        .contains("translate-localisation --mod-root <mod-root> --from english --to simp_chinese"));
+
+    let same = cmd_loc_sync_report(&[
+        root.to_string_lossy().to_string(),
+        "--from".to_string(),
+        "english".to_string(),
+        "--to".to_string(),
+        "english".to_string(),
+    ]);
+    assert!(same.is_err());
+    assert!(same.unwrap_err().contains("must be different languages"));
+}
+
+#[test]
+fn gfx_audit_reports_missing_textures_refs_orphans_and_unregistered_images() {
+    let root = unique_temp_dir("gfx-audit");
+    fs::create_dir_all(root.join("common/national_focus")).unwrap();
+    fs::create_dir_all(root.join("interface")).unwrap();
+    fs::create_dir_all(root.join("gfx/interface/goals")).unwrap();
+    fs::write(root.join("gfx/interface/goals/used.dds"), "fake").unwrap();
+    fs::write(root.join("gfx/interface/goals/unregistered.dds"), "fake").unwrap();
+    fs::write(
+        root.join("interface/tst.gfx"),
+        r#"
+spriteTypes = {
+  spriteType = {
+    name = "GFX_goal_used"
+    texturefile = "gfx/interface/goals/used.dds"
+  }
+  spriteType = {
+    name = "GFX_goal_missing_texture"
+    texturefile = "gfx/interface/goals/missing.dds"
+  }
+  spriteType = {
+    name = "GFX_goal_orphan"
+    texturefile = "gfx/interface/goals/used.dds"
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("common/national_focus/tst.txt"),
+        r#"
+focus_tree = {
+  id = tst_focus
+  focus = {
+    id = TST_used
+    icon = GFX_goal_used
+  }
+  focus = {
+    id = TST_missing
+    icon = GFX_goal_missing_ref
+  }
+}
+"#,
+    )
+    .unwrap();
+
+    let output = root.join("gfx_audit.json");
+    cmd_gfx_audit(&[
+        root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.gfx_audit.v1\""));
+    assert!(json.contains("\"missing_textures_count\": 1"));
+    assert!(json.contains("\"id\": \"GFX_goal_missing_texture\""));
+    assert!(json.contains("\"missing_sprites_count\": 1"));
+    assert!(json.contains("\"id\": \"GFX_goal_missing_ref\""));
+    assert!(json.contains("\"orphan_sprites_count\": 2"));
+    assert!(json.contains("\"id\": \"GFX_goal_orphan\""));
+    assert!(json.contains("\"unregistered_images_count\": 1"));
+    assert!(json.contains("gfx/interface/goals/unregistered.dds"));
+
+    let changed_output = root.join("gfx_changed.json");
+    cmd_gfx_audit(&[
+        root.to_string_lossy().to_string(),
+        "--changed-only".to_string(),
+        "--changed".to_string(),
+        "common/national_focus/tst.txt".to_string(),
+        "--output".to_string(),
+        changed_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let changed_json = read_utf8_lossy(&changed_output).unwrap();
+    assert!(changed_json.contains("\"missing_sprites_count\": 1"));
+    assert!(changed_json.contains("\"missing_textures_count\": 0"));
+    assert!(changed_json.contains("\"orphan_sprites_count\": 0"));
+}
+
+#[test]
+fn logic_audit_reports_focus_graph_reference_issues() {
+    let root = unique_temp_dir("logic-audit");
+    fs::create_dir_all(root.join("common/national_focus")).unwrap();
+    fs::create_dir_all(root.join("events")).unwrap();
+    fs::write(
+        root.join("common/national_focus/tst.txt"),
+        r#"
+focus_tree = {
+  id = tst_focus
+  country = { factor = 0 modifier = { add = 10 tag = TST } }
+  focus = {
+    id = TST_root
+    x = 0
+    y = 0
+  }
+  focus = {
+    id = TST_child
+    prerequisite = { focus = TST_missing }
+    relative_position_id = TST_missing_position
+    completion_reward = { country_event = { id = tst.missing } }
+    x = 0
+    y = 1
+  }
+  focus = {
+    id = TST_left
+    mutually_exclusive = { focus = TST_right }
+    x = -1
+    y = 0
+  }
+  focus = {
+    id = TST_right
+    x = 1
+    y = 0
+  }
+}
+
+focus_tree = {
+  id = other_focus
+  country = { factor = 0 modifier = { add = 10 tag = OTH } }
+  focus = {
+    id = OTH_root
+    x = 0
+    y = 0
+  }
+  focus = {
+    id = OTH_cross
+    prerequisite = { focus = TST_root }
+    x = 0
+    y = 1
+  }
+}
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.join("events/tst_events.txt"),
+        r#"
+add_namespace = tst
+country_event = {
+  id = tst.1
+  title = tst.1.t
+  desc = tst.1.d
+  is_triggered_only = yes
+  option = { name = tst.1.a }
+}
+news_event = {
+  id = tst.2
+  title = tst.2.t
+  desc = tst.2.d
+  is_triggered_only = yes
+  option = { name = tst.2.a }
+}
+"#,
+    )
+    .unwrap();
+
+    let output = root.join("logic.json");
+    cmd_logic_audit(&[
+        root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.logic_audit.v1\""));
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("\"focus_total\": 6"));
+    assert!(json.contains("\"focus_trees_total\": 2"));
+    assert!(json.contains("\"broken_focus_refs_count\": 2"));
+    assert!(json.contains("\"target\": \"TST_missing\""));
+    assert!(json.contains("\"target\": \"TST_missing_position\""));
+    assert!(json.contains("\"cross_tree_focus_refs_count\": 1"));
+    assert!(json.contains("\"id\": \"OTH_cross\""));
+    assert!(json.contains("\"asymmetric_mutual_exclusions_count\": 1"));
+    assert!(json.contains("\"id\": \"TST_left\""));
+    assert!(json.contains("\"unreachable_focuses_count\": 1"));
+    assert!(json.contains("\"id\": \"TST_child\""));
+    assert!(json.contains("\"event_total\": 2"));
+    assert!(json.contains("\"event_refs_total\": 1"));
+    assert!(json.contains("\"broken_event_refs_count\": 1"));
+    assert!(json.contains("\"target\": \"tst.missing\""));
+    assert!(json.contains("\"potential_orphan_events_count\": 2"));
+    assert!(json.contains("\"id\": \"tst.1\""));
+
+    let changed_output = root.join("logic_changed.json");
+    cmd_logic_audit(&[
+        root.to_string_lossy().to_string(),
+        "--changed-only".to_string(),
+        "--changed".to_string(),
+        "common/national_focus/tst.txt".to_string(),
+        "--output".to_string(),
+        changed_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let changed_json = read_utf8_lossy(&changed_output).unwrap();
+    assert!(changed_json.contains("\"changed_files\": [\"common/national_focus/tst.txt\"]"));
+    assert!(changed_json.contains("\"broken_focus_refs_count\": 2"));
+
+    let missing_changed = cmd_logic_audit(&[
+        root.to_string_lossy().to_string(),
+        "--changed-only".to_string(),
+    ]);
+    assert!(missing_changed.is_err());
+    assert!(missing_changed
+        .unwrap_err()
+        .contains("--changed-only requires"));
+}
+
 fn write_minimal_focus_xlsx(path: &Path) {
     let file = fs::File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
@@ -353,7 +5637,8 @@ fn error_log_analyzer_extracts_file_line_and_categories() {
 [23:00:04][localisation.cpp:77]: Missing localisation key: sov_nep.1.t
 "#;
     let diagnostics = analyze_error_log(text, Some(&root));
-    let json = error_log_report_json(Path::new("M:\\logs\\error.log"), Some(&root), &diagnostics);
+    let report = build_error_log_report(diagnostics.clone(), None, Vec::new(), false);
+    let json = error_log_report_json(Path::new("M:\\logs\\error.log"), Some(&root), &report);
     fs::remove_dir_all(&root).unwrap();
 
     assert_eq!(diagnostics.len(), 4);
@@ -375,6 +5660,66 @@ fn error_log_analyzer_extracts_file_line_and_categories() {
     assert!(json.contains("\"gfx\": 1"));
     assert!(json.contains("\"event_namespace\": 1"));
     assert!(json.contains("\"localisation\": 1"));
+}
+
+#[test]
+fn error_log_analyzer_filters_baseline_and_changed_files() {
+    let root = unique_temp_dir("error-log-baseline");
+    fs::create_dir_all(root.join("events")).unwrap();
+    fs::create_dir_all(root.join("interface")).unwrap();
+    fs::write(root.join("events").join("new.txt"), "").unwrap();
+    fs::write(root.join("interface").join("old.gfx"), "").unwrap();
+    let baseline_log = root.join("baseline.log");
+    fs::write(
+        &baseline_log,
+        r#"[23:00:01][gfx_dx11.cpp:211]: Could not find spriteType "GFX_old" in file: "interface/old.gfx" near line: 5
+"#,
+    )
+    .unwrap();
+    let current_log = root.join("error.log");
+    fs::write(
+        &current_log,
+        r#"[23:00:01][gfx_dx11.cpp:211]: Could not find spriteType "GFX_old" in file: "interface/old.gfx" near line: 5
+[23:00:02][eventmanager.cpp:99]: Unknown event namespace in events/new.txt:42: tst.1
+"#,
+    )
+    .unwrap();
+    let output = root.join("report.json");
+
+    cmd_analyze_error_log(&[
+        "--input".to_string(),
+        current_log.to_string_lossy().to_string(),
+        "--mod-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--baseline".to_string(),
+        baseline_log.to_string_lossy().to_string(),
+        "--changed-only".to_string(),
+        "--changed".to_string(),
+        "events/new.txt".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    assert!(json.contains("\"schema\": \"hoi4skill.error_log_report.v1\""));
+    assert!(json.contains("\"diagnostics_total\": 2"));
+    assert!(json.contains("\"diagnostics_effective\": 1"));
+    assert!(json.contains("\"baseline_filtered\": 1"));
+    assert!(json.contains("\"changed_files\": [\"events/new.txt\"]"));
+    assert!(json.contains("\"category\": \"event_namespace\""));
+    assert!(json.contains("events/new.txt"));
+    assert!(!json.contains("\"GFX_old\""));
+
+    let changed_without_file = cmd_analyze_error_log(&[
+        "--input".to_string(),
+        current_log.to_string_lossy().to_string(),
+        "--changed-only".to_string(),
+    ]);
+    assert!(changed_without_file.is_err());
+    assert!(changed_without_file
+        .unwrap_err()
+        .contains("--changed-only requires"));
 }
 
 #[test]
@@ -846,6 +6191,34 @@ fn workflow_dry_run_detects_mixed_copy() {
 }
 
 #[test]
+fn workflow_dry_run_reports_blocked_plan_safety() {
+    let text = "国策树：\n整训舰队\n# completion_reward: 获得民族精神 舰队整训\n\n决议：未知动员\n目标：SOV\n效果：外星能量+50\n\n事件：未知局势\n命名空间：sov_ai\n触发：神秘局势\n选项A：继续\n效果A：政治点+50\n";
+    let json = run_workflow_json(text, None, "SOV", "sov_ai", None, true, None).unwrap();
+
+    assert!(json.contains("\"safety\": {\"status\": \"blocked\""));
+    assert!(json.contains("\"final_code_allowed\": false"));
+    assert!(json.contains("focus_layout: focus `整训舰队` completion_reward"));
+    assert!(json.contains("feature_cards: raw_effect `外星能量+50` must be mapped"));
+    assert!(json.contains("event_cards: raw_trigger `神秘局势` must be mapped"));
+    assert!(json.contains("先解决 safety.blockers"));
+}
+
+#[test]
+fn focus_layout_extraction_ignores_ai_markdown_preface_and_fences() {
+    let text = "国策树：\n下面是按你的要求输出的国策树代码：\n```txt\n陈独秀回到中国共产党 | chen_duxiu_returns_to_the_ccp\n重读新青年 | reread_new_youth    党内复议 | party_reconsideration\n# completion_reward: 政治点+50\n```\n说明：以上只是布局，不要把说明写进游戏。\n";
+    let json = run_workflow_json(text, None, "PRC", "prc_chen_duxiu", None, true, None).unwrap();
+
+    assert!(json.contains("\"id\": \"PRC_chen_duxiu_returns_to_the_ccp\""));
+    assert!(json.contains("\"id\": \"PRC_reread_new_youth\""));
+    assert!(json.contains("\"id\": \"PRC_party_reconsideration\""));
+    assert!(json.contains("\"completion_reward\": [\"add_political_power = 50\"]"));
+    assert!(!json.contains("PRC_ai"));
+    assert!(!json.contains("PRC_txt"));
+    assert!(!json.contains("PRC_note"));
+    assert!(!json.contains("PRC_above"));
+}
+
+#[test]
 fn render_focus_code_uses_fixed_tree_and_focus_templates() {
     let root = unique_temp_dir("render-focus-code");
     fs::create_dir_all(&root).unwrap();
@@ -960,12 +6333,36 @@ fn explicit_request_is_combined_with_structured_workbook_input() {
     )
     .unwrap();
 
-    assert!(input.text.contains("## Explicit User Requirement Contract"));
+    assert!(input.text.contains("# Explicit User Requirement Contract"));
     assert!(json.contains("\"focus_layout\": true"));
     assert!(json.contains("\"events\": 4"));
     assert!(json.contains("\"national_spirits\": 5"));
     assert!(json.contains("history/countries"));
     assert!(json.contains("localisation/english"));
+}
+
+#[test]
+fn explicit_request_does_not_become_focus_layout_content() {
+    let mut input = WorkflowInput {
+        text: "陈独秀回到中国共产党 | chen_duxiu_returns_to_the_ccp\n重读新青年 | reread_new_youth    党内复议 | party_reconsideration\n".to_string(),
+        focus_layout: None,
+    };
+    append_explicit_request(&mut input, Some("陈独秀回到中国共产党国策树"));
+
+    let json = run_workflow_json_with_focus_layout(
+        &input.text,
+        input.focus_layout.as_ref(),
+        None,
+        "PRC",
+        "prc_chen_duxiu",
+        None,
+        true,
+        None,
+    )
+    .unwrap();
+
+    assert!(json.contains("\"id\": \"PRC_chen_duxiu_returns_to_the_ccp\""));
+    assert!(!json.contains("PRC_country_party_country"));
 }
 
 #[test]
@@ -1055,6 +6452,97 @@ fn prepare_edit_context_packages_model_preflight_context() {
 }
 
 #[test]
+fn prepare_edit_context_embeds_strict_authoring_contract_and_safety_blockers() {
+    let root = unique_temp_dir("edit-context-strict-ai-contract");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Strict Context Test\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    let input = root.join("copy.txt");
+    fs::write(&input, "决议：政治动员\n目标：SOV\n效果：政治点+50\n").unwrap();
+    let mut index = GameIndex::default();
+    index.country_tags.insert("SOV".to_string());
+    index.effects.insert("add_stability".to_string());
+    index
+        .effects
+        .insert("add_scaled_political_power".to_string());
+
+    let context = prepare_edit_context_markdown(
+        &input,
+        &root,
+        "SOV",
+        "sov_ctx",
+        None,
+        None,
+        None,
+        &[],
+        Some(&index),
+        20,
+        20,
+        10,
+        None,
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(context.contains("- dry_run_validation: `strict-code-index`"));
+    assert!(context.contains("## AI Authoring Contract"));
+    assert!(context.contains("compile-intent --kind auto"));
+    assert!(context.contains("- status: `BLOCKED`"));
+    assert!(context.contains("dry-run safety status is blocked"));
+    assert!(context.contains("dry-run safety blocks final code"));
+    assert!(context.contains("Do not write final Clausewitz"));
+    assert!(context.contains("\"final_code_allowed\": false"));
+    assert!(context.contains("unindexed effect `add_political_power`"));
+    assert!(context.contains("related indexed code: effects/effect `add_scaled_political_power`"));
+}
+
+#[test]
+fn prepare_edit_context_requires_game_root_for_dependency_mod_paths() {
+    let root = unique_temp_dir("edit-context-dependency-needs-game-root");
+    let target_mod = root.join("target");
+    let dependency_mod = root.join("dependency");
+    fs::create_dir_all(&target_mod).unwrap();
+    fs::create_dir_all(&dependency_mod).unwrap();
+    fs::write(
+        target_mod.join("descriptor.mod"),
+        "name=\"Target Context Test\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dependency_mod.join("descriptor.mod"),
+        "name=\"Dependency Context Test\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    let input = root.join("request.txt");
+    let output = root.join("context.md");
+    fs::write(&input, "给 SOV 加一个国策。").unwrap();
+
+    let err = cmd_prepare_edit_context(&[
+        "--input".to_string(),
+        input.to_string_lossy().to_string(),
+        "--mod-root".to_string(),
+        target_mod.to_string_lossy().to_string(),
+        "--tag".to_string(),
+        "SOV".to_string(),
+        "--prefix".to_string(),
+        "sov_ctx".to_string(),
+        "--mod-path".to_string(),
+        dependency_mod.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+    let output_exists = output.exists();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("--mod-path requires --game-root during edit-context preparation"));
+    assert!(!output_exists);
+}
+
+#[test]
 fn indexed_resource_summary_lists_verified_leader_portraits() {
     let mut index = GameIndex::default();
     index.country_tags.insert("CHI".to_string());
@@ -1119,6 +6607,81 @@ fn workflow_applies_files_and_embeds_validation() {
     assert!(events.contains("country_event = {"));
     assert!(loc.contains("l_simp_chinese:"));
     assert!(loc.contains("新经济政策的未来"));
+}
+
+#[test]
+fn strict_workflow_blocks_unresolved_cards_before_write() {
+    let root = unique_temp_dir("strict-workflow-prewrite");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Strict Workflow Test\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    let mut index = GameIndex::default();
+    index.country_tags.insert("SOV".to_string());
+    index.effects.insert("add_political_power".to_string());
+    let text = "决议：未知动员\n目标：SOV\n效果：外星能量+50\n";
+
+    let err = run_workflow_json_with_focus_layout_options(
+        text,
+        None,
+        Some(&root),
+        "SOV",
+        "sov_ai",
+        None,
+        false,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    )
+    .unwrap_err();
+    let common_exists = root.join("common").exists();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("strict feature-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("外星能量+50"));
+    assert!(!common_exists);
+}
+
+#[test]
+fn strict_workflow_dry_run_reports_prewrite_code_index_blockers() {
+    let root = unique_temp_dir("strict-workflow-dry-run-blockers");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Strict Dry Run\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    let mut index = GameIndex::default();
+    index.country_tags.insert("SOV".to_string());
+    index.effects.insert("add_stability".to_string());
+    index
+        .effects
+        .insert("add_scaled_political_power".to_string());
+    let text = "决议：政治动员\n目标：SOV\n效果：政治点+50\n";
+
+    let json = run_workflow_json_with_focus_layout_options(
+        text,
+        None,
+        Some(&root),
+        "SOV",
+        "sov_ai",
+        None,
+        true,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(json.contains("\"final_code_allowed\": false"));
+    assert!(json.contains("feature_cards strict gate"));
+    assert!(json.contains("unindexed effect `add_political_power`"));
+    assert!(json.contains("related indexed code: effects/effect `add_scaled_political_power`"));
 }
 
 #[test]
@@ -1216,6 +6779,27 @@ fn country_knowledge_uses_ideology_and_cosmetic_localisation_aliases() {
 
     assert_eq!(guess.tag, "KOR");
     assert_eq!(guess.name, "韩国");
+}
+
+#[test]
+fn country_knowledge_prefers_prc_for_chinese_communist_party_alias() {
+    let root = unique_temp_dir("country-target-prc-alias");
+    write_country_knowledge_source(
+        &root,
+        &[
+            ("CHI", "China.txt", "中国"),
+            ("PRC", "PRC.txt", "共产党中国"),
+        ],
+    );
+
+    let guess =
+        infer_country_from_sources("陈独秀回到中国共产党国策树", std::slice::from_ref(&root))
+            .unwrap()
+            .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(guess.tag, "PRC");
+    assert_eq!(guess.name, "中国共产党");
 }
 
 #[test]
@@ -1706,6 +7290,8 @@ fn generate_mod_from_one_sentence_creates_playable_mod_files() {
         launcher_file: false,
         dry_run: false,
         country_source: None,
+        game_index: None,
+        validation_options: ValidationOptions::default(),
     };
     let json = generate_mod_json(&request).unwrap();
 
@@ -1739,6 +7325,48 @@ fn generate_mod_from_one_sentence_creates_playable_mod_files() {
     assert!(events.contains("type = arms_factory level = 3"));
     assert!(loc.contains("扩建军工体系的消息"));
     assert!(!localisation_contains_mod_name);
+}
+
+#[test]
+fn strict_generate_mod_blocks_missing_effect_index_before_content_write() {
+    let root = unique_temp_dir("strict-one-sentence-mod");
+    let game = root.join("game");
+    let output = root.join("mod");
+    fs::create_dir_all(game.join("common").join("country_tags")).unwrap();
+    fs::write(
+        game.join("common")
+            .join("country_tags")
+            .join("00_countries.txt"),
+        "GER = \"countries/Germany.txt\"\n",
+    )
+    .unwrap();
+
+    let err = cmd_generate_mod(&[
+        "--text".to_string(),
+        "给德国加一个国策，完成后获得3个军工厂。".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+        "--game-root".to_string(),
+        game.to_string_lossy().to_string(),
+        "--tag".to_string(),
+        "GER".to_string(),
+        "--prefix".to_string(),
+        "ger_demo".to_string(),
+        "--final-check".to_string(),
+    ])
+    .unwrap_err();
+    let focus_exists = output
+        .join("common")
+        .join("national_focus")
+        .join("ger_demo_GER_focus.txt")
+        .exists();
+    let events_exists = output.join("events").join("ger_demo_events.txt").exists();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("strict focus layout generation blocked unresolved AI mappings"));
+    assert!(err.contains("strict code index has no indexed effects"));
+    assert!(!focus_exists);
+    assert!(!events_exists);
 }
 
 #[test]
@@ -1785,13 +7413,14 @@ fn focus_layout_accepts_explicit_ai_id_hints() {
 #[test]
 fn feature_cards_cover_documented_effect_shorthands() {
     let json = parse_decision_idea_cards_json(
-        "民族精神：新经济政策复兴\n目标：SOV\n效果：稳定度+5%，建造速度+5%，消费品工厂-3%\n移除：不可手动移除\n\n决议：整训舰队\n目标：ITA\n可用：战争中\n效果：海军经验+25，陆军经验+5，空军经验+5，获得民族精神 舰队整训，触发新闻 海军改革，军工+3",
+        "民族精神：新经济政策复兴\n目标：SOV\n效果：稳定度+5%，建造速度+5%，消费品工厂-3%，战争正当化 = -10%\n移除：不可手动移除\n\n决议：整训舰队\n目标：ITA\n可用：战争中\n效果：海军经验+25，陆军经验+5，空军经验+5，获得民族精神 舰队整训，触发新闻 海军改革，军工+3",
         "SOV",
         "sov_nep",
     );
 
     assert!(json.contains("\"code\": \"production_speed_buildings_factor = 0.05\""));
     assert!(json.contains("\"code\": \"consumer_goods_factor = -0.03\""));
+    assert!(json.contains("\"code\": \"justify_war_goal_time = -0.1\""));
     assert!(json.contains("\"code\": \"has_war = yes\""));
     assert!(json.contains("\"code\": \"navy_experience = 25\""));
     assert!(json.contains("\"code\": \"army_experience = 5\""));
@@ -1801,6 +7430,41 @@ fn feature_cards_cover_documented_effect_shorthands() {
     assert!(json.contains(
         "\"code\": \"add_building_construction = { type = arms_factory level = <number> instant_build = yes }\""
     ));
+}
+
+#[test]
+fn parse_feature_cards_json_marks_unresolved_suggestions_as_blocked() {
+    let json = parse_decision_idea_cards_json(
+        "决议：神秘工业动员\n目标：KOR\n效果：外星工厂+5",
+        "KOR",
+        "kor_ai",
+    );
+
+    assert!(json.contains("\"safety\": {\"status\": \"blocked\""));
+    assert!(json.contains("\"final_code_allowed\": false"));
+    assert!(json.contains("\"requires_mapping\": true"));
+    assert!(json.contains("raw_effect `外星工厂+5` must be mapped"));
+}
+
+#[test]
+fn parse_cards_ignores_ai_markdown_noise_inside_cards() {
+    let cards = parse_cards(
+        "民族精神：工人自治委员会\n下面是按你的要求写的民族精神：\n```txt\n目标：CPC\n效果：稳定度＋5％\n```\n说明：以上不是本地化文案。\n描述：工人委员会正在重建基层组织。\n",
+        &["决议", "民族精神"],
+    );
+
+    assert_eq!(cards.len(), 1);
+    assert_eq!(cards[0].title, "工人自治委员会");
+    assert_eq!(cards[0].fields.get("目标").map(String::as_str), Some("CPC"));
+    assert_eq!(
+        cards[0].fields.get("效果").map(String::as_str),
+        Some("稳定度＋5％")
+    );
+    assert_eq!(
+        cards[0].fields.get("描述").map(String::as_str),
+        Some("工人委员会正在重建基层组织。")
+    );
+    assert!(!cards[0].fields.contains_key("说明"));
 }
 
 #[test]
@@ -2116,7 +7780,7 @@ fn apply_feature_cards_writes_decisions_ideas_and_localisation() {
     let root = unique_temp_dir("apply-feature-cards");
     fs::create_dir_all(&root).unwrap();
     let cards = parse_cards(
-        "决议：整训舰队\n目标：ITA\n分类：海军改革\n花费：50政治点\n冷却：30天\n可用：战争中\n效果：海军经验+25，军工+3\n描述：集中资源整训舰队。\n\n民族精神：舰队整训\n目标：ITA\n效果：稳定度+5%，战争支持+2%\n移除：不可手动移除\n描述：舰队整训正在提升国家动员能力。",
+        "决议：整训舰队\n目标：ITA\n分类：海军改革\n花费：50政治点\n冷却：30天\n可用：战争中\n效果：海军经验+25，军工+3\n描述：集中资源整训舰队。\n\n民族精神：舰队整训\n目标：ITA\n效果：稳定度+5%，战争支持+2%\nllm：战争正当化 = -10%\n移除：不可手动移除\n描述：舰队整训正在提升国家动员能力。",
         &["决议", "民族精神"],
     );
 
@@ -2159,6 +7823,7 @@ fn apply_feature_cards_writes_decisions_ideas_and_localisation() {
     assert!(ideas.contains("ita_reform_spirit_1_idea"));
     assert!(ideas.contains("stability_factor = 0.05"));
     assert!(ideas.contains("war_support_factor = 0.02"));
+    assert!(ideas.contains("justify_war_goal_time = -0.1"));
     assert!(ideas.contains("removal_cost = -1"));
     assert!(loc_bytes.starts_with(&[0xef, 0xbb, 0xbf]));
     assert!(loc.contains("ita_reform_decision_0:0 \"整训舰队\""));
@@ -2464,6 +8129,21 @@ fn event_cards_include_hidden_effects_and_ai_chance() {
 }
 
 #[test]
+fn parse_event_cards_json_marks_unresolved_suggestions_as_blocked() {
+    let json = parse_event_cards_json(
+        "事件：未知动员\n目标：SOV\n命名空间：sov_ai\n触发：神秘局势\n选项A：继续\n效果A：外星能量+50",
+        "SOV",
+        "sov_ai",
+    );
+
+    assert!(json.contains("\"safety\": {\"status\": \"blocked\""));
+    assert!(json.contains("\"final_code_allowed\": false"));
+    assert!(json.contains("\"requires_mapping\": true"));
+    assert!(json.contains("raw_trigger `神秘局势` must be mapped"));
+    assert!(json.contains("raw_effect `外星能量+50` must be mapped"));
+}
+
+#[test]
 fn event_cards_number_ids_inside_each_namespace() {
     let json = parse_event_cards_json(
         "事件：铁路会议\n命名空间：fer_rail\n选项A：通过\n\n事件：边境新闻\n类型：新闻事件\n命名空间：fer_news\n选项A：知道了\n\n事件：铁路复会\n命名空间：fer_rail\n选项A：继续",
@@ -2641,6 +8321,251 @@ fn apply_focus_layout_writes_focus_tree_and_localisation() {
 }
 
 #[test]
+fn strict_focus_layout_requires_game_root_before_write() {
+    let root = unique_temp_dir("strict-focus-layout-requires-game-root");
+    fs::create_dir_all(&root).unwrap();
+    let input = root.join("layout.txt");
+    fs::write(&input, "工业复兴\n").unwrap();
+
+    let err = cmd_apply_focus_layout(&[
+        "--input".to_string(),
+        input.display().to_string(),
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--tag".to_string(),
+        "SOV".to_string(),
+        "--prefix".to_string(),
+        "sov_test".to_string(),
+        "--final-check".to_string(),
+    ])
+    .unwrap_err();
+    let common_exists = root.join("common").exists();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("strict focus layout generation requires --game-root"));
+    assert!(!common_exists);
+}
+
+#[test]
+fn strict_focus_layout_gate_blocks_unresolved_reward_before_write() {
+    let root = unique_temp_dir("strict-focus-layout-prewrite");
+    let game = unique_temp_dir("strict-focus-layout-game");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(game.join("common").join("country_tags")).unwrap();
+    fs::create_dir_all(game.join("interface")).unwrap();
+    fs::write(
+        game.join("common")
+            .join("country_tags")
+            .join("00_countries.txt"),
+        "SOV = \"countries/Soviet.txt\"\n",
+    )
+    .unwrap();
+    fs::write(
+        game.join("interface").join("goals.gfx"),
+        r#"spriteType = { name = "GFX_goal_industrial_revival" texturefile = "gfx/interface/goals/industry.dds" }"#,
+    )
+    .unwrap();
+    let input = root.join("layout.txt");
+    fs::write(&input, "工业复兴\n# completion_reward: 外星能量+50\n").unwrap();
+
+    let err = cmd_apply_focus_layout(&[
+        "--input".to_string(),
+        input.display().to_string(),
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--tag".to_string(),
+        "SOV".to_string(),
+        "--prefix".to_string(),
+        "sov_test".to_string(),
+        "--game-root".to_string(),
+        game.display().to_string(),
+        "--final-check".to_string(),
+    ])
+    .unwrap_err();
+    let common_exists = root.join("common").exists();
+    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&game).unwrap();
+
+    assert!(err.contains("strict focus layout generation blocked unresolved AI mappings"));
+    assert!(err.contains("外星能量+50"));
+    assert!(!common_exists);
+}
+
+#[test]
+fn strict_focus_layout_gate_blocks_unindexed_reward_effect_before_write() {
+    let root = unique_temp_dir("strict-focus-layout-unindexed-reward");
+    fs::create_dir_all(&root).unwrap();
+    let mut index = GameIndex::default();
+    index
+        .focus_goal_sprites
+        .insert("GFX_goal_industry".to_string());
+    index.effects.insert("add_stability".to_string());
+    index
+        .effects
+        .insert("add_scaled_political_power".to_string());
+    let layout = FocusLayout {
+        tree_id: "kor_ai_focus_tree".to_string(),
+        rows: Vec::new(),
+        mutuals: Vec::new(),
+        focuses: vec![FocusNode {
+            title: "工业复兴".to_string(),
+            id: "KOR_industrial_revival".to_string(),
+            icon: Some("GFX_goal_industry".to_string()),
+            x: 0,
+            y: 0,
+            relative_position_id: None,
+            relative_x: None,
+            relative_y: None,
+            row: 0,
+            column: 0,
+            prerequisite: Vec::new(),
+            mutually_exclusive: Vec::new(),
+            completion_reward: vec!["add_political_power = 50".to_string()],
+        }],
+    };
+
+    let err = enforce_strict_focus_layout_gate_with_options(
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &root,
+        &layout,
+        "KOR",
+        Some(&index),
+    )
+    .unwrap_err();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("strict focus layout generation blocked unresolved AI mappings"));
+    assert!(err.contains("unindexed effect `add_political_power`"));
+    assert!(err.contains("check-code-symbol --kind effect"));
+    assert!(err.contains("related indexed code: effects/effect `add_scaled_political_power`"));
+}
+
+#[test]
+fn strict_focus_layout_gate_blocks_missing_effect_index_category_before_write() {
+    let root = unique_temp_dir("strict-focus-layout-missing-effect-category");
+    fs::create_dir_all(&root).unwrap();
+    let mut index = GameIndex::default();
+    index
+        .focus_goal_sprites
+        .insert("GFX_goal_industry".to_string());
+    let layout = FocusLayout {
+        tree_id: "kor_ai_focus_tree".to_string(),
+        rows: Vec::new(),
+        mutuals: Vec::new(),
+        focuses: vec![FocusNode {
+            title: "工业复兴".to_string(),
+            id: "KOR_industrial_revival".to_string(),
+            icon: Some("GFX_goal_industry".to_string()),
+            x: 0,
+            y: 0,
+            relative_position_id: None,
+            relative_x: None,
+            relative_y: None,
+            row: 0,
+            column: 0,
+            prerequisite: Vec::new(),
+            mutually_exclusive: Vec::new(),
+            completion_reward: vec!["add_political_power = 50".to_string()],
+        }],
+    };
+
+    let err = enforce_strict_focus_layout_gate_with_options(
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &root,
+        &layout,
+        "KOR",
+        Some(&index),
+    )
+    .unwrap_err();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("strict focus layout generation blocked unresolved AI mappings"));
+    assert!(err.contains("strict code index has no indexed effects"));
+    assert!(err.contains("documentation/effects_documentation.md"));
+}
+
+#[test]
+fn strict_parse_focus_layout_requires_game_root_before_output() {
+    let root = unique_temp_dir("strict-parse-focus-requires-game-root");
+    fs::create_dir_all(&root).unwrap();
+    let input = root.join("layout.txt");
+    let output = root.join("layout.json");
+    fs::write(&input, "工业复兴\n").unwrap();
+
+    let err = cmd_parse_focus_layout(&[
+        "--input".to_string(),
+        input.display().to_string(),
+        "--tag".to_string(),
+        "KOR".to_string(),
+        "--prefix".to_string(),
+        "kor_ai".to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.display().to_string(),
+    ])
+    .unwrap_err();
+    let output_exists = output.exists();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("strict focus layout generation requires --game-root"));
+    assert!(!output_exists);
+}
+
+#[test]
+fn strict_render_focus_code_blocks_unindexed_reward_effect_before_output() {
+    let root = unique_temp_dir("strict-render-focus-code");
+    let game = root.join("game");
+    fs::create_dir_all(game.join("common").join("country_tags")).unwrap();
+    fs::create_dir_all(game.join("documentation")).unwrap();
+    fs::create_dir_all(game.join("interface")).unwrap();
+    fs::write(
+        game.join("common")
+            .join("country_tags")
+            .join("00_countries.txt"),
+        "KOR = \"countries/Korea.txt\"\n",
+    )
+    .unwrap();
+    fs::write(
+        game.join("documentation").join("effects_documentation.md"),
+        "## Effects\n\n## add_stability\n",
+    )
+    .unwrap();
+    fs::write(
+        game.join("interface").join("goals.gfx"),
+        r#"spriteType = { name = "GFX_goal_industrial_revival" texturefile = "gfx/interface/goals/industry.dds" }"#,
+    )
+    .unwrap();
+    let input = root.join("layout.txt");
+    let output = root.join("focus.txt");
+    fs::write(&input, "工业复兴\n# completion_reward: 政治点+50\n").unwrap();
+
+    let err = cmd_render_focus_code(&[
+        "--input".to_string(),
+        input.display().to_string(),
+        "--tag".to_string(),
+        "KOR".to_string(),
+        "--prefix".to_string(),
+        "kor_ai".to_string(),
+        "--game-root".to_string(),
+        game.display().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.display().to_string(),
+    ])
+    .unwrap_err();
+    let output_exists = output.exists();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("strict focus layout generation blocked unresolved AI mappings"));
+    assert!(err.contains("unindexed effect `add_political_power`"));
+    assert!(!output_exists);
+}
+
+#[test]
 fn focus_excel_reads_drawn_tree_and_renders_standard_skeleton() {
     let root = unique_temp_dir("focus-excel");
     fs::create_dir_all(&root).unwrap();
@@ -2689,6 +8614,87 @@ fn focus_excel_reads_drawn_tree_and_renders_standard_skeleton() {
     assert!(tree.contains("continue_if_invalid = no"));
     assert!(tree.contains("available_if_capitulated = no"));
     assert!(tree.contains("arms_factory"));
+}
+
+#[test]
+fn strict_parse_focus_excel_requires_game_root_before_output() {
+    let root = unique_temp_dir("strict-parse-focus-excel-root");
+    fs::create_dir_all(&root).unwrap();
+    let xlsx = root.join("tree.xlsx");
+    let output = root.join("focus_review.md");
+    write_minimal_focus_xlsx(&xlsx);
+
+    let err = cmd_parse_focus_excel(&[
+        "--input".to_string(),
+        xlsx.display().to_string(),
+        "--tag".to_string(),
+        "SOV".to_string(),
+        "--prefix".to_string(),
+        "sov_excel".to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.display().to_string(),
+    ])
+    .unwrap_err();
+    let output_exists = output.exists();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("strict focus layout generation requires --game-root"));
+    assert!(!output_exists);
+}
+
+#[test]
+fn strict_parse_focus_excel_blocks_unindexed_reward_effect_before_output() {
+    let root = unique_temp_dir("strict-parse-focus-excel-reward");
+    let game = root.join("game");
+    fs::create_dir_all(game.join("common").join("country_tags")).unwrap();
+    fs::create_dir_all(game.join("documentation")).unwrap();
+    fs::create_dir_all(game.join("interface")).unwrap();
+    fs::write(
+        game.join("common")
+            .join("country_tags")
+            .join("00_countries.txt"),
+        "SOV = \"countries/Soviet.txt\"\n",
+    )
+    .unwrap();
+    fs::write(
+        game.join("documentation").join("effects_documentation.md"),
+        "## Effects\n\n## add_stability\n",
+    )
+    .unwrap();
+    fs::write(
+        game.join("interface").join("goals.gfx"),
+        r#"spriteType = { name = "GFX_goal_generic_construct_civ_factory" texturefile = "gfx/interface/goals/factory.dds" }
+spriteType = { name = "GFX_goal_army_effort" texturefile = "gfx/interface/goals/army.dds" }
+spriteType = { name = "GFX_goal_generic_political_pressure" texturefile = "gfx/interface/goals/politics.dds" }"#,
+    )
+    .unwrap();
+    let xlsx = root.join("tree.xlsx");
+    let output = root.join("focus_tree.txt");
+    write_minimal_focus_xlsx(&xlsx);
+
+    let err = cmd_parse_focus_excel(&[
+        "--input".to_string(),
+        xlsx.display().to_string(),
+        "--tag".to_string(),
+        "SOV".to_string(),
+        "--prefix".to_string(),
+        "sov_excel".to_string(),
+        "--format".to_string(),
+        "focus-tree".to_string(),
+        "--game-root".to_string(),
+        game.display().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.display().to_string(),
+    ])
+    .unwrap_err();
+    let output_exists = output.exists();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("strict focus layout generation blocked unresolved AI mappings"));
+    assert!(err.contains("unindexed effect"));
+    assert!(!output_exists);
 }
 
 #[test]
@@ -3237,6 +9243,43 @@ fn excel_mutual_marker_accepts_descriptive_text() {
 }
 
 #[test]
+fn focus_excel_json_marks_unresolved_rewards_as_blocked() {
+    let layout = FocusLayout {
+        tree_id: "sov_excel_SOV_focus_tree".to_string(),
+        rows: Vec::new(),
+        mutuals: Vec::new(),
+        focuses: vec![FocusNode {
+            title: "整训舰队".to_string(),
+            id: "SOV_fleet_drill".to_string(),
+            icon: None,
+            x: 0,
+            y: 0,
+            relative_position_id: None,
+            relative_x: None,
+            relative_y: None,
+            row: 0,
+            column: 0,
+            prerequisite: Vec::new(),
+            mutually_exclusive: Vec::new(),
+            completion_reward: vec![
+                "# 获得民族精神 舰队整训 -> add_ideas = <idea id for 舰队整训> ()".to_string(),
+            ],
+        }],
+    };
+    let json = focus_excel_layout_json(
+        &layout,
+        Path::new("tree.xlsx"),
+        Some("FocusTree"),
+        "SOV",
+        "sov_excel",
+    );
+
+    assert!(json.contains("\"safety\": {\"status\": \"blocked\""));
+    assert!(json.contains("\"final_code_allowed\": false"));
+    assert!(json.contains("<idea id for 舰队整训>"));
+}
+
+#[test]
 fn apply_focus_layout_extends_existing_country_focus_tree() {
     let root = unique_temp_dir("apply-focus-layout-existing-tree");
     let focus_dir = root.join("common").join("national_focus");
@@ -3589,6 +9632,11 @@ fn game_index_collects_tags_states_and_sprites() {
     )
     .unwrap();
     fs::write(
+        root.join("documentation").join("triggers_documentation.md"),
+        "## Triggers\n\n## Table\n\n## has_war\n\n## has_completed_focus\n\n## has_idea\n",
+    )
+    .unwrap();
+    fs::write(
         root.join("interface").join("goals.gfx"),
         r#"spriteType = { name = "GFX_goal_game_focus_icon" texturefile = "gfx/interface/goals/game.dds" }
 spriteType = { name = "GFX_focus_generic_workers" texturefile = "gfx/interface/goals/workers.dds" }"#,
@@ -3666,6 +9714,9 @@ spriteType = { name = "GFX_portrait_GER_wilhelm_ii" texturefile = "gfx/leaders/G
     assert!(index.effects.contains("add_political_power"));
     assert!(index.effects.contains("add_opinion_modifier"));
     assert!(!index.effects.contains("Effects"));
+    assert!(index.triggers.contains("has_war"));
+    assert!(index.triggers.contains("has_completed_focus"));
+    assert!(!index.triggers.contains("Triggers"));
     assert!(index.modifiers.contains("stability_factor"));
     assert!(!index.modifiers.contains("Modifiers"));
     assert!(json.contains("\"country_tags\": [\"ITA\", \"SOV\"]"));
@@ -3699,7 +9750,698 @@ spriteType = { name = "GFX_portrait_GER_wilhelm_ii" texturefile = "gfx/leaders/G
     assert!(json.contains(
         "\"effects\": [\"add_opinion_modifier\", \"add_political_power\", \"create_unit\"]"
     ));
+    assert!(json.contains("\"triggers\": [\"has_completed_focus\", \"has_idea\", \"has_war\"]"));
     assert!(json.contains("\"modifiers\": [\"political_power_factor\", \"stability_factor\"]"));
+}
+
+#[test]
+fn code_catalog_classifies_indexed_hoi4_code_for_model_use() {
+    let root = unique_temp_dir("code-catalog");
+    fs::create_dir_all(root.join("common").join("country_tags")).unwrap();
+    fs::create_dir_all(root.join("common").join("buildings")).unwrap();
+    fs::create_dir_all(root.join("common").join("resources")).unwrap();
+    fs::create_dir_all(root.join("common").join("modifiers")).unwrap();
+    fs::create_dir_all(root.join("documentation")).unwrap();
+    fs::create_dir_all(root.join("history").join("states")).unwrap();
+    fs::write(
+        root.join("common")
+            .join("country_tags")
+            .join("00_countries.txt"),
+        "SOV = \"countries/Soviet.txt\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("common")
+            .join("buildings")
+            .join("00_buildings.txt"),
+        "buildings = { arms_factory = { max_level = 5 } industrial_complex = { max_level = 10 } }",
+    )
+    .unwrap();
+    fs::write(
+        root.join("common")
+            .join("resources")
+            .join("00_resources.txt"),
+        "resources = { oil = {} steel = {} }",
+    )
+    .unwrap();
+    fs::write(
+        root.join("common").join("modifiers").join("00_static.txt"),
+        "static_modifiers = { test_static = { stability_factor = 0.05 } }",
+    )
+    .unwrap();
+    fs::write(
+        root.join("history").join("states").join("64-Moscow.txt"),
+        "state = { id = 64 name = \"STATE_64\" provinces = { 123 } }",
+    )
+    .unwrap();
+    fs::write(
+        root.join("documentation")
+            .join("modifiers_documentation.md"),
+        "## Modifiers\n\n## stability_factor\n\n## political_power_factor\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("documentation").join("effects_documentation.md"),
+        "## Effects\n\n## add_political_power\n\n## add_stability\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("documentation").join("triggers_documentation.md"),
+        "## Triggers\n\n## has_war\n\n## has_idea\n",
+    )
+    .unwrap();
+    let output = root.join("catalog.json");
+
+    cmd_code_catalog(&[
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--max-items".to_string(),
+        "1".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(json.contains("\"schema\": \"hoi4skill.code_catalog.v1\""));
+    assert!(json.contains("\"id\": \"effects\""));
+    assert!(json.contains("\"kind\": \"script_command\""));
+    assert!(json.contains("\"id\": \"triggers\""));
+    assert!(json.contains("\"kind\": \"script_condition\""));
+    assert!(json.contains("\"id\": \"modifiers\""));
+    assert!(json.contains("\"kind\": \"modifier\""));
+    assert!(json.contains("\"id\": \"buildings\""));
+    assert!(json.contains("\"id\": \"country_tags\""));
+    assert!(json.contains("\"id\": \"state_ids\""));
+    assert!(json.contains("\"items\": [\"add_political_power\"]"));
+    assert!(json.contains("\"truncated\": true"));
+    assert!(json.contains("Treat missing category entries as unknown"));
+    assert!(json.contains("\"effects\": 2"));
+    assert!(json.contains("\"triggers\": 2"));
+    assert!(json.contains("\"modifiers\": 3"));
+}
+
+#[test]
+fn check_code_symbol_classifies_known_hoi4_code_and_rejects_wrong_kind() {
+    let root = unique_temp_dir("check-code-symbol");
+    fs::create_dir_all(root.join("documentation")).unwrap();
+    fs::create_dir_all(root.join("interface")).unwrap();
+    fs::write(
+        root.join("documentation").join("effects_documentation.md"),
+        "## Effects\n\n## add_political_power\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("documentation").join("triggers_documentation.md"),
+        "## Triggers\n\n## has_war\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("documentation")
+            .join("modifiers_documentation.md"),
+        "## Modifiers\n\n## stability_factor\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("interface").join("ideas.gfx"),
+        r#"spriteType = { name = "GFX_idea_workers_council" texturefile = "gfx/interface/ideas/workers.dds" }"#,
+    )
+    .unwrap();
+    let effect_output = root.join("effect.json");
+    let wrong_kind_output = root.join("wrong_kind.json");
+    let idea_output = root.join("idea.json");
+
+    cmd_check_code_symbol(&[
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--symbol".to_string(),
+        "add_political_power".to_string(),
+        "--kind".to_string(),
+        "effect".to_string(),
+        "--output".to_string(),
+        effect_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let err = cmd_check_code_symbol(&[
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--symbol".to_string(),
+        "add_political_power".to_string(),
+        "--kind".to_string(),
+        "modifier".to_string(),
+        "--output".to_string(),
+        wrong_kind_output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+    cmd_check_code_symbol(&[
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--symbol".to_string(),
+        "GFX_idea_workers_council".to_string(),
+        "--kind".to_string(),
+        "resource_id".to_string(),
+        "--output".to_string(),
+        idea_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let effect_json = read_utf8_lossy(&effect_output).unwrap();
+    let wrong_kind_json = read_utf8_lossy(&wrong_kind_output).unwrap();
+    let idea_json = read_utf8_lossy(&idea_output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(effect_json.contains("\"schema\": \"hoi4skill.code_symbol_check.v1\""));
+    assert!(effect_json.contains("\"ok\": true"));
+    assert!(effect_json.contains("\"category\": \"effects\""));
+    assert!(effect_json.contains("\"kind\": \"effect\""));
+    assert!(err.contains("was not found in the indexed HOI4 code catalog for kind `modifier`"));
+    assert!(wrong_kind_json.contains("\"ok\": false"));
+    assert!(wrong_kind_json.contains("do not emit it as Clausewitz code"));
+    assert!(idea_json.contains("\"ok\": true"));
+    assert!(idea_json.contains("\"category\": \"idea_pictures\""));
+    assert!(idea_json.contains("\"symbol\": \"workers_council\""));
+    assert!(idea_json.contains(
+        "\"normalized_candidates\": [\"GFX_idea_workers_council\", \"workers_council\"]"
+    ));
+}
+
+#[test]
+fn check_code_symbol_returns_semantic_candidates_for_bad_ai_symbol() {
+    let root = unique_temp_dir("check-code-symbol-semantic-candidates");
+    fs::create_dir_all(root.join("documentation")).unwrap();
+    fs::write(
+        root.join("documentation").join("effects_documentation.md"),
+        "## Effects\n\n## add_political_power\n\n## add_stability\n",
+    )
+    .unwrap();
+    let output = root.join("symbol.json");
+
+    let err = cmd_check_code_symbol(&[
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--symbol".to_string(),
+        "add_politicalpower".to_string(),
+        "--kind".to_string(),
+        "effect".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("was not found"));
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("\"semantic_candidates\""));
+    assert!(json.contains("\"symbol\": \"add_political_power\""));
+}
+
+#[test]
+fn related_code_symbol_matches_can_scope_buildings_and_resources() {
+    let mut index = GameIndex::default();
+    index.buildings.insert("arms_factory".to_string());
+    index.resources.insert("steel".to_string());
+    index
+        .focus_goal_sprites
+        .insert("GFX_goal_steel".to_string());
+    index.technologies.insert("steel_production".to_string());
+
+    let building_matches = related_code_symbol_matches(&index, "arm_factory", Some("building"), 5)
+        .into_iter()
+        .map(|item| item.category.to_string())
+        .collect::<Vec<_>>();
+    let resource_matches = related_code_symbol_matches(&index, "steel", Some("resource"), 5)
+        .into_iter()
+        .map(|item| item.category.to_string())
+        .collect::<Vec<_>>();
+
+    assert_eq!(building_matches, vec!["buildings".to_string()]);
+    assert_eq!(resource_matches, vec!["resources".to_string()]);
+}
+
+#[test]
+fn compile_intent_turns_llm_shorthand_into_modifier_code() {
+    let root = unique_temp_dir("compile-intent");
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("intent.json");
+
+    cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：战争正当化 = -10%".to_string(),
+        "--kind".to_string(),
+        "idea".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(json.contains("\"schema\": \"hoi4skill.intent_compile.v1\""));
+    assert!(json.contains("\"intent\": \"战争正当化 = -10%\""));
+    assert!(json.contains("\"kind\": \"idea_modifier_candidate\""));
+    assert!(json.contains("\"code\": \"justify_war_goal_time = -0.1\""));
+    assert!(json.contains("\"status\": \"verified_shape\""));
+    assert!(json.contains("\"anti_hallucination_rule\""));
+}
+
+#[test]
+fn compile_intent_error_reports_related_indexed_code_for_bad_ai_effect() {
+    let root = unique_temp_dir("compile-intent-related-code");
+    fs::create_dir_all(root.join("documentation")).unwrap();
+    fs::write(
+        root.join("documentation").join("effects_documentation.md"),
+        "## Effects\n\n## add_political_power\n",
+    )
+    .unwrap();
+    let output = root.join("intent.json");
+
+    let err = cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：political_power = 50".to_string(),
+        "--kind".to_string(),
+        "effect".to_string(),
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("intent compilation blocked unresolved or unindexed HOI4 code"));
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("related indexed code: effects/effect `add_political_power`"));
+    assert!(json.contains("political_power = 50"));
+}
+
+#[test]
+fn compile_intent_blocks_context_mismatched_code_kind() {
+    let root = unique_temp_dir("compile-intent-context-mismatch");
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("intent.json");
+
+    let err = cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：政治点+50".to_string(),
+        "--kind".to_string(),
+        "idea".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("intent compilation blocked unresolved or unindexed HOI4 code"));
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("\"final_code_allowed\": false"));
+    assert!(json.contains("\"status\": \"blocked\""));
+    assert!(json.contains("\"allowed_kinds\": [\"idea_modifier\""));
+    assert!(json.contains("\"kind\": \"country_effect\""));
+    assert!(json.contains("compiled to `country_effect` but --kind `idea`"));
+}
+
+#[test]
+fn compile_intent_auto_infers_effect_context_without_raw_trigger_noise() {
+    let root = unique_temp_dir("compile-intent-auto-effect");
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("intent.json");
+
+    cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：政治点+50".to_string(),
+        "--kind".to_string(),
+        "auto".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(json.contains("\"context\": \"effect\""));
+    assert!(json.contains("\"kind\": \"country_effect\""));
+    assert!(json.contains("\"code\": \"add_political_power = 50\""));
+    assert!(json.contains("\"ok\": true"));
+    assert!(!json.contains("raw_trigger"));
+}
+
+#[test]
+fn compile_intent_handles_fullwidth_numbers_and_negative_direction() {
+    let root = unique_temp_dir("compile-intent-fullwidth");
+    fs::create_dir_all(&root).unwrap();
+    let game = root.join("game");
+    fs::create_dir_all(game.join("documentation")).unwrap();
+    fs::write(
+        game.join("documentation")
+            .join("modifiers_documentation.md"),
+        "## Modifiers\n\n## stability_factor\n\n## justify_war_goal_time\n",
+    )
+    .unwrap();
+    let stable = root.join("stable.json");
+    let justify = root.join("justify.json");
+    let fullwidth = root.join("fullwidth.json");
+
+    cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：稳定度＋5％".to_string(),
+        "--kind".to_string(),
+        "idea".to_string(),
+        "--game-root".to_string(),
+        game.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        stable.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：战争正当化降低10%".to_string(),
+        "--kind".to_string(),
+        "idea".to_string(),
+        "--game-root".to_string(),
+        game.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        justify.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：战争正当化 ＝ −10％".to_string(),
+        "--kind".to_string(),
+        "idea".to_string(),
+        "--game-root".to_string(),
+        game.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        fullwidth.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let stable_json = read_utf8_lossy(&stable).unwrap();
+    let justify_json = read_utf8_lossy(&justify).unwrap();
+    let fullwidth_json = read_utf8_lossy(&fullwidth).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(stable_json.contains("\"code\": \"stability_factor = 0.05\""));
+    assert!(stable_json.contains("\"ok\": true"));
+    assert!(justify_json.contains("\"code\": \"justify_war_goal_time = -0.1\""));
+    assert!(fullwidth_json.contains("\"code\": \"justify_war_goal_time = -0.1\""));
+}
+
+#[test]
+fn compile_intent_blocks_keyword_effect_when_number_is_missing() {
+    let root = unique_temp_dir("compile-intent-missing-number");
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("intent.json");
+
+    let err = cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：稳定度提高很多".to_string(),
+        "--kind".to_string(),
+        "idea".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("intent compilation blocked unresolved or unindexed HOI4 code"));
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("\"final_code_allowed\": false"));
+    assert!(json.contains("Could not parse a required numeric value"));
+}
+
+#[test]
+fn compile_intent_applies_negative_direction_to_integer_effects() {
+    let root = unique_temp_dir("compile-intent-negative-int");
+    fs::create_dir_all(&root).unwrap();
+    let game = root.join("game");
+    fs::create_dir_all(game.join("documentation")).unwrap();
+    fs::write(
+        game.join("documentation").join("effects_documentation.md"),
+        "## Effects\n\n## add_political_power\n\n## army_experience\n",
+    )
+    .unwrap();
+    let pp = root.join("pp.json");
+    let xp = root.join("xp.json");
+
+    cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：政治点减少50".to_string(),
+        "--kind".to_string(),
+        "effect".to_string(),
+        "--game-root".to_string(),
+        game.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        pp.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：陆军经验降低5".to_string(),
+        "--kind".to_string(),
+        "effect".to_string(),
+        "--game-root".to_string(),
+        game.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        xp.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let pp_json = read_utf8_lossy(&pp).unwrap();
+    let xp_json = read_utf8_lossy(&xp).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(pp_json.contains("\"code\": \"add_political_power = -50\""));
+    assert!(xp_json.contains("\"code\": \"army_experience = -5\""));
+}
+
+#[test]
+fn compile_intent_blocks_unseparated_multiple_effects() {
+    let root = unique_temp_dir("compile-intent-unseparated-effects");
+    fs::create_dir_all(&root).unwrap();
+    let output = root.join("intent.json");
+
+    let err = cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：政治点+50 稳定度+5%".to_string(),
+        "--kind".to_string(),
+        "auto".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("intent compilation blocked unresolved or unindexed HOI4 code"));
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("\"final_code_allowed\": false"));
+    assert!(json.contains("Multiple effect intents appear in one segment"));
+    assert!(!json.contains("\"code\": \"add_political_power = 5\""));
+}
+
+#[test]
+fn compile_intent_accepts_newline_separated_effects() {
+    let root = unique_temp_dir("compile-intent-newline-effects");
+    fs::create_dir_all(&root).unwrap();
+    let game = root.join("game");
+    fs::create_dir_all(game.join("documentation")).unwrap();
+    fs::write(
+        game.join("documentation").join("effects_documentation.md"),
+        "## Effects\n\n## add_political_power\n\n## add_stability\n",
+    )
+    .unwrap();
+    let output = root.join("intent.json");
+
+    cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：政治点+50\n稳定度+5%".to_string(),
+        "--kind".to_string(),
+        "auto".to_string(),
+        "--game-root".to_string(),
+        game.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(json.contains("\"code\": \"add_political_power = 50\""));
+    assert!(json.contains("\"code\": \"add_stability = 0.05\""));
+    assert!(json.contains("\"ok\": true"));
+}
+
+#[test]
+fn strict_compile_intent_blocks_unindexed_modifier_code() {
+    let root = unique_temp_dir("strict-compile-intent");
+    fs::create_dir_all(root.join("documentation")).unwrap();
+    fs::write(
+        root.join("documentation")
+            .join("modifiers_documentation.md"),
+        "## Modifiers\n\n## stability_factor\n",
+    )
+    .unwrap();
+    let output = root.join("intent.json");
+
+    let err = cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：战争正当化 = -10%".to_string(),
+        "--kind".to_string(),
+        "idea".to_string(),
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("intent compilation blocked unresolved or unindexed HOI4 code"));
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("unindexed modifier `justify_war_goal_time`"));
+    assert!(json.contains("\"symbol\": \"justify_war_goal_time\""));
+    assert!(json.contains("\"kind\": \"modifier\""));
+    assert!(json.contains("\"ok\": false"));
+}
+
+#[test]
+fn strict_compile_intent_blocks_missing_modifier_index_category() {
+    let root = unique_temp_dir("strict-compile-intent-missing-category");
+    fs::create_dir_all(root.join("documentation")).unwrap();
+    let output = root.join("intent.json");
+
+    let err = cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：战争正当化 = -10%".to_string(),
+        "--kind".to_string(),
+        "idea".to_string(),
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("intent compilation blocked unresolved or unindexed HOI4 code"));
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("strict code index has no indexed modifiers"));
+    assert!(json.contains("documentation/modifiers_documentation.md"));
+}
+
+#[test]
+fn strict_compile_intent_accepts_indexed_modifier_code() {
+    let root = unique_temp_dir("strict-compile-intent-indexed");
+    fs::create_dir_all(root.join("documentation")).unwrap();
+    fs::write(
+        root.join("documentation")
+            .join("modifiers_documentation.md"),
+        "## Modifiers\n\n## justify_war_goal_time\n",
+    )
+    .unwrap();
+    let output = root.join("intent.json");
+
+    cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：战争正当化 = -10%".to_string(),
+        "--kind".to_string(),
+        "idea".to_string(),
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(json.contains("\"ok\": true"));
+    assert!(json.contains("\"code_index_checked\": true"));
+    assert!(json.contains("\"symbol\": \"justify_war_goal_time\""));
+    assert!(json.contains("\"kind\": \"modifier\""));
+}
+
+#[test]
+fn strict_compile_intent_blocks_missing_effect_index_category() {
+    let root = unique_temp_dir("strict-compile-intent-missing-effect-category");
+    fs::create_dir_all(root.join("documentation")).unwrap();
+    let output = root.join("intent.json");
+
+    let err = cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：政治点+50".to_string(),
+        "--kind".to_string(),
+        "effect".to_string(),
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("intent compilation blocked unresolved or unindexed HOI4 code"));
+    assert!(json.contains("strict code index has no indexed effects"));
+    assert!(json.contains("documentation/effects_documentation.md"));
+}
+
+#[test]
+fn strict_compile_intent_blocks_missing_trigger_index_category() {
+    let root = unique_temp_dir("strict-compile-intent-missing-trigger-category");
+    fs::create_dir_all(root.join("documentation")).unwrap();
+    let output = root.join("intent.json");
+
+    let err = cmd_compile_intent(&[
+        "--text".to_string(),
+        "llm：战争中".to_string(),
+        "--kind".to_string(),
+        "trigger".to_string(),
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("intent compilation blocked unresolved or unindexed HOI4 code"));
+    assert!(json.contains("strict code index has no indexed triggers"));
+    assert!(json.contains("documentation/triggers_documentation.md"));
 }
 
 #[test]
@@ -3882,9 +10624,194 @@ fn validator_rejects_unknown_effect_keys_against_indexed_docs() {
     assert!(errors.contains("unknown effect `add_army_org`"));
     assert!(errors.contains("unknown effect `spawn_units`"));
     assert!(errors.contains("unknown effect `add_opinion`"));
+    assert!(errors.contains("related indexed code: effects/effect `add_opinion_modifier`"));
     assert!(errors.contains("unknown effect `add_modifier`"));
     assert!(!errors.contains("unknown effect `add_stability`"));
     assert!(!errors.contains("unknown effect `USA`"));
+}
+
+#[test]
+fn validator_rejects_unknown_trigger_keys_against_indexed_docs() {
+    let root = unique_temp_dir("validate-unknown-triggers");
+    fs::create_dir_all(root.join("common").join("national_focus")).unwrap();
+    fs::write(
+        root.join("common")
+            .join("national_focus")
+            .join("bad_trigger.txt"),
+        "focus_tree = {\n id = tst_focus\n country = { factor = 0 modifier = { add = 10 tag = KOR } }\n focus = {\n  id = KOR_bad_trigger\n  icon = GFX_goal_unknown\n  x = 0\n  y = 0\n  cost = 10\n  ai_will_do = { factor = 100 }\n  available = { has_war = yes haswar = yes has_fake_condition = yes OR = { has_idea = test_idea has_fake_nested = yes } }\n  bypass = { }\n  cancel_if_invalid = yes\n  continue_if_invalid = no\n  available_if_capitulated = no\n  completion_reward = { }\n }\n}\n",
+    )
+    .unwrap();
+
+    let mut index = GameIndex::default();
+    index.triggers.insert("has_war".to_string());
+    index.triggers.insert("has_idea".to_string());
+
+    let report = validate_mod(&root, Some(&index)).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    let errors = report.errors.join("\n");
+    assert!(errors.contains("unknown trigger `haswar`"));
+    assert!(errors.contains("related indexed code: triggers/trigger `has_war`"));
+    assert!(errors.contains("unknown trigger `has_fake_condition`"));
+    assert!(errors.contains("unknown trigger `has_fake_nested`"));
+    assert!(!errors.contains("unknown trigger `has_war`"));
+    assert!(!errors.contains("unknown trigger `has_idea`"));
+}
+
+#[test]
+fn validate_strict_rejects_unknown_effect_inside_scripted_effect_file_with_related_code() {
+    let root = unique_temp_dir("validate-scripted-effect-unknown");
+    fs::create_dir_all(root.join("common").join("scripted_effects")).unwrap();
+    fs::write(
+        root.join("common")
+            .join("scripted_effects")
+            .join("bad_effects.txt"),
+        "bad_ai_effect = {\n add_politicalpower = 50\n}\n",
+    )
+    .unwrap();
+
+    let mut index = GameIndex::default();
+    index.effects.insert("add_political_power".to_string());
+
+    let report = validate_mod_with_options(
+        &root,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    let errors = report.errors.join("\n");
+    assert!(errors.contains("scripted_effect `bad_ai_effect`"));
+    assert!(errors.contains("unknown effect `add_politicalpower`"));
+    assert!(errors.contains("related indexed code: effects/effect `add_political_power`"));
+}
+
+#[test]
+fn validate_strict_rejects_unknown_trigger_inside_scripted_trigger_file_with_related_code() {
+    let root = unique_temp_dir("validate-scripted-trigger-unknown");
+    fs::create_dir_all(root.join("common").join("scripted_triggers")).unwrap();
+    fs::write(
+        root.join("common")
+            .join("scripted_triggers")
+            .join("bad_triggers.txt"),
+        "bad_ai_trigger = {\n haswar = yes\n}\n",
+    )
+    .unwrap();
+
+    let mut index = GameIndex::default();
+    index.triggers.insert("has_war".to_string());
+
+    let report = validate_mod_with_options(
+        &root,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    let errors = report.errors.join("\n");
+    assert!(errors.contains("scripted_trigger `bad_ai_trigger`"));
+    assert!(errors.contains("unknown trigger `haswar`"));
+    assert!(errors.contains("related indexed code: triggers/trigger `has_war`"));
+}
+
+#[test]
+fn validate_strict_rejects_unknown_effect_inside_state_effect_helper_with_related_code() {
+    let root = unique_temp_dir("validate-state-effect-helper-unknown");
+    fs::create_dir_all(root.join("common").join("scripted_effects")).unwrap();
+    fs::write(
+        root.join("common")
+            .join("scripted_effects")
+            .join("bad_state_effects.txt"),
+        "bad_state_effect = {\n 64 = {\n  add_politicalpower = 50\n }\n}\n",
+    )
+    .unwrap();
+
+    let mut index = GameIndex::default();
+    index.effects.insert("add_political_power".to_string());
+
+    let report = validate_mod_with_options(
+        &root,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    let errors = report.errors.join("\n");
+    assert!(errors.contains("scripted_effect `bad_state_effect`"));
+    assert!(errors.contains("unknown effect `add_politicalpower`"));
+    assert!(errors.contains("related indexed code: effects/effect `add_political_power`"));
+}
+
+#[test]
+fn validate_strict_rejects_unknown_code_inside_scripted_gui_effects_and_triggers() {
+    let root = unique_temp_dir("validate-scripted-gui-unknown");
+    fs::create_dir_all(root.join("common").join("scripted_guis")).unwrap();
+    fs::write(
+        root.join("common")
+            .join("scripted_guis")
+            .join("bad_guis.txt"),
+        "scripted_gui = {\n bad_ai_gui = {\n  triggers = { haswar = yes }\n  effects = { add_politicalpower = 50 }\n }\n}\n",
+    )
+    .unwrap();
+
+    let mut index = GameIndex::default();
+    index.effects.insert("add_political_power".to_string());
+    index.triggers.insert("has_war".to_string());
+
+    let report = validate_mod_with_options(
+        &root,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    let errors = report.errors.join("\n");
+    assert!(errors.contains("effect context `effects` uses unknown effect `add_politicalpower`"));
+    assert!(errors.contains("related indexed code: effects/effect `add_political_power`"));
+    assert!(errors.contains("trigger context `triggers` uses unknown trigger `haswar`"));
+    assert!(errors.contains("related indexed code: triggers/trigger `has_war`"));
+}
+
+#[test]
+fn strict_code_index_rejects_unresolved_ai_mapping_markers() {
+    let root = unique_temp_dir("strict-unresolved-ai-markers");
+    fs::create_dir_all(&root).unwrap();
+    let cards = parse_cards(
+        "决议：神秘工业动员\n目标：KOR\n效果：外星工厂+5\n描述：这条效果无法映射。",
+        &["决议", "民族精神"],
+    );
+    apply_feature_cards_to_mod(&root, &cards, "KOR", "kor_ai").unwrap();
+
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+    index.triggers.insert("always".to_string());
+    index.effects.insert("add_political_power".to_string());
+    index.modifiers.insert("stability_factor".to_string());
+    let report = validate_mod_with_options(
+        &root,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    let errors = report.errors.join("\n");
+    assert!(errors.contains("unresolved generated code marker"));
+    assert!(errors.contains("Needs Codex mapping before final code"));
 }
 
 #[test]
@@ -3981,7 +10908,431 @@ fn apply_commands_final_check_runs_post_apply_validation() {
     .unwrap_err();
     fs::remove_dir_all(&root).unwrap();
 
-    assert!(err.contains("post-apply final checks failed"));
+    assert!(err.contains("strict feature-card generation requires --game-root"));
+}
+
+#[test]
+fn strict_feature_card_gate_blocks_unresolved_mapping_before_write() {
+    let root = unique_temp_dir("strict-feature-card-prewrite");
+    let game = unique_temp_dir("strict-feature-card-game");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(game.join("common").join("country_tags")).unwrap();
+    fs::write(
+        game.join("common")
+            .join("country_tags")
+            .join("00_countries.txt"),
+        "KOR = \"countries/Korea.txt\"\n",
+    )
+    .unwrap();
+    let input = root.join("cards.txt");
+    fs::write(
+        &input,
+        "决议：神秘工业动员\n目标：KOR\n效果：外星工厂+5\n描述：无法映射的效果。",
+    )
+    .unwrap();
+
+    let err = cmd_apply_feature_cards(&[
+        "--input".to_string(),
+        input.display().to_string(),
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--tag".to_string(),
+        "KOR".to_string(),
+        "--prefix".to_string(),
+        "kor_ai".to_string(),
+        "--game-root".to_string(),
+        game.display().to_string(),
+        "--final-check".to_string(),
+    ])
+    .unwrap_err();
+    let common_exists = root.join("common").exists();
+    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&game).unwrap();
+
+    assert!(err.contains("strict feature-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("外星工厂+5"));
+    assert!(!common_exists);
+}
+
+#[test]
+fn strict_feature_card_gate_blocks_unindexed_semantic_modifier_before_write() {
+    let cards = parse_cards(
+        "民族精神：短期战争宣传\n目标：KOR\n效果：战争正当化 = -10%",
+        FEATURE_CARD_HEADERS,
+    );
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+    index.modifiers.insert("stability_factor".to_string());
+
+    let err = enforce_strict_feature_card_gate_with_options(
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &cards,
+        "KOR",
+        "kor_ai",
+        Some(&index),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict feature-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("unindexed modifier `justify_war_goal_time`"));
+    assert!(err.contains("check-code-symbol --kind modifier"));
+}
+
+#[test]
+fn strict_feature_card_gate_blocks_missing_effect_index_category_before_write() {
+    let cards = parse_cards(
+        "决议：政治动员\n目标：KOR\n效果：政治点+50",
+        FEATURE_CARD_HEADERS,
+    );
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+
+    let err = enforce_strict_feature_card_gate_with_options(
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &cards,
+        "KOR",
+        "kor_ai",
+        Some(&index),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict feature-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("strict code index has no indexed effects"));
+    assert!(err.contains("documentation/effects_documentation.md"));
+}
+
+#[test]
+fn strict_feature_card_gate_blocks_unindexed_resource_inside_effect() {
+    let cards = parse_cards(
+        "决议：开发钢矿\n目标：KOR\n效果：钢+8",
+        FEATURE_CARD_HEADERS,
+    );
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+    index.effects.insert("add_resource".to_string());
+    index.resources.insert("oil".to_string());
+
+    let err = enforce_strict_feature_card_gate_with_options(
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &cards,
+        "KOR",
+        "kor_ai",
+        Some(&index),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict feature-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("unindexed resource `steel`"));
+    assert!(err.contains("check-code-symbol --kind resource"));
+}
+
+#[test]
+fn strict_feature_card_gate_blocks_unindexed_scripted_effect_inner_effect_before_write() {
+    let cards = parse_cards(
+        "脚本效果：政治动员脚本\n目标：KOR\n效果：政治点+50",
+        FEATURE_CARD_HEADERS,
+    );
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+    index.effects.insert("add_stability".to_string());
+    index
+        .effects
+        .insert("add_scaled_political_power".to_string());
+
+    let err = enforce_strict_feature_card_gate_with_options(
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &cards,
+        "KOR",
+        "kor_ai",
+        Some(&index),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict feature-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("unindexed effect `add_political_power`"));
+    assert!(err.contains("related indexed code: effects/effect `add_scaled_political_power`"));
+}
+
+#[test]
+fn strict_feature_card_gate_blocks_unresolved_scripted_trigger_inner_trigger_before_write() {
+    let cards = parse_cards(
+        "脚本触发：坏战争条件\n目标：KOR\n条件：haswar = yes",
+        FEATURE_CARD_HEADERS,
+    );
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+    index.triggers.insert("has_war".to_string());
+
+    let err = enforce_strict_feature_card_gate_with_options(
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &cards,
+        "KOR",
+        "kor_ai",
+        Some(&index),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict feature-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("haswar = yes"));
+    assert!(err.contains("related indexed code: triggers/trigger `has_war`"));
+}
+
+#[test]
+fn strict_feature_card_gate_blocks_unindexed_state_effect_inner_building_before_write() {
+    let cards = parse_cards(
+        "州效果：建设军工\n目标：KOR\n州ID：64\n建筑：军工+2",
+        FEATURE_CARD_HEADERS,
+    );
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+    index
+        .effects
+        .insert("add_building_construction".to_string());
+    index.buildings.insert("industrial_complex".to_string());
+
+    let err = enforce_strict_feature_card_gate_with_options(
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &cards,
+        "KOR",
+        "kor_ai",
+        Some(&index),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict feature-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("unindexed building `arms_factory`"));
+    assert!(err.contains("check-code-symbol --kind building"));
+}
+
+#[test]
+fn strict_feature_card_gate_blocks_unmapped_scripted_gui_effect_before_write() {
+    let cards = parse_cards(
+        "特殊GUI：铁路运力面板\n目标：KOR\n用途：显示铁路运力。\n效果：政治点+50",
+        FEATURE_CARD_HEADERS,
+    );
+    let mut index = GameIndex::default();
+    index.country_tags.insert("KOR".to_string());
+    index.effects.insert("add_political_power".to_string());
+
+    let err = enforce_strict_feature_card_gate_with_options(
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &cards,
+        "KOR",
+        "kor_ai",
+        Some(&index),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict feature-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("raw_effect"));
+    assert!(err.contains("related indexed code: effects/effect `add_political_power`"));
+}
+
+#[test]
+fn strict_parse_feature_cards_blocks_unindexed_semantic_modifier() {
+    let root = unique_temp_dir("strict-parse-feature-cards");
+    let game = root.join("game");
+    fs::create_dir_all(game.join("common").join("country_tags")).unwrap();
+    fs::create_dir_all(game.join("documentation")).unwrap();
+    fs::write(
+        game.join("common")
+            .join("country_tags")
+            .join("00_countries.txt"),
+        "KOR = \"countries/Korea.txt\"\n",
+    )
+    .unwrap();
+    fs::write(
+        game.join("documentation")
+            .join("modifiers_documentation.md"),
+        "## Modifiers\n\n## stability_factor\n",
+    )
+    .unwrap();
+    let input = root.join("cards.txt");
+    let output = root.join("plan.json");
+    fs::write(
+        &input,
+        "民族精神：短期战争宣传\n目标：KOR\n效果：战争正当化 = -10%",
+    )
+    .unwrap();
+
+    let err = cmd_parse_feature_cards(&[
+        "--input".to_string(),
+        input.display().to_string(),
+        "--tag".to_string(),
+        "KOR".to_string(),
+        "--prefix".to_string(),
+        "kor_ai".to_string(),
+        "--game-root".to_string(),
+        game.display().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.display().to_string(),
+    ])
+    .unwrap_err();
+    let output_exists = output.exists();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("strict feature-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("unindexed modifier `justify_war_goal_time`"));
+    assert!(!output_exists);
+}
+
+#[test]
+fn strict_event_card_gate_blocks_unresolved_mapping_before_write() {
+    let root = unique_temp_dir("strict-event-card-prewrite");
+    let game = unique_temp_dir("strict-event-card-game");
+    fs::create_dir_all(&root).unwrap();
+    fs::create_dir_all(game.join("common").join("country_tags")).unwrap();
+    fs::write(
+        game.join("common")
+            .join("country_tags")
+            .join("00_countries.txt"),
+        "SOV = \"countries/Soviet.txt\"\n",
+    )
+    .unwrap();
+    let input = root.join("events.txt");
+    fs::write(
+        &input,
+        "事件：未知动员\n目标：SOV\n命名空间：sov_ai\n触发：神秘局势\n选项A：继续\n效果A：外星能量+50",
+    )
+    .unwrap();
+
+    let err = cmd_apply_event_cards(&[
+        "--input".to_string(),
+        input.display().to_string(),
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--tag".to_string(),
+        "SOV".to_string(),
+        "--prefix".to_string(),
+        "sov_ai".to_string(),
+        "--game-root".to_string(),
+        game.display().to_string(),
+        "--final-check".to_string(),
+    ])
+    .unwrap_err();
+    let events_exists = root.join("events").exists();
+    fs::remove_dir_all(&root).unwrap();
+    fs::remove_dir_all(&game).unwrap();
+
+    assert!(err.contains("strict event-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("神秘局势"));
+    assert!(err.contains("外星能量+50"));
+    assert!(!events_exists);
+}
+
+#[test]
+fn strict_event_card_gate_blocks_unindexed_semantic_trigger_before_write() {
+    let cards = parse_cards(
+        "事件：战时会议\n目标：SOV\n命名空间：sov_ai\n触发：战争中\n选项A：继续\n效果A：政治点+50",
+        &["事件"],
+    );
+    let mut index = GameIndex::default();
+    index.triggers.insert("has_idea".to_string());
+    index.effects.insert("add_political_power".to_string());
+
+    let err = enforce_strict_event_card_gate_with_options(
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &cards,
+        Some(&index),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict event-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("unindexed trigger `has_war`"));
+    assert!(err.contains("check-code-symbol --kind trigger"));
+}
+
+#[test]
+fn strict_event_card_gate_blocks_missing_trigger_index_category_before_write() {
+    let cards = parse_cards(
+        "事件：战时会议\n目标：SOV\n命名空间：sov_ai\n触发：战争中\n选项A：继续\n效果A：政治点+50",
+        &["事件"],
+    );
+    let mut index = GameIndex::default();
+    index.effects.insert("add_political_power".to_string());
+
+    let err = enforce_strict_event_card_gate_with_options(
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &cards,
+        Some(&index),
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict event-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("strict code index has no indexed triggers"));
+    assert!(err.contains("documentation/triggers_documentation.md"));
+}
+
+#[test]
+fn strict_parse_event_cards_blocks_unindexed_semantic_trigger() {
+    let root = unique_temp_dir("strict-parse-event-cards");
+    let game = root.join("game");
+    fs::create_dir_all(game.join("common").join("country_tags")).unwrap();
+    fs::create_dir_all(game.join("documentation")).unwrap();
+    fs::write(
+        game.join("common")
+            .join("country_tags")
+            .join("00_countries.txt"),
+        "SOV = \"countries/Soviet.txt\"\n",
+    )
+    .unwrap();
+    fs::write(
+        game.join("documentation").join("triggers_documentation.md"),
+        "## Triggers\n\n## has_idea\n",
+    )
+    .unwrap();
+    fs::write(
+        game.join("documentation").join("effects_documentation.md"),
+        "## Effects\n\n## add_political_power\n",
+    )
+    .unwrap();
+    let input = root.join("events.txt");
+    let output = root.join("events.json");
+    fs::write(
+        &input,
+        "事件：战时会议\n目标：SOV\n命名空间：sov_ai\n触发：战争中\n选项A：继续\n效果A：政治点+50",
+    )
+    .unwrap();
+
+    let err = cmd_parse_event_cards(&[
+        "--input".to_string(),
+        input.display().to_string(),
+        "--tag".to_string(),
+        "SOV".to_string(),
+        "--prefix".to_string(),
+        "sov_ai".to_string(),
+        "--game-root".to_string(),
+        game.display().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.display().to_string(),
+    ])
+    .unwrap_err();
+    let output_exists = output.exists();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(err.contains("strict event-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("unindexed trigger `has_war`"));
+    assert!(!output_exists);
 }
 
 #[test]
@@ -4055,6 +11406,8 @@ fn clausewitz_reference_table_marks_indexed_primitives() {
     index.effects.insert("add_opinion_modifier".to_string());
     index.effects.insert("create_unit".to_string());
     index.effects.insert("add_political_power".to_string());
+    index.triggers.insert("has_war".to_string());
+    index.triggers.insert("has_completed_focus".to_string());
     index.modifiers.insert("stability_factor".to_string());
     index
         .focus_goal_sprites
@@ -4065,6 +11418,7 @@ fn clausewitz_reference_table_marks_indexed_primitives() {
 
     assert!(markdown.contains("add_opinion_modifier (indexed)"));
     assert!(markdown.contains("create_unit (indexed)"));
+    assert!(markdown.contains("has_war (indexed)"));
     assert!(markdown.contains("stability_factor (indexed)"));
     assert!(markdown.contains("USA = { add_opinion = KOR = 20 }"));
     assert!(markdown.contains("picture = bare_name_for_GFX_idea_bare_name"));
@@ -4076,7 +11430,8 @@ fn render_focus_tree_uses_unknown_icon_and_empty_reward_by_default() {
     let tree = render_focus_tree(&layout, "CPC");
 
     assert!(tree.contains("icon = GFX_goal_unknown"));
-    assert!(tree.contains("# prerequisite = { focus = <parent focus id> }"));
+    assert!(!tree.contains("<parent focus id>"));
+    assert!(!tree.contains("<focus id for relative placement>"));
     assert!(tree.contains("ai_will_do = {\n\t\t\tfactor = 100\n\t\t}"));
     assert!(tree.contains("completion_reward = {\n\t\t}\n"));
     assert!(!tree.contains("add_political_power = 50"));
@@ -4756,6 +12111,146 @@ fn emit_hoi4yaml_from_feature_cards_outputs_state_effects() {
 }
 
 #[test]
+fn strict_emit_hoi4yaml_requires_game_root_before_output() {
+    let root = unique_temp_dir("strict-emit-hoi4yaml");
+    fs::create_dir_all(&root).unwrap();
+    let input = root.join("cards.txt");
+    let output = root.join("mod.yaml");
+    fs::write(
+        &input,
+        "州效果：莫斯科工业修复\n州ID：64\n目标：FER\n资源：钢+8",
+    )
+    .unwrap();
+
+    let err = cmd_emit_hoi4yaml(&[
+        "--input".to_string(),
+        input.to_string_lossy().to_string(),
+        "--kind".to_string(),
+        "feature-cards".to_string(),
+        "--tag".to_string(),
+        "FER".to_string(),
+        "--prefix".to_string(),
+        "fer_rail".to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap_err();
+
+    assert!(err.contains("strict emit-hoi4yaml requires --game-root"));
+    assert!(!output.exists());
+}
+
+#[test]
+fn strict_emit_hoi4yaml_focus_layout_reports_related_code_for_unindexed_reward() {
+    let text = "工业复兴\n# completion_reward: 政治点+50\n";
+    let yaml = emit_hoi4yaml(text, EmitHoi4YamlKind::FocusLayout, "SOV", "sov_ctx");
+    let mut index = GameIndex::default();
+    index
+        .effects
+        .insert("add_scaled_political_power".to_string());
+
+    let err = enforce_strict_emit_hoi4yaml_gate(
+        text,
+        EmitHoi4YamlKind::FocusLayout,
+        "SOV",
+        "sov_ctx",
+        &yaml,
+        &index,
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict emit-hoi4yaml blocked unresolved focus mappings"));
+    assert!(err.contains("unindexed effect `add_political_power`"));
+    assert!(err.contains("related indexed code: effects/effect `add_scaled_political_power`"));
+}
+
+#[test]
+fn strict_emit_hoi4yaml_accepts_indexed_event_effects() {
+    let root = unique_temp_dir("strict-emit-hoi4yaml-indexed");
+    let game = root.join("game");
+    fs::create_dir_all(game.join("documentation")).unwrap();
+    fs::write(
+        game.join("documentation").join("effects_documentation.md"),
+        "## Effects\n\n## add_political_power\n",
+    )
+    .unwrap();
+    let input = root.join("events.txt");
+    let output = root.join("events.yaml");
+    fs::write(
+        &input,
+        "事件：铁路预算\n命名空间：fer_rail\n选项A：通过\n效果A：政治点+25\n",
+    )
+    .unwrap();
+
+    cmd_emit_hoi4yaml(&[
+        "--input".to_string(),
+        input.to_string_lossy().to_string(),
+        "--kind".to_string(),
+        "event-cards".to_string(),
+        "--tag".to_string(),
+        "FER".to_string(),
+        "--prefix".to_string(),
+        "fer_rail".to_string(),
+        "--game-root".to_string(),
+        game.to_string_lossy().to_string(),
+        "--strict-code-index".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+
+    let yaml = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(yaml.contains("events:"));
+    assert!(yaml.contains("add_political_power: 25"));
+}
+
+#[test]
+fn strict_emit_hoi4yaml_blocks_unresolved_yaml_markers() {
+    let text = "州效果：莫斯科工业修复\n州ID：64\n目标：FER\n资源：钢+8";
+    let yaml = emit_hoi4yaml(text, EmitHoi4YamlKind::FeatureCards, "FER", "fer_rail");
+    let mut index = GameIndex::default();
+    index.effects.insert("add_resource".to_string());
+    index.resources.insert("steel".to_string());
+
+    let err = enforce_strict_emit_hoi4yaml_gate(
+        text,
+        EmitHoi4YamlKind::FeatureCards,
+        "FER",
+        "fer_rail",
+        &yaml,
+        &index,
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict emit-hoi4yaml blocked unresolved generated YAML markers"));
+    assert!(err.contains("TODO raw HOI4 block"));
+}
+
+#[test]
+fn strict_emit_hoi4yaml_blocks_unresolved_event_triggers_before_output() {
+    let text = "事件：铁路争论\n触发：铁路委员会批准\n选项A：通过\n效果A：政治点+25\n";
+    let yaml = emit_hoi4yaml(text, EmitHoi4YamlKind::EventCards, "FER", "fer_rail");
+    let mut index = GameIndex::default();
+    index.effects.insert("add_political_power".to_string());
+    let err = enforce_strict_emit_hoi4yaml_gate(
+        text,
+        EmitHoi4YamlKind::EventCards,
+        "FER",
+        "fer_rail",
+        &yaml,
+        &index,
+    )
+    .unwrap_err();
+
+    assert!(err.contains("strict event-card generation blocked unresolved AI mappings"));
+    assert!(err.contains("铁路委员会批准"));
+    assert!(err.contains("raw_trigger"));
+}
+
+#[test]
 fn emit_hoi4yaml_from_event_cards_groups_event_types() {
     let yaml = emit_hoi4yaml(
         "事件：新政策争论\n类型：国家事件\n命名空间：sov_nep\n标题：新政策争论\n描述：党内出现争论。\n选项A：继续试验\n效果A：政治点+50\n\n事件：改革消息\n类型：新闻事件\n命名空间：sov_nep\n选项A：知道了\n隐藏效果A：设置旗标 nep_news_seen\n",
@@ -5045,6 +12540,21 @@ fn focus_layout_infers_branch_parents_before_mutation() {
         "\"title\": \"奈普曼入党\", \"id\": \"SOV_nepman_join_party\", \"icon\": null, \"x\": 3, \"y\": 2"
     ) || json.contains("\"title\": \"奈普曼入党\"") && json.contains("\"x\": 3, \"y\": 2"));
 }
+
+#[test]
+fn focus_layout_json_marks_unresolved_rewards_as_blocked() {
+    let json = parse_focus_layout_json(
+        "整训舰队\n# completion_reward: 获得民族精神 舰队整训\n",
+        "SOV",
+        "sov_alt",
+    );
+
+    assert!(json.contains("\"safety\": {\"status\": \"blocked\""));
+    assert!(json.contains("\"final_code_allowed\": false"));
+    assert!(json.contains("<idea id for 舰队整训>"));
+    assert!(json.contains("completion_reward contains unresolved marker"));
+}
+
 #[test]
 fn history_edit_plan_blocks_unverified_direct_state_edits() {
     let root = unique_temp_dir("history-plan-blocked");

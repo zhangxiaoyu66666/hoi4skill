@@ -7,9 +7,20 @@ pub(crate) fn cmd_parse_event_cards(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let input = normalize_path(&require_value(&map, "input")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
-    enforce_tag_request_contract(&map, tag, None)?;
     let prefix = value(&map, "prefix").unwrap_or("mod");
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+        .transpose()?;
+    enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err("--mod-path requires --game-root during event-card parsing".to_string());
+    }
     let text = read_utf8_lossy(&input)?;
+    let cards = parse_cards(&text, &["事件"]);
+    enforce_strict_event_card_gate(&map, &cards, game_index.as_ref())?;
     let json = parse_event_cards_json(&text, tag, prefix);
     write_or_print(&json, value(&map, "output"))
 }
@@ -32,6 +43,7 @@ pub(crate) fn cmd_apply_event_cards(args: &[String]) -> Result<(), String> {
     }
     let text = read_utf8_lossy(&input)?;
     let cards = parse_cards(&text, &["事件"]);
+    enforce_strict_event_card_gate(&map, &cards, game_index.as_ref())?;
     let changed =
         apply_event_cards_to_mod_with_index(&mod_root, &cards, tag, prefix, game_index.as_ref())?;
 
@@ -46,6 +58,100 @@ pub(crate) fn cmd_apply_event_cards(args: &[String]) -> Result<(), String> {
     }
     run_post_apply_checks(&mod_root, &map, game_index.as_ref(), Some(&input))?;
     Ok(())
+}
+
+pub(crate) fn enforce_strict_event_card_gate(
+    map: &ArgMap,
+    cards: &[Card],
+    game_index: Option<&GameIndex>,
+) -> Result<(), String> {
+    let options = validation_options_from_args(map);
+    enforce_strict_event_card_gate_with_options(options, cards, game_index)
+}
+
+pub(crate) fn enforce_strict_event_card_gate_with_options(
+    options: ValidationOptions,
+    cards: &[Card],
+    game_index: Option<&GameIndex>,
+) -> Result<(), String> {
+    if !options.strict_code_index {
+        return Ok(());
+    }
+    if game_index.is_none() {
+        return Err(
+            "strict event-card generation requires --game-root before writing files".to_string(),
+        );
+    }
+    let mut errors = Vec::new();
+    for card in cards {
+        if let Some(trigger) = card.fields.get("触发").or_else(|| card.fields.get("条件")) {
+            let suggestions = suggest_trigger(trigger);
+            errors.extend(unresolved_suggestion_errors_with_index(
+                &format!("事件 `{}` trigger", card.title),
+                &suggestions,
+                game_index,
+            ));
+            if let Some(index) = game_index {
+                errors.extend(missing_code_index_category_errors(
+                    &format!("事件 `{}` trigger", card.title),
+                    &suggestions,
+                    index,
+                ));
+                errors.extend(unindexed_suggestion_errors(
+                    &format!("事件 `{}` trigger", card.title),
+                    &suggestions,
+                    index,
+                ));
+            }
+        }
+        for option in event_options(card) {
+            let suggestions = suggest_common("event", &option.effects, None, None, None, None);
+            errors.extend(unresolved_suggestion_errors_with_index(
+                &format!("事件 `{}` option {}", card.title, option.key),
+                &suggestions,
+                game_index,
+            ));
+            if let Some(index) = game_index {
+                errors.extend(missing_code_index_category_errors(
+                    &format!("事件 `{}` option {}", card.title, option.key),
+                    &suggestions,
+                    index,
+                ));
+                errors.extend(unindexed_suggestion_errors(
+                    &format!("事件 `{}` option {}", card.title, option.key),
+                    &suggestions,
+                    index,
+                ));
+            }
+            let hidden_suggestions =
+                suggest_common("event", &option.hidden_effects, None, None, None, None);
+            errors.extend(unresolved_suggestion_errors_with_index(
+                &format!("事件 `{}` hidden option {}", card.title, option.key),
+                &hidden_suggestions,
+                game_index,
+            ));
+            if let Some(index) = game_index {
+                errors.extend(missing_code_index_category_errors(
+                    &format!("事件 `{}` hidden option {}", card.title, option.key),
+                    &hidden_suggestions,
+                    index,
+                ));
+                errors.extend(unindexed_suggestion_errors(
+                    &format!("事件 `{}` hidden option {}", card.title, option.key),
+                    &hidden_suggestions,
+                    index,
+                ));
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "strict event-card generation blocked unresolved AI mappings:\n{}",
+            errors.join("\n")
+        ))
+    }
 }
 
 #[cfg(test)]
@@ -525,10 +631,15 @@ pub(crate) fn append_event_blocks(
 pub(crate) fn parse_event_cards_json(text: &str, tag: &str, prefix: &str) -> String {
     let cards = parse_cards(text, &["事件"]);
     let event_ids = event_card_numbered_ids(&cards, prefix);
+    let safety_suggestions = event_cards_safety_suggestions(&cards);
     let mut out = String::new();
     out.push_str("{\n");
     out.push_str(&format!("  \"prefix\": {},\n", json_str(prefix)));
     out.push_str(&format!("  \"tag\": {},\n", json_str(tag)));
+    out.push_str(&format!(
+        "  \"safety\": {},\n",
+        suggestions_safety_json(&safety_suggestions)
+    ));
     out.push_str("  \"features\": [\n");
     for (idx, (card, (ns, event_id))) in cards.iter().zip(event_ids.iter()).enumerate() {
         comma(&mut out, idx, "    ");
@@ -569,18 +680,27 @@ pub(crate) fn parse_event_cards_json(text: &str, tag: &str, prefix: &str) -> Str
 
         let mut options = BTreeMap::new();
         for option in event_options(card) {
+            let mut option_suggestions =
+                suggest_common("event", &option.effects, None, None, None, None);
+            option_suggestions.extend(suggest_common(
+                "event",
+                &option.hidden_effects,
+                None,
+                None,
+                None,
+                None,
+            ));
             options.insert(
                 option.key.clone(),
                 format!(
-                    "{{\"key\": {}, \"text\": {}, \"effects\": {}, \"hidden_effects\": {}, \"ai_chance\": {}, \"suggestions\": {}}}",
+                    "{{\"key\": {}, \"text\": {}, \"effects\": {}, \"hidden_effects\": {}, \"ai_chance\": {}, \"suggestions\": {}, \"safety\": {}}}",
                     json_str(&option.key),
                     json_str(&option.text),
                     json_str(&option.effects),
                     json_str(&option.hidden_effects),
                     json_str(&option.ai_chance),
-                    suggestions_json(&suggest_common(
-                        "event", &option.effects, None, None, None, None
-                    ))
+                    suggestions_json(&option_suggestions),
+                    suggestions_safety_json(&option_suggestions)
                 ),
             );
         }
@@ -594,7 +714,7 @@ pub(crate) fn parse_event_cards_json(text: &str, tag: &str, prefix: &str) -> Str
             target_localisation_relative_path(target),
         ];
         out.push_str(&format!(
-            "{{\"type\": \"event\", \"title\": {}, \"target\": {}, \"namespace\": {}, \"event_type\": {}, \"event_id\": {}, \"fields\": {}, \"options\": {}, \"files\": {}, \"localisation_keys\": {}, \"suggestions\": {}}}",
+            "{{\"type\": \"event\", \"title\": {}, \"target\": {}, \"namespace\": {}, \"event_type\": {}, \"event_id\": {}, \"fields\": {}, \"options\": {}, \"files\": {}, \"localisation_keys\": {}, \"suggestions\": {}, \"safety\": {}}}",
             json_str(&card.title),
             json_str(target),
             json_str(ns),
@@ -604,10 +724,39 @@ pub(crate) fn parse_event_cards_json(text: &str, tag: &str, prefix: &str) -> Str
             json_raw_object(&options),
             json_array(&files),
             json_array(&loc_keys),
-            suggestions_json(&suggestions)
+            suggestions_json(&suggestions),
+            suggestions_safety_json(&suggestions)
         ));
     }
     out.push_str("\n  ]\n}\n");
+    out
+}
+
+pub(crate) fn event_cards_safety_suggestions(cards: &[Card]) -> Vec<Suggestion> {
+    let mut out = Vec::new();
+    for card in cards {
+        if let Some(trigger) = card.fields.get("触发").or_else(|| card.fields.get("条件")) {
+            out.extend(suggest_trigger(trigger));
+        }
+        for option in event_options(card) {
+            out.extend(suggest_common(
+                "event",
+                &option.effects,
+                None,
+                None,
+                None,
+                None,
+            ));
+            out.extend(suggest_common(
+                "event",
+                &option.hidden_effects,
+                None,
+                None,
+                None,
+                None,
+            ));
+        }
+    }
     out
 }
 

@@ -11,6 +11,24 @@ pub(crate) fn cmd_emit_hoi4yaml(args: &[String]) -> Result<(), String> {
     let text = read_utf8_lossy(&normalize_path(&input)?)?;
     let kind = emit_hoi4yaml_kind(value(&map, "kind"), &text)?;
     let yaml = emit_hoi4yaml(&text, kind, tag, prefix);
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+        .transpose()?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err("--mod-path requires --game-root during emit-hoi4yaml".to_string());
+    }
+    if validation_options_from_args(&map).strict_code_index {
+        let Some(index) = game_index.as_ref() else {
+            return Err(
+                "strict emit-hoi4yaml requires --game-root before accepting generated HOI4 YAML"
+                    .to_string(),
+            );
+        };
+        enforce_strict_emit_hoi4yaml_gate(&text, kind, tag, prefix, &yaml, index)?;
+    }
     write_or_print(&yaml, value(&map, "output"))
 }
 
@@ -19,6 +37,88 @@ pub(crate) enum EmitHoi4YamlKind {
     FocusLayout,
     FeatureCards,
     EventCards,
+}
+
+pub(crate) fn enforce_strict_emit_hoi4yaml_gate(
+    text: &str,
+    kind: EmitHoi4YamlKind,
+    tag: &str,
+    prefix: &str,
+    yaml: &str,
+    index: &GameIndex,
+) -> Result<(), String> {
+    let options = ValidationOptions {
+        strict_code_index: true,
+    };
+    match kind {
+        EmitHoi4YamlKind::FocusLayout => {
+            let layout = parse_focus_layout_with_rewards(text, tag, prefix);
+            let mut errors = Vec::new();
+            for focus in &layout.focuses {
+                for line in &focus.completion_reward {
+                    if let Some(marker) = unresolved_generation_marker(line) {
+                        errors.push(format!(
+                            "focus `{}` completion_reward contains unresolved marker `{marker}`: {}",
+                            focus.title, line
+                        ));
+                    }
+                    let trimmed = line.trim();
+                    if trimmed.starts_with('#') || trimmed.is_empty() {
+                        continue;
+                    }
+                    if let Some(key) = assignment_key(trimmed) {
+                        if index.effects.is_empty() {
+                            errors.push(format!(
+                                "focus `{}` completion_reward uses effect-like key `{key}`, but strict code index has no indexed effects; rebuild the index from `documentation/effects_documentation.md` or load the required game/dependency code before final generation",
+                                focus.title
+                            ));
+                        } else if !index.effects.contains(key) {
+                            let related = related_code_symbols_text(index, key, Some("effect"));
+                            errors.push(format!(
+                                "focus `{}` completion_reward maps to unindexed effect `{key}`; verify it with `check-code-symbol --kind effect` before final generation{}",
+                                focus.title, related
+                            ));
+                        }
+                    }
+                }
+            }
+            if !errors.is_empty() {
+                return Err(format!(
+                    "strict emit-hoi4yaml blocked unresolved focus mappings:\n{}",
+                    errors.join("\n")
+                ));
+            }
+        }
+        EmitHoi4YamlKind::FeatureCards => {
+            let cards = parse_cards(text, FEATURE_CARD_HEADERS);
+            enforce_strict_feature_card_gate_with_options(
+                options,
+                &cards,
+                tag,
+                prefix,
+                Some(index),
+            )?;
+        }
+        EmitHoi4YamlKind::EventCards => {
+            let cards = parse_cards(text, &["事件"]);
+            enforce_strict_event_card_gate_with_options(options, &cards, Some(index))?;
+        }
+    }
+
+    let mut markers = Vec::new();
+    for (idx, line) in yaml.lines().enumerate() {
+        if let Some(marker) = unresolved_generation_marker(line) {
+            markers.push(format!("line {}: {marker}", idx + 1));
+        }
+    }
+    if markers.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "strict emit-hoi4yaml blocked unresolved generated YAML markers:\n{}",
+            markers.join("\n")
+        ))
+    }
 }
 
 pub(crate) fn emit_hoi4yaml_kind(

@@ -80,10 +80,12 @@ pub(crate) fn append_explicit_request(input: &mut WorkflowInput, request: Option
         return;
     };
     input.text.push_str(
-        "\n\n## Explicit User Requirement Contract\n\n\
-The following text is the user's literal scope. It may authorize additional systems, but it does not authorize unrelated systems.\n\n",
+        "\n\n# Explicit User Requirement Contract\n\
+# The following text is the user's literal scope. It may authorize additional systems, but it does not authorize unrelated systems.\n# ",
     );
-    input.text.push_str(request);
+    input
+        .text
+        .push_str(&request.lines().collect::<Vec<_>>().join("\n# "));
     input.text.push('\n');
 }
 
@@ -138,6 +140,17 @@ pub(crate) fn cmd_generate_mod(args: &[String]) -> Result<(), String> {
         .transpose()?
         .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
         .transpose()?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err(
+            "--mod-path requires --game-root during one-sentence mod generation".to_string(),
+        );
+    }
+    let validation_options = validation_options_from_args(&map);
+    if validation_options.strict_code_index && game_index.is_none() {
+        return Err(
+            "strict generate-mod requires --game-root before accepting generated files".to_string(),
+        );
+    }
     let resolution = resolve_country_tag(
         &text,
         value(&map, "tag"),
@@ -178,6 +191,8 @@ pub(crate) fn cmd_generate_mod(args: &[String]) -> Result<(), String> {
         launcher_file,
         dry_run,
         country_source: Some(&resolution.source),
+        game_index: game_index.as_ref(),
+        validation_options,
     };
     let json = generate_mod_json(&request)?;
     write_or_print(&json, value(&map, "report"))
@@ -195,6 +210,8 @@ pub(crate) struct GenerateModRequest<'a> {
     pub(crate) launcher_file: bool,
     pub(crate) dry_run: bool,
     pub(crate) country_source: Option<&'a str>,
+    pub(crate) game_index: Option<&'a GameIndex>,
+    pub(crate) validation_options: ValidationOptions,
 }
 
 pub(crate) const FEATURE_CARD_HEADERS: &[&str] = &[
@@ -275,14 +292,16 @@ pub(crate) fn generate_mod_json(request: &GenerateModRequest<'_>) -> Result<Stri
             request.launcher_file,
         )?
     };
-    let workflow = run_workflow_json(
+    let workflow = run_workflow_json_with_focus_layout_options(
         &synthesized,
+        None,
         (!request.dry_run).then_some(request.mod_root),
         request.tag,
         request.prefix,
         None,
         request.dry_run,
-        None,
+        request.game_index,
+        request.validation_options,
     )?;
     let created_files = created
         .iter()
@@ -689,6 +708,10 @@ pub(crate) fn infer_country_from_sources(
             continue;
         }
 
+        if let Some(alias_guess) = infer_country_alias_from_text(text, root, &tag_records) {
+            return Ok(Some(alias_guess));
+        }
+
         let loc_candidates = collect_country_localisation_candidates(root)?;
         let mut best_match: Option<(i64, CountryLocCandidate, CountryVerification)> = None;
         for candidate in &loc_candidates {
@@ -740,6 +763,43 @@ pub(crate) fn infer_country_from_sources(
         }
     }
     Ok(None)
+}
+
+pub(crate) fn infer_country_alias_from_text(
+    text: &str,
+    root: &Path,
+    tag_records: &BTreeMap<String, CountryTagRecord>,
+) -> Option<CountryGuess> {
+    for (tag, name, aliases) in [(
+        "PRC",
+        "中国共产党",
+        &[
+            "中国共产党",
+            "中共",
+            "共产党中国",
+            "Chinese Communist Party",
+            "CCP",
+        ][..],
+    )] {
+        let matched = aliases.iter().any(|alias| {
+            if alias.is_ascii() {
+                contains_ascii_token(text, alias)
+            } else {
+                text.contains(alias)
+            }
+        });
+        if !matched {
+            continue;
+        }
+        let record = tag_records.get(tag)?;
+        let verification = verify_country_record(root, record)?;
+        return Some(CountryGuess {
+            tag: tag.to_string(),
+            name: name.to_string(),
+            source: format_country_tag_source(root, tag, name, &verification),
+        });
+    }
+    None
 }
 
 pub(crate) fn collect_country_tag_records(
@@ -1303,6 +1363,7 @@ pub(crate) fn infer_one_sentence_mod_name(country: Option<&CountryGuess>, title:
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn run_workflow_json(
     text: &str,
     mod_root: Option<&Path>,
@@ -1326,6 +1387,7 @@ pub(crate) fn run_workflow_json(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 pub(crate) fn run_workflow_json_with_focus_layout(
     text: &str,
     supplied_focus_layout: Option<&FocusLayout>,
@@ -1395,16 +1457,48 @@ pub(crate) fn run_workflow_json_with_focus_layout_options(
         .then(|| parse_decision_idea_cards_json(&feature_text, tag, prefix));
     let event_plan =
         (!event_cards.is_empty()).then(|| parse_event_cards_json(&event_text, tag, prefix));
+    let mut safety_blockers = workflow_safety_blockers(
+        focus_layout.as_ref(),
+        &feature_cards,
+        &event_cards,
+        tag,
+        prefix,
+    );
+    safety_blockers.extend(workflow_strict_gate_blockers(
+        validation_options,
+        mod_root,
+        focus_layout.as_ref(),
+        &feature_cards,
+        &event_cards,
+        tag,
+        prefix,
+        game_index,
+    ));
+    let safety = workflow_safety_json_from_blockers(&safety_blockers);
 
     let mut changed = Vec::new();
     if let Some(root) = mod_root {
         if !dry_run {
             if let Some(layout) = &focus_layout {
+                enforce_strict_focus_layout_gate_with_options(
+                    validation_options,
+                    root,
+                    layout,
+                    tag,
+                    game_index,
+                )?;
                 changed.extend(apply_focus_layout_to_mod_with_index(
                     root, layout, tag, prefix, game_index,
                 )?);
             }
             if !feature_cards.is_empty() {
+                enforce_strict_feature_card_gate_with_options(
+                    validation_options,
+                    &feature_cards,
+                    tag,
+                    prefix,
+                    game_index,
+                )?;
                 changed.extend(apply_feature_cards_to_mod_with_index(
                     root,
                     &feature_cards,
@@ -1414,6 +1508,11 @@ pub(crate) fn run_workflow_json_with_focus_layout_options(
                 )?);
             }
             if !event_cards.is_empty() {
+                enforce_strict_event_card_gate_with_options(
+                    validation_options,
+                    &event_cards,
+                    game_index,
+                )?;
                 changed.extend(apply_event_cards_to_mod_with_index(
                     root,
                     &event_cards,
@@ -1453,6 +1552,7 @@ pub(crate) fn run_workflow_json_with_focus_layout_options(
         dry_run,
         validation.as_ref(),
         feature_cards.len() + event_cards.len() + usize::from(has_focus_layout),
+        !safety_blockers.is_empty(),
     );
 
     let mut out = String::new();
@@ -1475,6 +1575,7 @@ pub(crate) fn run_workflow_json_with_focus_layout_options(
         "  \"scope_contract\": {},\n",
         requirement_scope_contract_json(&scope_contract)
     ));
+    out.push_str(&format!("  \"safety\": {},\n", safety));
     out.push_str(&format!(
         "  \"plans\": {{\"focus_layout\": {}, \"feature_cards\": {}, \"event_cards\": {}}},\n",
         json_optional_raw(focus_plan.as_deref()),
@@ -1496,6 +1597,121 @@ pub(crate) fn run_workflow_json_with_focus_layout_options(
     out.push_str(&format!("  \"next_steps\": {}\n", json_array(&next_steps)));
     out.push_str("}\n");
     Ok(out)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn workflow_strict_gate_blockers(
+    validation_options: ValidationOptions,
+    mod_root: Option<&Path>,
+    focus_layout: Option<&FocusLayout>,
+    feature_cards: &[Card],
+    event_cards: &[Card],
+    tag: &str,
+    prefix: &str,
+    game_index: Option<&GameIndex>,
+) -> Vec<String> {
+    if !validation_options.strict_code_index {
+        return Vec::new();
+    }
+    let mut blockers = Vec::new();
+    let Some(root) = mod_root else {
+        blockers.push(
+            "strict dry-run gate requires --mod-root so focus icons and local references can be checked"
+                .to_string(),
+        );
+        return blockers;
+    };
+    if game_index.is_none() {
+        blockers.push(
+            "strict dry-run gate requires --game-root so generated code can be checked against the code index"
+                .to_string(),
+        );
+        return blockers;
+    }
+    if let Some(layout) = focus_layout {
+        if let Err(err) = enforce_strict_focus_layout_gate_with_options(
+            validation_options,
+            root,
+            layout,
+            tag,
+            game_index,
+        ) {
+            blockers.push(format!("focus_layout strict gate: {err}"));
+        }
+    }
+    if !feature_cards.is_empty() {
+        if let Err(err) = enforce_strict_feature_card_gate_with_options(
+            validation_options,
+            feature_cards,
+            tag,
+            prefix,
+            game_index,
+        ) {
+            blockers.push(format!("feature_cards strict gate: {err}"));
+        }
+    }
+    if !event_cards.is_empty() {
+        if let Err(err) =
+            enforce_strict_event_card_gate_with_options(validation_options, event_cards, game_index)
+        {
+            blockers.push(format!("event_cards strict gate: {err}"));
+        }
+    }
+    blockers
+}
+
+pub(crate) fn workflow_safety_blockers(
+    focus_layout: Option<&FocusLayout>,
+    feature_cards: &[Card],
+    event_cards: &[Card],
+    tag: &str,
+    prefix: &str,
+) -> Vec<String> {
+    let mut blockers = Vec::new();
+    if let Some(layout) = focus_layout {
+        blockers.extend(
+            focus_node_safety_blockers_for_layout(layout)
+                .into_iter()
+                .map(|blocker| format!("focus_layout: {blocker}")),
+        );
+    }
+    blockers.extend(
+        suggestions_safety_blockers(&feature_cards_safety_suggestions(
+            feature_cards,
+            tag,
+            prefix,
+        ))
+        .into_iter()
+        .map(|blocker| format!("feature_cards: {blocker}")),
+    );
+    blockers.extend(
+        suggestions_safety_blockers(&event_cards_safety_suggestions(event_cards))
+            .into_iter()
+            .map(|blocker| format!("event_cards: {blocker}")),
+    );
+    blockers
+}
+
+pub(crate) fn workflow_safety_json_from_blockers(blockers: &[String]) -> String {
+    let status = if blockers.is_empty() {
+        "verified_shape"
+    } else {
+        "blocked"
+    };
+    format!(
+        "{{\"status\": {}, \"final_code_allowed\": {}, \"blockers\": {}}}",
+        json_str(status),
+        json_bool(blockers.is_empty()),
+        json_array(blockers)
+    )
+}
+
+pub(crate) fn focus_node_safety_blockers_for_layout(layout: &FocusLayout) -> Vec<String> {
+    layout
+        .focuses
+        .iter()
+        .flat_map(focus_node_safety_blockers)
+        .collect()
 }
 
 pub(crate) fn requirement_scope_contract(
@@ -1710,6 +1926,10 @@ pub(crate) fn focus_layout_json(layout: &FocusLayout, tag: &str, prefix: &str) -
     out.push_str(&format!("  \"tag\": {},\n", json_str(tag)));
     out.push_str(&format!("  \"prefix\": {},\n", json_str(prefix)));
     out.push_str(&format!("  \"tree_id\": {},\n", json_str(&layout.tree_id)));
+    out.push_str(&format!(
+        "  \"safety\": {},\n",
+        focus_layout_safety_json(layout)
+    ));
     out.push_str("  \"rows\": [\n");
     for (i, row) in layout.rows.iter().enumerate() {
         comma(&mut out, i, "    ");
@@ -1724,7 +1944,7 @@ pub(crate) fn focus_layout_json(layout: &FocusLayout, tag: &str, prefix: &str) -
     for (i, f) in layout.focuses.iter().enumerate() {
         comma(&mut out, i, "    ");
         out.push_str(&format!(
-            "{{\"title\": {}, \"id\": {}, \"icon\": {}, \"x\": {}, \"y\": {}, \"worksheet_x\": {}, \"worksheet_y\": {}, \"relative_position_id\": {}, \"row\": {}, \"column\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}, \"completion_reward\": {}}}",
+            "{{\"title\": {}, \"id\": {}, \"icon\": {}, \"x\": {}, \"y\": {}, \"worksheet_x\": {}, \"worksheet_y\": {}, \"relative_position_id\": {}, \"row\": {}, \"column\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}, \"completion_reward\": {}, \"safety\": {}}}",
             json_str(&f.title),
             json_str(&f.id),
             json_optional_str(f.icon.as_deref()),
@@ -1737,7 +1957,8 @@ pub(crate) fn focus_layout_json(layout: &FocusLayout, tag: &str, prefix: &str) -
             f.column,
             json_array(&f.prerequisite),
             json_array(&f.mutually_exclusive),
-            json_array(&f.completion_reward)
+            json_array(&f.completion_reward),
+            focus_node_safety_json(f)
         ));
     }
     out.push_str("\n  ],\n  \"mutually_exclusive\": [\n");
@@ -1752,6 +1973,52 @@ pub(crate) fn focus_layout_json(layout: &FocusLayout, tag: &str, prefix: &str) -
     }
     out.push_str("\n  ]\n}\n");
     out
+}
+
+pub(crate) fn focus_layout_safety_json(layout: &FocusLayout) -> String {
+    let blockers = layout
+        .focuses
+        .iter()
+        .flat_map(focus_node_safety_blockers)
+        .collect::<Vec<_>>();
+    focus_safety_json_from_blockers(&blockers)
+}
+
+pub(crate) fn focus_node_safety_json(focus: &FocusNode) -> String {
+    let blockers = focus_node_safety_blockers(focus);
+    focus_safety_json_from_blockers(&blockers)
+}
+
+pub(crate) fn focus_node_safety_blockers(focus: &FocusNode) -> Vec<String> {
+    let mut blockers = Vec::new();
+    for line in &focus.completion_reward {
+        if let Some(marker) = unresolved_generation_marker(line) {
+            blockers.push(format!(
+                "focus `{}` completion_reward contains unresolved marker `{marker}`: {}",
+                focus.title, line
+            ));
+        } else if line.contains('<') || line.contains('>') {
+            blockers.push(format!(
+                "focus `{}` completion_reward contains unresolved placeholder: {}",
+                focus.title, line
+            ));
+        }
+    }
+    blockers
+}
+
+pub(crate) fn focus_safety_json_from_blockers(blockers: &[String]) -> String {
+    let status = if blockers.is_empty() {
+        "verified_shape"
+    } else {
+        "blocked"
+    };
+    format!(
+        "{{\"status\": {}, \"final_code_allowed\": {}, \"blockers\": {}}}",
+        json_str(status),
+        json_bool(blockers.is_empty()),
+        json_array(blockers)
+    )
 }
 
 pub(crate) fn extract_card_text(text: &str, allowed: &[&str]) -> String {
@@ -1793,8 +2060,11 @@ pub(crate) fn extract_focus_layout_text(text: &str) -> String {
             if active && is_workflow_card_header(key) {
                 active = false;
             }
+            if active && is_focus_layout_explanatory_field(key, value) {
+                continue;
+            }
         }
-        if active {
+        if active && !is_focus_layout_noise_line(trimmed) {
             out.push_str(line);
             out.push('\n');
         }
@@ -1807,6 +2077,64 @@ pub(crate) fn extract_focus_layout_text(text: &str) -> String {
     } else {
         String::new()
     }
+}
+
+pub(crate) fn is_focus_layout_explanatory_field(key: &str, value: &str) -> bool {
+    let key = key.trim();
+    if matches!(
+        key,
+        "说明" | "注释" | "备注" | "注意" | "解释" | "输出" | "代码"
+    ) {
+        return true;
+    }
+    let value = value.trim();
+    value.is_empty()
+        && matches!(
+            key,
+            "下面" | "以下" | "如下" | "国策树代码" | "国策布局说明"
+        )
+}
+
+pub(crate) fn is_focus_layout_noise_line(trimmed: &str) -> bool {
+    if trimmed.is_empty() {
+        return false;
+    }
+    if trimmed.starts_with("```") || trimmed == "~~~" || trimmed.starts_with("~~~") {
+        return true;
+    }
+    if trimmed.starts_with('#') && !is_focus_layout_reward_comment(trimmed) {
+        return true;
+    }
+    if contains_any(
+        trimmed,
+        &[
+            "下面是按",
+            "下面是你要的",
+            "下面是国策",
+            "以下是按",
+            "以下是你要的",
+            "以下是国策",
+            "如你所说",
+            "我将为",
+            "我会为",
+        ],
+    ) && !trimmed.contains('|')
+        && split_focus_line(trimmed).len() <= 1
+    {
+        return true;
+    }
+    false
+}
+
+pub(crate) fn is_focus_layout_reward_comment(trimmed: &str) -> bool {
+    let Some(comment) = trimmed.trim_start().strip_prefix('#') else {
+        return false;
+    };
+    let comment = comment.trim_start();
+    comment.starts_with("completion_reward:")
+        || comment.starts_with("completion_reward：")
+        || comment.starts_with("国策效果:")
+        || comment.starts_with("国策效果：")
 }
 
 pub(crate) fn is_workflow_card_header(key: &str) -> bool {
@@ -1885,8 +2213,15 @@ pub(crate) fn workflow_next_steps(
     dry_run: bool,
     reporter: Option<&Reporter>,
     detected_sections: usize,
+    safety_blocked: bool,
 ) -> Vec<String> {
     let mut steps = Vec::new();
+    if safety_blocked {
+        steps.push(
+            "先解决 safety.blockers：把 raw/placeholder 意图映射到 code-catalog 中已验证的 effect、trigger、modifier 或资源。"
+                .to_string(),
+        );
+    }
     if detected_sections == 0 {
         steps.push(
             "未识别到国策树、决议/民族精神卡片或事件卡片；请把文案改成带中文字段的 Feature Plan。"

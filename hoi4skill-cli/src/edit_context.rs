@@ -16,6 +16,9 @@ pub(crate) fn cmd_prepare_edit_context(args: &[String]) -> Result<(), String> {
     let max_context_files = parse_usize_option(&map, "max-context-files", 24)?;
     let dependency_roots = dependency_mod_roots(&map)?;
     let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
+    if game_root.is_none() && !dependency_roots.is_empty() {
+        return Err("--mod-path requires --game-root during edit-context preparation".to_string());
+    }
     let game_index = game_root
         .as_ref()
         .map(|path| build_game_index_with_mod_paths(path, &dependency_roots))
@@ -78,7 +81,10 @@ pub(crate) fn prepare_edit_context_markdown(
     append_explicit_request(&mut workflow_input, explicit_request);
     let request_text = &workflow_input.text;
     let knowledge_json = mod_knowledge_json(&resolved, max_items, max_sprites, dependency_roots)?;
-    let workflow_json = run_workflow_json_with_focus_layout(
+    let context_validation_options = ValidationOptions {
+        strict_code_index: game_index.is_some(),
+    };
+    let workflow_json = run_workflow_json_with_focus_layout_options(
         request_text,
         workflow_input.focus_layout.as_ref(),
         Some(&resolved.root),
@@ -87,6 +93,7 @@ pub(crate) fn prepare_edit_context_markdown(
         tree_id,
         true,
         game_index,
+        context_validation_options,
     )?;
     let markdown_summary = json_string_field(&knowledge_json, "markdown_summary")
         .unwrap_or_else(|| "mod_knowledge markdown_summary was not found".to_string());
@@ -126,6 +133,14 @@ pub(crate) fn prepare_edit_context_markdown(
     if let Some(tree_id) = tree_id {
         out.push_str(&format!("- tree_id: `{tree_id}`\n"));
     }
+    out.push_str(&format!(
+        "- dry_run_validation: `{}`\n",
+        if context_validation_options.strict_code_index {
+            "strict-code-index"
+        } else {
+            "local-static-only"
+        }
+    ));
     if dependency_roots.is_empty() {
         out.push_str("- dependency_mod_roots: none supplied\n");
     } else {
@@ -178,6 +193,13 @@ pub(crate) fn prepare_edit_context_markdown(
     out.push_str("\n### Scope Rules\n\n");
     push_markdown_list(&mut out, &scope_contract.rules);
 
+    out.push_str("\n## AI Authoring Contract\n\n");
+    out.push_str("- Treat player-facing prose as intent, not as Clausewitz code.\n");
+    out.push_str("- Convert shorthand such as `llm：战争正当化 = -10%` with `hoi4skill compile-intent --kind auto --game-root <HOI4 root> --strict-code-index` before any final script output.\n");
+    out.push_str("- Use only effects, triggers, modifiers, buildings, resources, sprites, technologies, tags, and IDs that appear in this context pack, local excerpts, or `check-code-symbol`/`code-catalog` results.\n");
+    out.push_str("- If `compile-intent`, `check-code-symbol`, dry-run safety, or validation says `ok: false` / `final_code_allowed: false`, stop and fix the structured input; do not handwrite fallback Clausewitz.\n");
+    out.push_str("- Final generated files must pass `hoi4skill validate <mod-root> --game-root <HOI4 root> --strict-code-index` before being treated as usable.\n");
+
     out.push_str("\n## Write Gate\n\n");
     out.push_str(&format!("- status: `{}`\n", write_gate.status));
     out.push_str("- rule: if the status is not `READY_FOR_NARROW_WRITE`, resolve the missing evidence before writing final game script.\n");
@@ -218,7 +240,7 @@ pub(crate) fn prepare_edit_context_markdown(
     }
 
     out.push_str("\n## Dry Run Plan\n\n");
-    out.push_str("This is a non-writing `run-workflow` plan with validation against the target mod root.\n\n");
+    out.push_str("This is a non-writing `run-workflow` plan with validation against the target mod root. When a game/dependency index is available, this dry run uses strict code-index validation so the model sees final-gate failures before writing.\n\n");
     out.push_str(&markdown_fence(
         "json",
         truncate_chars(&workflow_json, 60_000).as_str(),
@@ -261,7 +283,7 @@ pub(crate) fn prepare_edit_context_markdown(
     out.push_str("\n## Safe Next Step\n\n");
     out.push_str("- If every `Blocked Until Verified` item is resolved, rerun `run-workflow` without `--dry-run` or use the narrow `apply-*` command.\n");
     out.push_str("- If any blocked item remains, read/index the missing files first or ask the user for explicit IDs/roots.\n");
-    out.push_str("- After writes, run `hoi4skill validate <mod-root> --game-root <HOI4 root> --request \"<literal user request>\"` and then check HOI4 `error.log` from an in-game launch.\n");
+    out.push_str("- After writes, run `hoi4skill validate <mod-root> --game-root <HOI4 root> --strict-code-index --request \"<literal user request>\"` and then check HOI4 `error.log` from an in-game launch.\n");
     Ok(out)
 }
 
@@ -312,6 +334,11 @@ pub(crate) fn render_indexed_resource_summary(index: &GameIndex, limit: usize) -
         "- effects: {} total; sample: {}\n",
         index.effects.len(),
         sample_btree_strings(&index.effects, limit)
+    ));
+    out.push_str(&format!(
+        "- triggers: {} total; sample: {}\n",
+        index.triggers.len(),
+        sample_btree_strings(&index.triggers, limit)
     ));
     out.push_str(&format!(
         "- modifiers: {} total; sample: {}\n",
@@ -443,6 +470,10 @@ pub(crate) fn edit_context_write_gate(
         "dry-run validation status is {}",
         workflow_validation_status(workflow_json)
     ));
+    verified_evidence.push(format!(
+        "dry-run safety status is {}",
+        workflow_safety_status(workflow_json)
+    ));
 
     let mut allowed_edit_surface = Vec::new();
     if has_focus_layout {
@@ -517,6 +548,12 @@ pub(crate) fn edit_context_write_gate(
         missing_evidence
             .push("dry-run validation is not clean; review validation errors/warnings".to_string());
     }
+    if workflow_json.contains("\"final_code_allowed\": false") {
+        missing_evidence.push(
+            "dry-run safety blocks final code; map every raw effect/trigger or placeholder through verified CLI output"
+                .to_string(),
+        );
+    }
     if detected_sections == 0 {
         missing_evidence.push(
             "request was not parsed into focus layout, feature cards, or event cards".to_string(),
@@ -555,7 +592,8 @@ pub(crate) fn edit_context_write_gate(
 
     let hard_blocked = unknown_descriptor
         || detected_sections == 0
-        || workflow_json.contains("\"status\": \"errors\"");
+        || workflow_json.contains("\"status\": \"errors\"")
+        || workflow_json.contains("\"final_code_allowed\": false");
     let status = if hard_blocked {
         "BLOCKED"
     } else if missing_evidence
@@ -666,6 +704,8 @@ fn edit_context_verification_steps(missing_evidence: &[String]) -> Vec<String> {
             steps.push("rerun against the real mod directory, descriptor.mod, or launcher-side `.mod` file".to_string());
         } else if fact.contains("dry-run validation") {
             steps.push("read the `Dry Run Plan` validation errors/warnings and fix or explicitly accept each warning before writing".to_string());
+        } else if fact.contains("dry-run safety blocks") {
+            steps.push("use `hoi4skill compile-intent --kind auto --game-root <HOI4 root> --strict-code-index` or `check-code-symbol` to replace every raw effect/trigger or placeholder with verified structured input".to_string());
         } else if fact.contains("not parsed") {
             steps.push("rewrite the input as a focus layout, feature card, or event card, then regenerate the context pack".to_string());
         }
@@ -699,6 +739,9 @@ pub(crate) fn edit_context_blocked_until_verified(
     if workflow_json.contains("\"validation\": {\"ran\": true, \"ok\": false") {
         blocked.push("Do not report success until dry-run validation errors/warnings are reviewed and resolved.".to_string());
     }
+    if workflow_json.contains("\"final_code_allowed\": false") {
+        blocked.push("Do not write final Clausewitz until dry-run safety allows final code; unresolved raw effects/triggers and placeholders must be mapped first.".to_string());
+    }
     if workflow_json.contains(
         "\"detected\": {\"focus_layout\": false, \"feature_cards\": 0, \"event_cards\": 0}",
     ) {
@@ -721,6 +764,16 @@ fn workflow_validation_status(workflow_json: &str) -> &'static str {
         "ok"
     } else if workflow_json.contains("\"ran\": false") {
         "not_run"
+    } else {
+        "unknown"
+    }
+}
+
+fn workflow_safety_status(workflow_json: &str) -> &'static str {
+    if workflow_json.contains("\"final_code_allowed\": false") {
+        "blocked"
+    } else if workflow_json.contains("\"final_code_allowed\": true") {
+        "allows_final_code"
     } else {
         "unknown"
     }

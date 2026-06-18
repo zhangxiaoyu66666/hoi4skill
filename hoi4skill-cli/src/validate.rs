@@ -27,8 +27,12 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
         check_request_scope_for_new_mod(&root, request, &mut reporter);
     }
     check_text_alignment_from_validate_args(&root, &map, &mut reporter)?;
-    reporter.print();
-    if reporter.errors.is_empty() {
+    let report = validation_report_from_args(&root, &map, &reporter)?;
+    report.effective_reporter.print();
+    if let Some(output) = value(&map, "output") {
+        write_or_print(&validation_report_json(&report), Some(output))?;
+    }
+    if report.effective_reporter.errors.is_empty() {
         Ok(())
     } else {
         Err("validation failed".to_string())
@@ -198,6 +202,7 @@ pub(crate) fn validate_mod_with_options(
                     options,
                     &mut reporter,
                 );
+                check_unresolved_generation_markers(&file, &text, options, &mut reporter);
             } else if matches!(ext.as_str(), "yml" | "yaml") {
                 let text = read_utf8_lossy(&file)?;
                 if norm.contains("/localisation/") {
@@ -314,6 +319,7 @@ pub(crate) fn validate_mod_with_options(
             &index.buildings,
             &mut reporter,
             true,
+            Some((index, "building")),
         );
         warn_building_levels(&game_data_refs.building_levels, index, &mut reporter);
         report_unknown_index_refs(
@@ -322,6 +328,7 @@ pub(crate) fn validate_mod_with_options(
             &index.resources,
             &mut reporter,
             true,
+            Some((index, "resource")),
         );
         report_unknown_index_refs(
             "ideology",
@@ -329,6 +336,7 @@ pub(crate) fn validate_mod_with_options(
             &index.ideologies,
             &mut reporter,
             true,
+            None,
         );
         report_unknown_index_refs_if_indexed(
             "trait",
@@ -337,6 +345,7 @@ pub(crate) fn validate_mod_with_options(
             &mut reporter,
             true,
             options.strict_code_index,
+            None,
         );
         report_unknown_index_refs_if_indexed(
             "equipment type",
@@ -345,6 +354,7 @@ pub(crate) fn validate_mod_with_options(
             &mut reporter,
             true,
             options.strict_code_index,
+            Some((index, "resource_id")),
         );
         report_unknown_index_refs_if_indexed(
             "technology",
@@ -353,6 +363,7 @@ pub(crate) fn validate_mod_with_options(
             &mut reporter,
             true,
             options.strict_code_index,
+            Some((index, "resource_id")),
         );
         report_unknown_index_refs_if_indexed(
             "technology category",
@@ -361,6 +372,7 @@ pub(crate) fn validate_mod_with_options(
             &mut reporter,
             true,
             options.strict_code_index,
+            Some((index, "resource_id")),
         );
         report_unknown_index_refs_if_indexed(
             "sub unit",
@@ -369,6 +381,7 @@ pub(crate) fn validate_mod_with_options(
             &mut reporter,
             true,
             options.strict_code_index,
+            Some((index, "resource_id")),
         );
         report_unknown_index_refs_if_indexed(
             "wargoal type",
@@ -377,6 +390,7 @@ pub(crate) fn validate_mod_with_options(
             &mut reporter,
             true,
             options.strict_code_index,
+            Some((index, "resource_id")),
         );
         report_unknown_index_refs_if_indexed(
             "modifier",
@@ -385,6 +399,7 @@ pub(crate) fn validate_mod_with_options(
             &mut reporter,
             true,
             options.strict_code_index,
+            Some((index, "modifier")),
         );
     }
     let mut known_focus_ids = local_focus_ids;
@@ -411,6 +426,166 @@ pub(crate) fn validate_mod_with_options(
 pub(crate) struct Reporter {
     pub(crate) errors: Vec<String>,
     pub(crate) warnings: Vec<String>,
+}
+
+struct ValidationReport {
+    total_errors: usize,
+    total_warnings: usize,
+    baseline_errors: usize,
+    baseline_warnings: usize,
+    changed_files: Vec<String>,
+    effective_reporter: Reporter,
+}
+
+fn validation_report_from_args(
+    root: &Path,
+    map: &ArgMap,
+    reporter: &Reporter,
+) -> Result<ValidationReport, String> {
+    let baseline = value(map, "baseline")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| read_validation_baseline(&path))
+        .transpose()?;
+    let changed_files = validation_changed_files(root, map)?;
+    let mut errors = reporter.errors.clone();
+    let mut warnings = reporter.warnings.clone();
+
+    let mut baseline_errors = 0;
+    let mut baseline_warnings = 0;
+    if let Some((baseline_error_set, baseline_warning_set)) = baseline {
+        let before = errors.len();
+        errors.retain(|error| !baseline_error_set.contains(error));
+        baseline_errors = before - errors.len();
+        let before = warnings.len();
+        warnings.retain(|warning| !baseline_warning_set.contains(warning));
+        baseline_warnings = before - warnings.len();
+    }
+
+    if map.flags.contains("changed-only") {
+        if changed_files.is_empty() {
+            return Err("--changed-only requires at least one --changed <path>".to_string());
+        }
+        errors.retain(|error| validation_message_mentions_changed(root, error, &changed_files));
+        warnings
+            .retain(|warning| validation_message_mentions_changed(root, warning, &changed_files));
+    }
+
+    Ok(ValidationReport {
+        total_errors: reporter.errors.len(),
+        total_warnings: reporter.warnings.len(),
+        baseline_errors,
+        baseline_warnings,
+        changed_files,
+        effective_reporter: Reporter { errors, warnings },
+    })
+}
+
+fn validation_report_json(report: &ValidationReport) -> String {
+    format!(
+        "{{\n  \"schema\": \"hoi4skill.validation_report.v1\",\n  \"ok\": {},\n  \"status\": {},\n  \"total_errors\": {},\n  \"total_warnings\": {},\n  \"effective_errors\": {},\n  \"effective_warnings\": {},\n  \"baseline_errors_filtered\": {},\n  \"baseline_warnings_filtered\": {},\n  \"changed_files\": {},\n  \"errors\": {},\n  \"warnings\": {}\n}}\n",
+        json_bool(report.effective_reporter.errors.is_empty()),
+        if report.effective_reporter.errors.is_empty() {
+            if report.effective_reporter.warnings.is_empty() {
+                json_str("ok")
+            } else {
+                json_str("warnings")
+            }
+        } else {
+            json_str("errors")
+        },
+        report.total_errors,
+        report.total_warnings,
+        report.effective_reporter.errors.len(),
+        report.effective_reporter.warnings.len(),
+        report.baseline_errors,
+        report.baseline_warnings,
+        json_array(&report.changed_files),
+        json_array(&report.effective_reporter.errors),
+        json_array(&report.effective_reporter.warnings)
+    )
+}
+
+fn read_validation_baseline(path: &Path) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
+    let text = read_utf8_lossy(path)?;
+    Ok((
+        parse_json_string_array_field(&text, "errors"),
+        parse_json_string_array_field(&text, "warnings"),
+    ))
+}
+
+pub(crate) fn parse_json_string_array_field(text: &str, key: &str) -> BTreeSet<String> {
+    let Some(key_pos) = text.find(&format!("\"{key}\":")) else {
+        return BTreeSet::new();
+    };
+    let Some(array_start_rel) = text[key_pos..].find('[') else {
+        return BTreeSet::new();
+    };
+    let array_start = key_pos + array_start_rel;
+    let Some(array_end_rel) = text[array_start..].find(']') else {
+        return BTreeSet::new();
+    };
+    parse_json_string_array(&text[array_start + 1..array_start + array_end_rel])
+        .into_iter()
+        .collect()
+}
+
+fn parse_json_string_array(text: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut current = String::new();
+    let mut in_string = false;
+    let mut escape = false;
+    for ch in text.chars() {
+        if !in_string {
+            if ch == '"' {
+                in_string = true;
+                current.clear();
+            }
+            continue;
+        }
+        if escape {
+            match ch {
+                '"' => current.push('"'),
+                '\\' => current.push('\\'),
+                'n' => current.push('\n'),
+                'r' => current.push('\r'),
+                't' => current.push('\t'),
+                other => current.push(other),
+            }
+            escape = false;
+        } else if ch == '\\' {
+            escape = true;
+        } else if ch == '"' {
+            values.push(current.clone());
+            in_string = false;
+        } else {
+            current.push(ch);
+        }
+    }
+    values
+}
+
+fn validation_changed_files(root: &Path, map: &ArgMap) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    for raw in repeated_values(map, "changed") {
+        let path = PathBuf::from(raw);
+        let rel = if path.is_absolute() {
+            relative_slash_path(root, &path)
+        } else {
+            slash_path(&path)
+        };
+        files.push(rel);
+    }
+    Ok(files)
+}
+
+fn validation_message_mentions_changed(root: &Path, msg: &str, changed_files: &[String]) -> bool {
+    let msg_slash = msg.replace('\\', "/");
+    changed_files.iter().any(|changed| {
+        let changed_slash = changed.replace('\\', "/");
+        let absolute = slash_path(&root.join(changed));
+        msg.contains(changed) || msg_slash.contains(&changed_slash) || msg_slash.contains(&absolute)
+    })
 }
 
 impl Reporter {
@@ -1201,13 +1376,17 @@ pub(crate) fn report_unknown_index_refs(
     known: &BTreeSet<String>,
     reporter: &mut Reporter,
     as_error: bool,
+    related_index: Option<(&GameIndex, &str)>,
 ) {
     for (key, paths) in refs {
         if !known.contains(key) {
+            let related = related_index
+                .map(|(index, kind)| related_code_symbols_text(index, key, Some(kind)))
+                .unwrap_or_default();
             report_paths(
                 reporter,
                 as_error,
-                format!("{label} {key} is referenced but not present in game index"),
+                format!("{label} {key} is referenced but not present in game index{related}"),
                 paths,
             );
         }
@@ -1221,6 +1400,7 @@ pub(crate) fn report_unknown_index_refs_if_indexed(
     reporter: &mut Reporter,
     as_error: bool,
     strict_code_index: bool,
+    related_index: Option<(&GameIndex, &str)>,
 ) {
     if known.is_empty() {
         if strict_code_index && !refs.is_empty() {
@@ -1237,7 +1417,7 @@ pub(crate) fn report_unknown_index_refs_if_indexed(
         }
         return;
     }
-    report_unknown_index_refs(label, refs, known, reporter, as_error);
+    report_unknown_index_refs(label, refs, known, reporter, as_error, related_index);
 }
 
 pub(crate) fn report_paths(
@@ -1428,8 +1608,96 @@ pub(crate) fn check_script_semantics_with_options(
         check_event_fields(path, &cleaned, reporter);
     }
     check_effect_contexts(path, &cleaned, game_index, options, reporter);
-    check_trigger_contexts(path, &cleaned, reporter);
+    check_trigger_contexts(path, &cleaned, game_index, options, reporter);
+    check_scripted_helper_contexts(path, &norm, &cleaned, game_index, options, reporter);
     check_suspicious_assignments(path, &cleaned, game_index, reporter);
+}
+
+pub(crate) fn check_scripted_helper_contexts(
+    path: &Path,
+    norm_path: &str,
+    text: &str,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+    reporter: &mut Reporter,
+) {
+    if norm_path.contains("/common/scripted_effects/") {
+        for (name, block) in direct_child_blocks(text) {
+            check_unknown_effect_keys(
+                path,
+                &format!("scripted_effect `{name}`"),
+                &block,
+                game_index,
+                options,
+                reporter,
+            );
+        }
+    }
+    if norm_path.contains("/common/scripted_triggers/") {
+        for (name, block) in direct_child_blocks(text) {
+            check_unknown_trigger_keys(
+                path,
+                &format!("scripted_trigger `{name}`"),
+                &block,
+                game_index,
+                options,
+                reporter,
+            );
+        }
+    }
+}
+
+pub(crate) fn check_unresolved_generation_markers(
+    path: &Path,
+    text: &str,
+    options: ValidationOptions,
+    reporter: &mut Reporter,
+) {
+    if !options.strict_code_index {
+        return;
+    }
+    for (idx, line) in text.lines().enumerate() {
+        let marker = unresolved_generation_marker(line);
+        if let Some(marker) = marker {
+            reporter.error(format!(
+                "{}:{}: unresolved generated code marker `{marker}`; AI intent must be mapped to verified CLI output before final acceptance",
+                path.display(),
+                idx + 1
+            ));
+        }
+    }
+}
+
+pub(crate) fn unresolved_generation_marker(line: &str) -> Option<&'static str> {
+    if line.contains("Needs Codex mapping before final code") {
+        Some("Needs Codex mapping before final code")
+    } else if line.contains("TODO raw HOI4 block") {
+        Some("TODO raw HOI4 block")
+    } else if line.contains("TODO unmapped line") {
+        Some("TODO unmapped line")
+    } else if line.contains("TODO: add effects from card text") {
+        Some("TODO: add effects from card text")
+    } else if line.contains("TODO: add idea modifiers from card effects") {
+        Some("TODO: add idea modifiers from card effects")
+    } else if line.contains("TODO: add scripted effect body") {
+        Some("TODO: add scripted effect body")
+    } else if line.contains("TODO: add scripted trigger body") {
+        Some("TODO: add scripted trigger body")
+    } else if line.contains("TODO: add state effects") {
+        Some("TODO: add state effects")
+    } else if line.contains("TODO: add option effects") {
+        Some("TODO: add option effects")
+    } else if line.contains("<idea id for") {
+        Some("<idea id for ...>")
+    } else if line.contains("<event id for") {
+        Some("<event id for ...>")
+    } else if line.contains("<focus id for") {
+        Some("<focus id for ...>")
+    } else if line.contains("<number>") {
+        Some("<number>")
+    } else {
+        None
+    }
 }
 
 pub(crate) fn check_national_focus_fields(path: &Path, text: &str, reporter: &mut Reporter) {
@@ -1698,17 +1966,76 @@ pub(crate) fn edit_distance(left: &str, right: &str) -> usize {
 
 pub(crate) fn direct_assignment_keys(block: &str) -> Vec<String> {
     let mut keys = Vec::new();
-    let mut depth: i32 = 0;
-    for line in block.lines() {
-        let trimmed = line.trim();
-        if depth == 0 {
-            if let Some(key) = assignment_key(trimmed) {
-                keys.push(key.to_string());
+    let bytes = block.as_bytes();
+    let mut i = 0usize;
+    let mut depth = 0i32;
+    let mut in_quote = false;
+    let mut escape = false;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        if in_quote {
+            if ch == '"' && !escape {
+                in_quote = false;
             }
+            if escape {
+                escape = false;
+            } else {
+                escape = ch == '\\';
+            }
+            i += 1;
+            continue;
         }
-        depth += trimmed.chars().filter(|c| *c == '{').count() as i32;
-        depth -= trimmed.chars().filter(|c| *c == '}').count() as i32;
-        depth = depth.max(0);
+        if ch == '"' {
+            in_quote = true;
+            escape = false;
+            i += 1;
+            continue;
+        }
+        if ch == '{' {
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if ch == '}' {
+            depth = (depth - 1).max(0);
+            i += 1;
+            continue;
+        }
+        if depth == 0 && is_identifier_byte(bytes[i]) {
+            let start = i;
+            while i < bytes.len() && is_identifier_byte(bytes[i]) {
+                i += 1;
+            }
+            let key = &block[start..i];
+            let mut j = i;
+            while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+                j += 1;
+            }
+            if j < bytes.len() && bytes[j] == b'=' {
+                keys.push(key.to_string());
+                j += 1;
+                while j < bytes.len() && (bytes[j] as char).is_whitespace() {
+                    j += 1;
+                }
+                if j < bytes.len() && bytes[j] == b'{' {
+                    if let Some((_, end)) = braced_content_at(block, j) {
+                        i = end + 1;
+                        continue;
+                    }
+                }
+                while j < bytes.len()
+                    && !(bytes[j] as char).is_whitespace()
+                    && bytes[j] != b'{'
+                    && bytes[j] != b'}'
+                {
+                    j += 1;
+                }
+                i = j;
+                continue;
+            }
+            continue;
+        }
+        i += 1;
     }
     keys
 }
@@ -1725,6 +2052,7 @@ pub(crate) fn check_effect_contexts(
         "completion_reward",
         "hidden_effect",
         "effect",
+        "effects",
         "option",
         "select_effect",
     ] {
@@ -1846,9 +2174,11 @@ pub(crate) fn report_unknown_effect_key(
     if index.effects.contains(key) {
         return;
     }
+    let related = related_code_symbols_text(index, key, Some("effect"));
     reporter.error(format!(
-        "{}: effect context `{context}` uses unknown effect `{key}`; use a real effect from `documentation/effects_documentation.md` or a verified scripted effect",
-        path.display()
+        "{}: effect context `{context}` uses unknown effect `{key}`; use a real effect from `documentation/effects_documentation.md` or a verified scripted effect{}",
+        path.display(),
+        related
     ));
 }
 
@@ -1856,6 +2186,7 @@ pub(crate) fn is_effect_scope_key(key: &str, index: &GameIndex) -> bool {
     matches!(key, "ROOT" | "FROM" | "PREV" | "THIS")
         || index.country_tags.contains(key)
         || looks_like_tag(key)
+        || parse_plain_i64(key).is_some()
 }
 
 pub(crate) fn is_effect_key_candidate(key: &str) -> bool {
@@ -1885,9 +2216,16 @@ pub(crate) fn is_effect_key_candidate(key: &str) -> bool {
     )
 }
 
-pub(crate) fn check_trigger_contexts(path: &Path, text: &str, reporter: &mut Reporter) {
+pub(crate) fn check_trigger_contexts(
+    path: &Path,
+    text: &str,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+    reporter: &mut Reporter,
+) {
     for name in [
         "trigger",
+        "triggers",
         "available",
         "visible",
         "allowed",
@@ -1913,8 +2251,140 @@ pub(crate) fn check_trigger_contexts(path: &Path, text: &str, reporter: &mut Rep
                     ));
                 }
             }
+            check_unknown_trigger_keys(path, name, &block, game_index, options, reporter);
         }
     }
+}
+
+pub(crate) fn check_unknown_trigger_keys(
+    path: &Path,
+    context: &str,
+    block: &str,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+    reporter: &mut Reporter,
+) {
+    let Some(index) = game_index else {
+        return;
+    };
+    check_unknown_trigger_keys_in_block(path, context, block, index, options, reporter);
+}
+
+pub(crate) fn check_unknown_trigger_keys_in_block(
+    path: &Path,
+    context: &str,
+    block: &str,
+    index: &GameIndex,
+    options: ValidationOptions,
+    reporter: &mut Reporter,
+) {
+    for key in direct_assignment_keys(block) {
+        if index.triggers.is_empty() {
+            if options.strict_code_index {
+                report_unverifiable_trigger_key(path, context, &key, reporter);
+            }
+        } else {
+            report_unknown_trigger_key(path, context, &key, index, reporter);
+        }
+    }
+    for (scope, scoped_block) in direct_child_blocks(block) {
+        if is_trigger_child_context(&scope, index) {
+            check_unknown_trigger_keys_in_block(
+                path,
+                context,
+                &scoped_block,
+                index,
+                options,
+                reporter,
+            );
+        }
+    }
+}
+
+pub(crate) fn report_unverifiable_trigger_key(
+    path: &Path,
+    context: &str,
+    key: &str,
+    reporter: &mut Reporter,
+) {
+    if !is_trigger_key_candidate(key) {
+        return;
+    }
+    reporter.error(format!(
+        "{}: trigger context `{context}` uses trigger-like key `{key}`, but strict code index has no indexed triggers; rebuild the index from `documentation/triggers_documentation.md` or load the required game/dependency code before final output",
+        path.display()
+    ));
+}
+
+pub(crate) fn report_unknown_trigger_key(
+    path: &Path,
+    context: &str,
+    key: &str,
+    index: &GameIndex,
+    reporter: &mut Reporter,
+) {
+    if !is_trigger_key_candidate(key) {
+        return;
+    }
+    if index.triggers.contains(key) {
+        return;
+    }
+    let related = related_code_symbols_text(index, key, Some("trigger"));
+    reporter.error(format!(
+        "{}: trigger context `{context}` uses unknown trigger `{key}`; use a real trigger from `documentation/triggers_documentation.md` or a verified scripted trigger{}",
+        path.display(),
+        related
+    ));
+}
+
+pub(crate) fn is_trigger_child_context(key: &str, index: &GameIndex) -> bool {
+    matches!(
+        key,
+        "NOT" | "OR" | "AND" | "NOR" | "ROOT" | "FROM" | "PREV" | "THIS"
+    ) || index.country_tags.contains(key)
+        || looks_like_tag(key)
+}
+
+pub(crate) fn is_trigger_key_candidate(key: &str) -> bool {
+    if !is_identifier_like(key) {
+        return false;
+    }
+    !matches!(
+        key,
+        "name"
+            | "title"
+            | "desc"
+            | "picture"
+            | "id"
+            | "trigger"
+            | "available"
+            | "visible"
+            | "allowed"
+            | "limit"
+            | "target_root_trigger"
+            | "target_trigger"
+            | "state_trigger"
+            | "custom_trigger_tooltip"
+            | "tooltip"
+            | "factor"
+            | "base"
+            | "modifier"
+            | "add"
+            | "tag"
+            | "value"
+            | "days"
+            | "always"
+            | "original_tag"
+            | "is_ai"
+            | "NOT"
+            | "OR"
+            | "AND"
+            | "NOR"
+            | "ROOT"
+            | "FROM"
+            | "PREV"
+            | "THIS"
+    )
 }
 
 pub(crate) fn check_suspicious_assignments(

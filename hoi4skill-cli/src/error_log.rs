@@ -7,9 +7,24 @@ pub(crate) fn cmd_analyze_error_log(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let input = normalize_path(&require_value(&map, "input")?)?;
     let mod_root = value(&map, "mod-root").map(normalize_path).transpose()?;
+    let baseline = value(&map, "baseline")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| read_error_log_baseline(&path))
+        .transpose()?;
+    let changed_files = error_log_changed_files(mod_root.as_deref(), &map)?;
+    if map.flags.contains("changed-only") && changed_files.is_empty() {
+        return Err("--changed-only requires at least one --changed <path>".to_string());
+    }
     let text = read_utf8_lossy(&input)?;
     let diagnostics = analyze_error_log(&text, mod_root.as_deref());
-    let json = error_log_report_json(&input, mod_root.as_deref(), &diagnostics);
+    let report = build_error_log_report(
+        diagnostics,
+        baseline,
+        changed_files,
+        map.flags.contains("changed-only"),
+    );
+    let json = error_log_report_json(&input, mod_root.as_deref(), &report);
     write_or_print(&json, value(&map, "output"))
 }
 
@@ -23,6 +38,13 @@ pub(crate) struct ErrorLogDiagnostic {
     pub(crate) message: String,
     pub(crate) suggestion: String,
     pub(crate) raw: String,
+}
+
+pub(crate) struct ErrorLogReport {
+    diagnostics_total: usize,
+    baseline_filtered: usize,
+    changed_files: Vec<String>,
+    diagnostics: Vec<ErrorLogDiagnostic>,
 }
 
 pub(crate) fn analyze_error_log(text: &str, mod_root: Option<&Path>) -> Vec<ErrorLogDiagnostic> {
@@ -54,6 +76,31 @@ pub(crate) fn analyze_error_log(text: &str, mod_root: Option<&Path>) -> Vec<Erro
         });
     }
     diagnostics
+}
+
+pub(crate) fn build_error_log_report(
+    diagnostics: Vec<ErrorLogDiagnostic>,
+    baseline: Option<BTreeSet<String>>,
+    changed_files: Vec<String>,
+    changed_only: bool,
+) -> ErrorLogReport {
+    let diagnostics_total = diagnostics.len();
+    let mut effective = diagnostics;
+    let mut baseline_filtered = 0;
+    if let Some(baseline) = baseline {
+        let before = effective.len();
+        effective.retain(|diagnostic| !baseline.contains(&diagnostic.raw));
+        baseline_filtered = before - effective.len();
+    }
+    if changed_only {
+        effective.retain(|diagnostic| diagnostic_touches_changed_file(diagnostic, &changed_files));
+    }
+    ErrorLogReport {
+        diagnostics_total,
+        baseline_filtered,
+        changed_files,
+        diagnostics: effective,
+    }
 }
 
 pub(crate) fn is_error_log_diagnostic_line(line: &str) -> bool {
@@ -299,14 +346,101 @@ pub(crate) fn resolve_log_file(mod_root: Option<&Path>, file: &str) -> Option<Pa
     candidate.exists().then_some(candidate)
 }
 
+fn read_error_log_baseline(path: &Path) -> Result<BTreeSet<String>, String> {
+    let text = read_utf8_lossy(path)?;
+    let raw_values = parse_json_string_field_values(&text, "raw");
+    if !raw_values.is_empty() {
+        return Ok(raw_values.into_iter().collect());
+    }
+    Ok(analyze_error_log(&text, None)
+        .into_iter()
+        .map(|diagnostic| diagnostic.raw)
+        .collect())
+}
+
+fn error_log_changed_files(mod_root: Option<&Path>, map: &ArgMap) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    for raw in repeated_values(map, "changed") {
+        let path = PathBuf::from(raw);
+        let rel = if let Some(root) = mod_root {
+            if path.is_absolute() {
+                relative_slash_path(root, &path)
+            } else {
+                slash_path(&path)
+            }
+        } else {
+            slash_path(&path)
+        };
+        files.push(rel);
+    }
+    Ok(files)
+}
+
+fn diagnostic_touches_changed_file(
+    diagnostic: &ErrorLogDiagnostic,
+    changed_files: &[String],
+) -> bool {
+    let Some(file) = &diagnostic.file else {
+        return false;
+    };
+    let file = file.replace('\\', "/");
+    changed_files
+        .iter()
+        .any(|changed| file == *changed || file.ends_with(changed) || changed.ends_with(&file))
+}
+
+fn parse_json_string_field_values(text: &str, key: &str) -> Vec<String> {
+    let needle = format!("\"{key}\":");
+    let mut values = Vec::new();
+    let mut search = text;
+    while let Some(pos) = search.find(&needle) {
+        let after = &search[pos + needle.len()..];
+        let Some(start_rel) = after.find('"') else {
+            break;
+        };
+        let raw = &after[start_rel + 1..];
+        let Some((value, consumed)) = parse_json_string_value(raw) else {
+            break;
+        };
+        values.push(value);
+        search = &raw[consumed..];
+    }
+    values
+}
+
+fn parse_json_string_value(raw: &str) -> Option<(String, usize)> {
+    let mut value = String::new();
+    let mut escaped = false;
+    for (idx, ch) in raw.char_indices() {
+        if escaped {
+            match ch {
+                '"' => value.push('"'),
+                '\\' => value.push('\\'),
+                'n' => value.push('\n'),
+                'r' => value.push('\r'),
+                't' => value.push('\t'),
+                other => value.push(other),
+            }
+            escaped = false;
+            continue;
+        }
+        match ch {
+            '\\' => escaped = true,
+            '"' => return Some((value, idx + 1)),
+            other => value.push(other),
+        }
+    }
+    None
+}
+
 pub(crate) fn error_log_report_json(
     input: &Path,
     mod_root: Option<&Path>,
-    diagnostics: &[ErrorLogDiagnostic],
+    report: &ErrorLogReport,
 ) -> String {
     let mut severity_counts: BTreeMap<String, i64> = BTreeMap::new();
     let mut category_counts: BTreeMap<String, i64> = BTreeMap::new();
-    for diagnostic in diagnostics {
+    for diagnostic in &report.diagnostics {
         *severity_counts
             .entry(diagnostic.severity.clone())
             .or_default() += 1;
@@ -314,19 +448,25 @@ pub(crate) fn error_log_report_json(
             .entry(diagnostic.category.clone())
             .or_default() += 1;
     }
-    let items = diagnostics
+    let items = report
+        .diagnostics
         .iter()
         .map(error_log_diagnostic_json)
         .collect::<Vec<_>>()
         .join(",\n    ");
     format!(
-        "{{\n  \"input\": {},\n  \"mod_root\": {},\n  \"diagnostics\": [\n    {}\n  ],\n  \"counts\": {{\"total\": {}, \"by_severity\": {}, \"by_category\": {}}}\n}}\n",
+        "{{\n  \"schema\": \"hoi4skill.error_log_report.v1\",\n  \"input\": {},\n  \"mod_root\": {},\n  \"diagnostics_total\": {},\n  \"diagnostics_effective\": {},\n  \"baseline_filtered\": {},\n  \"changed_files\": {},\n  \"diagnostics\": [\n    {}\n  ],\n  \"counts\": {{\"total\": {}, \"effective\": {}, \"by_severity\": {}, \"by_category\": {}}}\n}}\n",
         json_str(&input.display().to_string()),
         mod_root
             .map(|path| json_str(&path.display().to_string()))
             .unwrap_or_else(|| "null".to_string()),
+        report.diagnostics_total,
+        report.diagnostics.len(),
+        report.baseline_filtered,
+        json_array(&report.changed_files),
         items,
-        diagnostics.len(),
+        report.diagnostics_total,
+        report.diagnostics.len(),
         json_i64_object(&severity_counts),
         json_i64_object(&category_counts)
     )

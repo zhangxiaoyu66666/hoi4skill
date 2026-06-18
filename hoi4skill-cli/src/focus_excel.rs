@@ -35,26 +35,33 @@ pub(crate) fn cmd_parse_focus_excel(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let input = normalize_path(&require_value(&map, "input")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
-    enforce_tag_request_contract(&map, tag, None)?;
     let prefix = value(&map, "prefix").unwrap_or("focus");
     let sheet = value(&map, "sheet");
+    let dependency_mods = dependency_mod_roots(&map)?;
+    let game_index = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+        .transpose()?;
+    enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err("--mod-path requires --game-root during Excel focus parsing".to_string());
+    }
     let format = value(&map, "format").unwrap_or(DEFAULT_FOCUS_EXCEL_FORMAT);
+    let mut layout = read_focus_excel_layout(&input, sheet, tag, prefix)?;
+    if let Some(tree_id) = value(&map, "tree-id") {
+        layout.tree_id = tree_id.to_string();
+    }
+    let local_root = value(&map, "mod-root")
+        .map(normalize_path)
+        .transpose()?
+        .or_else(|| input.parent().map(Path::to_path_buf))
+        .unwrap_or_else(|| PathBuf::from("."));
+    enforce_strict_focus_layout_gate(&map, &local_root, &layout, tag, game_index.as_ref())?;
     let output = match normalise_focus_excel_format(format).as_str() {
         "markdown" => render_focus_excel_markdown(&input, sheet, tag, prefix)?,
-        "json" => {
-            let mut layout = read_focus_excel_layout(&input, sheet, tag, prefix)?;
-            if let Some(tree_id) = value(&map, "tree-id") {
-                layout.tree_id = tree_id.to_string();
-            }
-            focus_excel_layout_json(&layout, &input, sheet, tag, prefix)
-        }
-        "focus-tree" => {
-            let mut layout = read_focus_excel_layout(&input, sheet, tag, prefix)?;
-            if let Some(tree_id) = value(&map, "tree-id") {
-                layout.tree_id = tree_id.to_string();
-            }
-            render_focus_tree(&layout, tag)
-        }
+        "json" => focus_excel_layout_json(&layout, &input, sheet, tag, prefix),
+        "focus-tree" => render_focus_tree(&layout, tag),
         other => {
             return Err(format!(
                 "unknown --format `{other}`; use focus-tree, json, or markdown"
@@ -85,6 +92,7 @@ pub(crate) fn cmd_apply_focus_excel(args: &[String]) -> Result<(), String> {
     if let Some(tree_id) = value(&map, "tree-id") {
         layout.tree_id = tree_id.to_string();
     }
+    enforce_strict_focus_layout_gate(&map, &mod_root, &layout, tag, game_index.as_ref())?;
 
     let changed =
         apply_focus_layout_to_mod_with_index(&mod_root, &layout, tag, prefix, game_index.as_ref())?;
@@ -1027,11 +1035,15 @@ pub(crate) fn focus_excel_layout_json(
     out.push_str(&format!("  \"tag\": {},\n", json_str(tag)));
     out.push_str(&format!("  \"prefix\": {},\n", json_str(prefix)));
     out.push_str(&format!("  \"tree_id\": {},\n", json_str(&layout.tree_id)));
+    out.push_str(&format!(
+        "  \"safety\": {},\n",
+        focus_layout_safety_json(layout)
+    ));
     out.push_str("  \"focuses\": [\n");
     for (i, focus) in layout.focuses.iter().enumerate() {
         comma(&mut out, i, "    ");
         out.push_str(&format!(
-            "{{\"title\": {}, \"id\": {}, \"icon\": {}, \"x\": {}, \"y\": {}, \"relative_position_id\": {}, \"relative_x\": {}, \"relative_y\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}}}",
+            "{{\"title\": {}, \"id\": {}, \"icon\": {}, \"x\": {}, \"y\": {}, \"relative_position_id\": {}, \"relative_x\": {}, \"relative_y\": {}, \"prerequisite\": {}, \"mutually_exclusive\": {}, \"completion_reward\": {}, \"safety\": {}}}",
             json_str(&focus.title),
             json_str(&focus.id),
             json_optional_str(focus.icon.as_deref()),
@@ -1041,7 +1053,9 @@ pub(crate) fn focus_excel_layout_json(
             json_optional_i64(focus.relative_x.map(i64::from)),
             json_optional_i64(focus.relative_y.map(i64::from)),
             json_array(&focus.prerequisite),
-            json_array(&focus.mutually_exclusive)
+            json_array(&focus.mutually_exclusive),
+            json_array(&focus.completion_reward),
+            focus_node_safety_json(focus)
         ));
     }
     out.push_str("\n  ],\n");
