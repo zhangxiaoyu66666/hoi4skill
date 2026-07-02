@@ -42,6 +42,7 @@ pub(crate) struct GameIndex {
     pub(crate) dynamic_modifier_names: BTreeMap<String, BTreeSet<String>>,
     pub(crate) dynamic_modifier_effect_tooltips: BTreeMap<String, BTreeSet<String>>,
     pub(crate) localisation_entries: BTreeMap<String, String>,
+    pub(crate) localisation_entry_aliases: BTreeMap<String, BTreeSet<String>>,
 }
 
 pub(crate) fn cmd_build_game_index(args: &[String]) -> Result<(), String> {
@@ -212,7 +213,7 @@ fn collect_gui_request_index_root(
             &root.join("localisation"),
             &["yml", "yaml"],
             |_, text| {
-                collect_localisation_entries(text, &mut index.localisation_entries);
+                collect_localisation_entries_for_index(index, text);
                 collect_country_localisation_names(text, &mut index.country_name_tags);
                 collect_localisation_icon_names(text, &mut index.localisation_icon_names);
             },
@@ -411,7 +412,7 @@ pub(crate) fn collect_game_index_root(index: &mut GameIndex, root: &Path) -> Res
             collect_country_tags(&text, &mut index.country_tags);
         } else if matches!(ext.as_str(), "yml" | "yaml") && norm.contains("/localisation/") {
             let text = read_utf8_lossy(&file)?;
-            collect_localisation_entries(&text, &mut index.localisation_entries);
+            collect_localisation_entries_for_index(index, &text);
             collect_country_localisation_names(&text, &mut index.country_name_tags);
             collect_localisation_icon_names(&text, &mut index.localisation_icon_names);
         } else if ext == "txt" && norm.contains("/common/national_focus/") {
@@ -846,10 +847,15 @@ pub(crate) fn collect_country_tags(text: &str, tags: &mut BTreeSet<String>) {
     }
 }
 
-pub(crate) fn collect_localisation_entries(text: &str, entries: &mut BTreeMap<String, String>) {
+pub(crate) fn collect_localisation_entries_for_index(index: &mut GameIndex, text: &str) {
     for line in text.lines() {
         if let Some((key, value)) = parse_localisation_line(line) {
-            entries.insert(key, value);
+            index
+                .localisation_entry_aliases
+                .entry(key.clone())
+                .or_default()
+                .insert(value.clone());
+            index.localisation_entries.insert(key, value);
         }
     }
 }

@@ -7802,6 +7802,219 @@ fn p43_state_transaction_plan_records_old_new_and_apply_pack() {
 }
 
 #[test]
+fn state_transaction_text_resolves_localised_states_and_resources() {
+    let root = unique_temp_dir("state-transaction-text-resources");
+    let game_root = root.join("Hearts of Iron IV");
+    let target = root.join("target");
+    fs::create_dir_all(game_root.join("common").join("resources")).unwrap();
+    fs::create_dir_all(game_root.join("history").join("states")).unwrap();
+    fs::create_dir_all(game_root.join("localisation").join("simp_chinese")).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::write(
+        game_root
+            .join("common")
+            .join("resources")
+            .join("00_resources.txt"),
+        "resources = {\n  tungsten = {}\n  oil = {}\n  coal = {}\n}\n",
+    )
+    .unwrap();
+    for (id, key) in [
+        (600, "STATE_600"),
+        (602, "STATE_602"),
+        (617, "STATE_617"),
+        (615, "STATE_615"),
+    ] {
+        fs::write(
+            game_root
+                .join("history")
+                .join("states")
+                .join(format!("{id}.txt")),
+            format!(
+                "state = {{ id = {id} name = \"{key}\" history = {{ }} provinces = {{ {id}0 }} }}\n"
+            ),
+        )
+        .unwrap();
+    }
+    fs::write(
+        game_root
+            .join("localisation")
+            .join("simp_chinese")
+            .join("state_names_l_simp_chinese.yml"),
+        "l_simp_chinese:\n  STATE_600: \"江西\"\n  STATE_602: \"湖南\"\n  STATE_617: \"乌鲁木齐\"\n  STATE_615: \"山西\"\n  state_resource_tungsten: \"钨\"\n  state_resource_oil: \"石油\"\n  state_resource_coal: \"煤\"\n  STATE_600: \"Jiangxi\"\n  state_resource_tungsten: \"Tungsten\"\n",
+    )
+    .unwrap();
+    let plan = root.join("state_transaction.json");
+    cmd_state_transaction_plan(&[
+        "--mod-root".to_string(),
+        target.to_string_lossy().to_string(),
+        "--game-root".to_string(),
+        game_root.to_string_lossy().to_string(),
+        "--text".to_string(),
+        "江西省，湖南省添加500钨矿，乌鲁木齐添加100石油，山西添加500媒".to_string(),
+        "--require-passed".to_string(),
+        "--output".to_string(),
+        plan.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let json = read_utf8_lossy(&plan).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    assert!(json.contains("\"ok\": true"));
+    assert!(json.contains("\"state_id\": 600"));
+    assert!(json.contains("\"state_id\": 602"));
+    assert!(json.contains("\"state_id\": 617"));
+    assert!(json.contains("\"state_id\": 615"));
+    assert!(json.contains("\"field\": \"resource:tungsten\""));
+    assert!(json.contains("\"field\": \"resource:oil\""));
+    assert!(json.contains("\"field\": \"resource:coal\""));
+    assert!(json.contains("\"new_value\": \"500\""));
+    assert!(json.contains("\"new_value\": \"100\""));
+}
+
+#[test]
+fn map_intent_text_resources_use_localisation_instead_of_requiring_ids() {
+    let root = unique_temp_dir("map-intent-text-resources");
+    let game_root = root.join("Hearts of Iron IV");
+    fs::create_dir_all(game_root.join("common").join("resources")).unwrap();
+    fs::create_dir_all(game_root.join("history").join("states")).unwrap();
+    fs::create_dir_all(game_root.join("localisation").join("simp_chinese")).unwrap();
+    fs::write(
+        game_root
+            .join("common")
+            .join("resources")
+            .join("00_resources.txt"),
+        "resources = {\n  tungsten = {}\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        game_root.join("history").join("states").join("600.txt"),
+        "state = { id = 600 name = \"STATE_600\" history = { } provinces = { 1 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        game_root
+            .join("localisation")
+            .join("simp_chinese")
+            .join("state_names_l_simp_chinese.yml"),
+        "l_simp_chinese:\n  STATE_600: \"江西\"\n  state_resource_tungsten: \"钨\"\n  STATE_600: \"Jiangxi\"\n  state_resource_tungsten: \"Tungsten\"\n",
+    )
+    .unwrap();
+    let output = root.join("map_intent.json");
+    cmd_map_intent_plan(&[
+        "--game-root".to_string(),
+        game_root.to_string_lossy().to_string(),
+        "--text".to_string(),
+        "江西省添加500钨矿".to_string(),
+        "--require-passed".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    assert!(json.contains("\"ok\": true"));
+    assert!(json.contains("\"compiled_state_resources\""));
+    assert!(json.contains("\"state_id\": 600"));
+    assert!(json.contains("\"resource_id\": \"tungsten\""));
+    assert!(!json.contains("no explicit state/province id"));
+}
+
+#[test]
+fn map_intent_railway_route_uses_largest_victory_points_and_asks_for_path_and_forts() {
+    let root = unique_temp_dir("map-intent-railway-route");
+    let game_root = root.join("Hearts of Iron IV");
+    fs::create_dir_all(game_root.join("history").join("states")).unwrap();
+    fs::create_dir_all(game_root.join("localisation").join("simp_chinese")).unwrap();
+    fs::write(
+        game_root.join("history").join("states").join("615-Shanxi.txt"),
+        "state = { id = 615 name = \"STATE_615\" history = { victory_points = { 100 3 101 8 } } provinces = { 100 101 102 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        game_root.join("history").join("states").join("602-Hunan.txt"),
+        "state = { id = 602 name = \"STATE_602\" history = { victory_points = { 200 1 201 10 } } provinces = { 200 201 202 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        game_root
+            .join("localisation")
+            .join("simp_chinese")
+            .join("state_names_l_simp_chinese.yml"),
+        "l_simp_chinese:\n  STATE_615: \"山西\"\n  STATE_602: \"湖南\"\n  VICTORY_POINTS_101: \"太原\"\n  VICTORY_POINTS_201: \"长沙\"\n",
+    )
+    .unwrap();
+    let output = root.join("map_intent_railway.json");
+    cmd_map_intent_plan(&[
+        "--game-root".to_string(),
+        game_root.to_string_lossy().to_string(),
+        "--text".to_string(),
+        "修一条从山西到湖南的铁路，链接这两个省份最大的胜利点，并且在每个省份路过的地方修一个补给站，然后修要塞保护铁路线".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    assert!(json.contains("\"ok\": false"));
+    assert!(json.contains("\"compiled_supply_routes\""));
+    assert!(json.contains("\"province_id\": 101"));
+    assert!(json.contains("\"province_localised_name\": \"太原\""));
+    assert!(json.contains("\"province_id\": 201"));
+    assert!(json.contains("\"province_localised_name\": \"长沙\""));
+    assert!(json.contains("\"victory_point_value\": 8"));
+    assert!(json.contains("\"victory_point_value\": 10"));
+    assert!(json.contains("supply-node=101"));
+    assert!(json.contains("supply-node=201"));
+    assert!(json.contains("ordered intermediate province ids"));
+    assert!(json.contains("fortification request needs explicit province ids or state ids"));
+    assert!(!json.contains("no explicit state/province id"));
+}
+
+#[test]
+fn state_transaction_text_blocks_unknown_localised_state_or_resource() {
+    let root = unique_temp_dir("state-transaction-text-resource-block");
+    let game_root = root.join("Hearts of Iron IV");
+    let target = root.join("target");
+    fs::create_dir_all(game_root.join("common").join("resources")).unwrap();
+    fs::create_dir_all(game_root.join("history").join("states")).unwrap();
+    fs::create_dir_all(game_root.join("localisation").join("simp_chinese")).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::write(
+        game_root
+            .join("common")
+            .join("resources")
+            .join("00_resources.txt"),
+        "resources = {\n  oil = {}\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        game_root.join("history").join("states").join("600.txt"),
+        "state = { id = 600 name = \"STATE_600\" history = { } provinces = { 1 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        game_root
+            .join("localisation")
+            .join("simp_chinese")
+            .join("state_names_l_simp_chinese.yml"),
+        "l_simp_chinese:\n  STATE_600:0 \"江西\"\n  state_resource_oil:0 \"石油\"\n",
+    )
+    .unwrap();
+    let err = cmd_state_transaction_plan(&[
+        "--mod-root".to_string(),
+        target.to_string_lossy().to_string(),
+        "--game-root".to_string(),
+        game_root.to_string_lossy().to_string(),
+        "--text".to_string(),
+        "火星省添加500秘银".to_string(),
+        "--require-passed".to_string(),
+    ])
+    .unwrap_err();
+    fs::remove_dir_all(&root).unwrap();
+    assert!(err.contains("state name"));
+    assert!(err.contains("resource"));
+}
+
+#[test]
 fn p43_state_transaction_blocks_vp_outside_state_and_apply_without_final_check() {
     let root = unique_temp_dir("p43-state-transaction-block");
     let game_root = root.join("Hearts of Iron IV");

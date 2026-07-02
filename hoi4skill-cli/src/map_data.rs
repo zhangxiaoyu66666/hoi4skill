@@ -51,7 +51,13 @@ pub(crate) fn cmd_map_intent_plan(args: &[String]) -> Result<(), String> {
         .as_ref()
         .map(|root| build_game_index_with_mod_paths(root, &dependency_roots))
         .transpose()?;
-    let report = map_intent_plan_json(&text, mod_root.as_deref(), game_index.as_ref());
+    let report = map_intent_plan_json(
+        &text,
+        mod_root.as_deref(),
+        game_root.as_deref(),
+        &dependency_roots,
+        game_index.as_ref(),
+    )?;
     write_or_print(&report, value(&map, "output"))?;
     if map.flags.contains("require-passed") && report.contains("\"ok\": false") {
         return Err("map-intent-plan has unresolved blockers".to_string());
@@ -110,6 +116,7 @@ pub(crate) fn cmd_province_query(args: &[String]) -> Result<(), String> {
 pub(crate) fn cmd_state_transaction_plan(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let mod_root = normalize_path(&require_value(&map, "mod-root")?)?;
+    let text = history_plan_input_text(&map)?;
     let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
     let dependency_roots =
         dependency_mod_roots_for_optional_edited_mod(&map, Some(&mod_root), false)?;
@@ -121,17 +128,30 @@ pub(crate) fn cmd_state_transaction_plan(args: &[String]) -> Result<(), String> 
         .into_iter()
         .filter_map(parse_int)
         .collect::<Vec<_>>();
-    if states.is_empty() {
+    if states.is_empty() && text.trim().is_empty() {
         return Err("state-transaction-plan requires --state <id>".to_string());
     }
-    let operations = state_transaction_operations(
-        &map,
-        &mod_root,
-        game_root.as_deref(),
-        &dependency_roots,
-        game_index.as_ref(),
-        &states,
-    )?;
+    let operations = if states.is_empty() {
+        let Some(index) = game_index.as_ref() else {
+            return Err("state-transaction-plan --text requires --game-root for indexed state/resource localisation".to_string());
+        };
+        state_transaction_operations_from_text(
+            &text,
+            &mod_root,
+            game_root.as_deref(),
+            &dependency_roots,
+            index,
+        )?
+    } else {
+        state_transaction_operations(
+            &map,
+            &mod_root,
+            game_root.as_deref(),
+            &dependency_roots,
+            game_index.as_ref(),
+            &states,
+        )?
+    };
     let blockers = state_transaction_blockers(&operations);
     let ok = blockers.is_empty();
     let report = state_transaction_plan_json(
@@ -595,6 +615,42 @@ struct StateTransactionOperation {
     blocker: Option<String>,
 }
 
+#[derive(Clone)]
+struct StateResourceTextRequest {
+    state_id: i64,
+    state_query: String,
+    state_name_key: String,
+    state_localised_name: Option<String>,
+    resource_id: String,
+    resource_query: String,
+    amount: i64,
+    raw_segment: String,
+}
+
+struct StateResourceTextPlan {
+    requests: Vec<StateResourceTextRequest>,
+    blockers: Vec<String>,
+}
+
+struct SupplyRouteTextEndpoint {
+    state_id: i64,
+    state_query: String,
+    state_name_key: String,
+    state_localised_name: Option<String>,
+    province_id: i64,
+    province_localised_name: Option<String>,
+    victory_point_value: i64,
+    source_layer: String,
+    source_file: String,
+}
+
+struct SupplyRouteTextPlan {
+    endpoints: Vec<SupplyRouteTextEndpoint>,
+    blockers: Vec<String>,
+    questions: Vec<String>,
+    requested_fortification: bool,
+}
+
 struct MapDataFile {
     layer: String,
     root: String,
@@ -901,6 +957,575 @@ fn state_transaction_operations(
         }
     }
     Ok(out)
+}
+
+fn state_transaction_operations_from_text(
+    text: &str,
+    mod_root: &Path,
+    game_root: Option<&Path>,
+    dependency_roots: &[PathBuf],
+    index: &GameIndex,
+) -> Result<Vec<StateTransactionOperation>, String> {
+    let target_states = scan_history_state_styles(mod_root)?;
+    let parent_states = scan_dependency_history_states(dependency_roots)?;
+    let game_states = if let Some(game_root) = game_root {
+        scan_history_state_styles(game_root)?
+    } else {
+        Vec::new()
+    };
+    let plan = compile_state_resource_text_plan(text, index);
+    let mut out = Vec::new();
+    for blocker in plan.blockers {
+        out.push(StateTransactionOperation {
+            state_id: 0,
+            field: "state_resource_text".to_string(),
+            old_value: "unresolved".to_string(),
+            new_value: text.to_string(),
+            source_layer: "text".to_string(),
+            source_file: "<natural-language-request>".to_string(),
+            risk: "blocking".to_string(),
+            ok: false,
+            blocker: Some(blocker),
+        });
+    }
+    for request in plan.requests {
+        let evidence = state_transaction_evidence(
+            request.state_id,
+            &target_states,
+            &parent_states,
+            &game_states,
+        );
+        let (source_layer, source_file, risk) = evidence.clone().unwrap_or_else(|| {
+            (
+                "game_index".to_string(),
+                format!("history/states/<state_{}>.txt", request.state_id),
+                "override_requires_confirmation".to_string(),
+            )
+        });
+        let old_state = state_transaction_state_view(
+            request.state_id,
+            &target_states,
+            &parent_states,
+            &game_states,
+        );
+        out.push(state_transaction_resource_op(
+            request.state_id,
+            &format!("{}={}", request.resource_id, request.amount),
+            &source_layer,
+            &source_file,
+            &risk,
+            Some(index),
+            old_state.as_ref(),
+        ));
+    }
+    if out.is_empty() {
+        out.push(StateTransactionOperation {
+            state_id: 0,
+            field: "state_resource_text".to_string(),
+            old_value: "unresolved".to_string(),
+            new_value: text.to_string(),
+            source_layer: "text".to_string(),
+            source_file: "<natural-language-request>".to_string(),
+            risk: "blocking".to_string(),
+            ok: false,
+            blocker: Some("no state resource request was found in text".to_string()),
+        });
+    }
+    Ok(out)
+}
+
+fn compile_state_resource_text_plan(text: &str, index: &GameIndex) -> StateResourceTextPlan {
+    let mut requests = Vec::new();
+    let mut blockers = Vec::new();
+    let mut pending_place_text = String::new();
+    for segment in split_state_resource_segments(text) {
+        let segment = segment.trim();
+        if segment.is_empty() {
+            continue;
+        }
+        let Some((amount, resource_query, place_part)) =
+            parse_state_resource_action_segment(segment)
+        else {
+            if !pending_place_text.is_empty() {
+                pending_place_text.push(' ');
+            }
+            pending_place_text.push_str(segment);
+            continue;
+        };
+        let mut place_text = String::new();
+        if !pending_place_text.trim().is_empty() {
+            place_text.push_str(pending_place_text.trim());
+            place_text.push(' ');
+        }
+        place_text.push_str(place_part.trim());
+        let state_matches = resolve_state_mentions(&place_text, index);
+        let resource_id = resolve_resource_query(&resource_query, index);
+        if state_matches.is_empty() {
+            blockers.push(format!(
+                "state name `{}` was not found in indexed STATE_* localisation",
+                place_text.trim()
+            ));
+        }
+        if resource_id.is_none() {
+            blockers.push(format!(
+                "resource `{resource_query}` was not found in indexed resource localisation"
+            ));
+        }
+        if let Some(resource_id) = resource_id {
+            for state in state_matches {
+                requests.push(StateResourceTextRequest {
+                    state_id: state.state_id,
+                    state_query: state.query,
+                    state_name_key: state.name_key,
+                    state_localised_name: state.localised_name,
+                    resource_id: resource_id.clone(),
+                    resource_query: resource_query.clone(),
+                    amount,
+                    raw_segment: segment.to_string(),
+                });
+            }
+        }
+        pending_place_text.clear();
+    }
+    if requests.is_empty() && blockers.is_empty() && !text.trim().is_empty() {
+        blockers.push("no `<state> add <amount> <resource>` pattern was found".to_string());
+    }
+    StateResourceTextPlan { requests, blockers }
+}
+
+fn compile_supply_route_text_plan(
+    text: &str,
+    mod_root: Option<&Path>,
+    game_root: Option<&Path>,
+    dependency_roots: &[PathBuf],
+    index: &GameIndex,
+) -> Result<SupplyRouteTextPlan, String> {
+    let requested_fortification = map_text_requests_fortification(text);
+    let mut blockers = Vec::new();
+    let mut questions = Vec::new();
+    let mentions = resolve_state_mentions_in_text_order(text, index);
+    if mentions.len() < 2 {
+        blockers.push(
+            "railway route request needs two indexed state names, for example `<from state> to <to state>`"
+                .to_string(),
+        );
+        questions.push("Which two exact states should the railway connect?".to_string());
+        if requested_fortification {
+            blockers.push("fortification request needs explicit province ids or state ids; no forts were auto-placed along the railway".to_string());
+            questions.push(
+                "Which exact provinces or states should receive forts protecting the railway?"
+                    .to_string(),
+            );
+        }
+        return Ok(SupplyRouteTextPlan {
+            endpoints: Vec::new(),
+            blockers,
+            questions,
+            requested_fortification,
+        });
+    }
+
+    let target_states = mod_root
+        .map(scan_history_state_styles)
+        .transpose()?
+        .unwrap_or_default();
+    let parent_states = scan_dependency_history_states(dependency_roots)?;
+    let game_states = game_root
+        .map(scan_history_state_styles)
+        .transpose()?
+        .unwrap_or_default();
+
+    let route_states = [mentions[0].1.clone(), mentions[1].1.clone()];
+    let mut endpoints = Vec::new();
+    for state in route_states {
+        let evidence = province_query_evidence(
+            state.state_id,
+            mod_root,
+            &target_states,
+            &parent_states,
+            game_root,
+            &game_states,
+        );
+        let Some(evidence) = evidence else {
+            blockers.push(format!(
+                "state `{}` was resolved to `{}` but no history/states evidence was found",
+                state.query, state.state_id
+            ));
+            continue;
+        };
+        let Some((province_id, value)) =
+            largest_victory_point_for_state(&evidence.root, &evidence.state)?
+        else {
+            blockers.push(format!(
+                "state `{}` ({}) has no victory_points block; ask user for an endpoint province id",
+                state.query, state.state_id
+            ));
+            questions.push(format!(
+                "Which province id should be used as the railway endpoint for state `{}` ({})?",
+                state.query, state.state_id
+            ));
+            continue;
+        };
+        if !index.province_ids.contains(&province_id) {
+            blockers.push(format!(
+                "largest victory point province `{province_id}` in state `{}` is not indexed",
+                state.state_id
+            ));
+            continue;
+        }
+        endpoints.push(SupplyRouteTextEndpoint {
+            state_id: state.state_id,
+            state_query: state.query,
+            state_name_key: state.name_key,
+            state_localised_name: state.localised_name,
+            province_id,
+            province_localised_name: preferred_localisation_alias(
+                index,
+                &format!("VICTORY_POINTS_{province_id}"),
+            ),
+            victory_point_value: value,
+            source_layer: evidence.layer,
+            source_file: evidence.state.file,
+        });
+    }
+
+    if endpoints.len() == 2 {
+        blockers.push(format!(
+            "railway path from province `{}` to `{}` needs ordered intermediate province ids; direct endpoint-only writing is blocked",
+            endpoints[0].province_id, endpoints[1].province_id
+        ));
+        questions.push(format!(
+            "Which ordered province ids should the railway pass through between `{}` and `{}`?",
+            endpoints[0].province_id, endpoints[1].province_id
+        ));
+        questions.push(format!(
+            "Confirm whether supply nodes should be added only at endpoint provinces `{}` and `{}`.",
+            endpoints[0].province_id, endpoints[1].province_id
+        ));
+    }
+    if requested_fortification {
+        blockers.push("fortification request needs explicit province ids or state ids; no forts were auto-placed along the railway".to_string());
+        questions.push("Which exact provinces or states should receive forts protecting the railway? If none, say no forts.".to_string());
+    }
+
+    Ok(SupplyRouteTextPlan {
+        endpoints,
+        blockers,
+        questions,
+        requested_fortification,
+    })
+}
+
+#[derive(Clone)]
+struct ResolvedStateMention {
+    state_id: i64,
+    query: String,
+    name_key: String,
+    localised_name: Option<String>,
+}
+
+fn split_state_resource_segments(text: &str) -> Vec<String> {
+    text.split(|ch: char| matches!(ch, ',' | '，' | ';' | '；' | '\n' | '\r' | '、'))
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn parse_state_resource_action_segment(segment: &str) -> Option<(i64, String, String)> {
+    let (amount, number_start, number_end) = first_number_span(segment)?;
+    let before_number = &segment[..number_start];
+    let after_number = &segment[number_end..];
+    if !before_number.contains("添加")
+        && !before_number.contains("增加")
+        && !before_number.contains("加")
+        && !before_number.to_ascii_lowercase().contains("add")
+    {
+        return None;
+    }
+    let place_part = before_number
+        .rsplit_once("添加")
+        .or_else(|| before_number.rsplit_once("增加"))
+        .or_else(|| before_number.rsplit_once("加"))
+        .map(|(left, _)| left)
+        .unwrap_or(before_number)
+        .trim()
+        .to_string();
+    let resource_query = clean_resource_query(after_number);
+    if resource_query.is_empty() {
+        return None;
+    }
+    Some((amount, resource_query, place_part))
+}
+
+fn first_number_span(text: &str) -> Option<(i64, usize, usize)> {
+    let mut start = None;
+    let mut end = 0;
+    for (idx, original_ch) in text.char_indices() {
+        let ch = normalize_number_char(original_ch);
+        if ch.is_ascii_digit() || (start.is_none() && (ch == '-' || ch == '+')) {
+            if start.is_none() {
+                start = Some(idx);
+            }
+            end = idx + original_ch.len_utf8();
+        } else if let Some(start) = start {
+            let value = parse_int(&text[start..end])?;
+            return Some((value, start, end));
+        }
+    }
+    let start = start?;
+    Some((parse_int(&text[start..end])?, start, end))
+}
+
+fn clean_resource_query(value: &str) -> String {
+    let mut out = value
+        .trim()
+        .trim_matches(|ch: char| {
+            ch.is_ascii_punctuation()
+                || matches!(ch, '。' | '，' | '；' | '、' | '：' | ':' | ' ' | '\t')
+        })
+        .to_string();
+    for suffix in ["资源", "矿产", "矿脉", "矿石", "矿"] {
+        if out.ends_with(suffix) && out.len() > suffix.len() {
+            out.truncate(out.len() - suffix.len());
+            break;
+        }
+    }
+    out
+}
+
+fn resolve_state_mentions(text: &str, index: &GameIndex) -> Vec<ResolvedStateMention> {
+    let normalized_text = normalize_state_resource_name(text);
+    let mut matches = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut aliases = Vec::new();
+    for (key, id) in &index.state_names {
+        let localised_names = localisation_aliases_for_key(index, key);
+        let primary_localised = index
+            .localisation_entries
+            .get(key)
+            .cloned()
+            .or_else(|| localised_names.iter().next().cloned());
+        for alias in state_name_aliases(key, &localised_names) {
+            let normalized_alias = normalize_state_resource_name(&alias);
+            if normalized_alias.is_empty() {
+                continue;
+            }
+            aliases.push((
+                normalized_alias.len(),
+                normalized_alias,
+                alias,
+                *id,
+                key.clone(),
+                primary_localised.clone(),
+            ));
+        }
+    }
+    aliases.sort_by(|a, b| b.0.cmp(&a.0));
+    for (_, normalized_alias, alias, state_id, name_key, localised_name) in aliases {
+        if normalized_text.contains(&normalized_alias) && seen.insert(state_id) {
+            let matched_localised_name = if alias == name_key {
+                localised_name
+            } else {
+                Some(alias.clone())
+            };
+            matches.push(ResolvedStateMention {
+                state_id,
+                query: alias,
+                name_key,
+                localised_name: matched_localised_name,
+            });
+        }
+    }
+    matches.sort_by_key(|state| state.state_id);
+    matches
+}
+
+fn resolve_state_mentions_in_text_order(
+    text: &str,
+    index: &GameIndex,
+) -> Vec<(usize, ResolvedStateMention)> {
+    let normalized_text = normalize_state_resource_name(text);
+    let mut candidates = Vec::new();
+    for (key, id) in &index.state_names {
+        let localised_names = localisation_aliases_for_key(index, key);
+        let primary_localised = index
+            .localisation_entries
+            .get(key)
+            .cloned()
+            .or_else(|| localised_names.iter().next().cloned());
+        for alias in state_name_aliases(key, &localised_names) {
+            let normalized_alias = normalize_state_resource_name(&alias);
+            if normalized_alias.is_empty() {
+                continue;
+            }
+            let Some(position) = normalized_text.find(&normalized_alias) else {
+                continue;
+            };
+            let matched_localised_name = if alias == *key {
+                primary_localised.clone()
+            } else {
+                Some(alias.clone())
+            };
+            candidates.push((
+                position,
+                normalized_alias.len(),
+                ResolvedStateMention {
+                    state_id: *id,
+                    query: alias,
+                    name_key: key.clone(),
+                    localised_name: matched_localised_name,
+                },
+            ));
+        }
+    }
+    candidates.sort_by(|left, right| left.0.cmp(&right.0).then(right.1.cmp(&left.1)));
+    let mut seen = BTreeSet::new();
+    let mut out = Vec::new();
+    for (position, _, state) in candidates {
+        if seen.insert(state.state_id) {
+            out.push((position, state));
+        }
+    }
+    out
+}
+
+fn state_name_aliases(key: &str, localised_names: &BTreeSet<String>) -> Vec<String> {
+    let mut out = vec![key.to_string()];
+    for localised in localised_names {
+        let clean = localised.trim();
+        if !clean.is_empty() {
+            out.push(clean.to_string());
+            for suffix in ["省", "市", "地区"] {
+                if !clean.ends_with(suffix) {
+                    out.push(format!("{clean}{suffix}"));
+                }
+            }
+        }
+    }
+    out
+}
+
+fn largest_victory_point_for_state(
+    root: &Path,
+    state: &HistoryStateStyle,
+) -> Result<Option<(i64, i64)>, String> {
+    let Some(state_id) = state.id else {
+        return Ok(None);
+    };
+    let path = root.join(&state.file);
+    let text = strip_comments(&read_utf8_lossy(&path)?);
+    let mut best: Option<(i64, i64)> = None;
+    for block in direct_blocks_named(&text, "state") {
+        if block_assignment(&block, "id").and_then(|value| value.parse::<i64>().ok())
+            != Some(state_id)
+        {
+            continue;
+        }
+        for history in direct_blocks_named(&block, "history") {
+            for vp_block in direct_blocks_named(&history, "victory_points") {
+                for pair in collect_i64_from_text(&vp_block).chunks(2) {
+                    let [province, value] = pair else {
+                        continue;
+                    };
+                    if best.is_none_or(|(_, best_value)| *value > best_value) {
+                        best = Some((*province, *value));
+                    }
+                }
+            }
+        }
+    }
+    Ok(best)
+}
+
+fn map_text_requests_fortification(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    text.contains("要塞")
+        || text.contains("堡垒")
+        || text.contains("防线")
+        || lower.contains("fort")
+        || lower.contains("bunker")
+}
+
+fn resolve_resource_query(query: &str, index: &GameIndex) -> Option<String> {
+    let normalized_query = normalize_resource_query_name(query);
+    if index.resources.contains(query) {
+        return Some(query.to_string());
+    }
+    for resource in &index.resources {
+        if normalize_resource_query_name(resource) == normalized_query {
+            return Some(resource.clone());
+        }
+        for key in [
+            format!("state_resource_{resource}"),
+            format!("temporary_state_resource_{resource}"),
+        ] {
+            for localised in localisation_aliases_for_key(index, &key) {
+                let normalized_localised = normalize_resource_query_name(&localised);
+                if !normalized_localised.is_empty() && normalized_localised == normalized_query {
+                    return Some(resource.clone());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn localisation_aliases_for_key(index: &GameIndex, key: &str) -> BTreeSet<String> {
+    let mut out = index
+        .localisation_entry_aliases
+        .get(key)
+        .cloned()
+        .unwrap_or_default();
+    if let Some(value) = index.localisation_entries.get(key) {
+        out.insert(value.clone());
+    }
+    out
+}
+
+fn preferred_localisation_alias(index: &GameIndex, key: &str) -> Option<String> {
+    let aliases = localisation_aliases_for_key(index, key);
+    aliases
+        .iter()
+        .find(|value| value.chars().any(is_cjk_char))
+        .cloned()
+        .or_else(|| aliases.iter().next().cloned())
+}
+
+fn is_cjk_char(ch: char) -> bool {
+    ('\u{4e00}'..='\u{9fff}').contains(&ch)
+}
+
+fn normalize_state_resource_name(value: &str) -> String {
+    value
+        .chars()
+        .filter_map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' {
+                Some(ch.to_ascii_lowercase())
+            } else if matches!(ch, '省' | '市' | '州' | '地' | '区' | ' ' | '\t') {
+                None
+            } else if ch.is_ascii_punctuation()
+                || matches!(ch, '，' | '。' | '、' | '；' | '：' | '（' | '）')
+            {
+                None
+            } else {
+                Some(ch)
+            }
+        })
+        .collect()
+}
+
+fn normalize_resource_query_name(value: &str) -> String {
+    let normalized_typo = value.replace('媒', "煤");
+    let mut out = normalize_state_resource_name(&normalized_typo);
+    for suffix in ["资源", "矿产", "矿脉", "矿石", "矿"] {
+        let suffix = normalize_state_resource_name(suffix);
+        if out.ends_with(&suffix) && out.len() > suffix.len() {
+            out.truncate(out.len() - suffix.len());
+            break;
+        }
+    }
+    out
 }
 
 fn state_transaction_evidence(
@@ -2740,6 +3365,75 @@ fn state_transaction_operation_json(op: &StateTransactionOperation) -> String {
     )
 }
 
+fn state_resource_text_plan_json(plan: &StateResourceTextPlan) -> String {
+    format!(
+        "[{}]",
+        plan.requests
+            .iter()
+            .map(|request| {
+                format!(
+                    "{{\"state_id\": {}, \"state_query\": {}, \"state_name_key\": {}, \"state_localised_name\": {}, \"resource_id\": {}, \"resource_query\": {}, \"amount\": {}, \"raw_segment\": {}}}",
+                    request.state_id,
+                    json_str(&request.state_query),
+                    json_str(&request.state_name_key),
+                    json_optional_str(request.state_localised_name.as_deref()),
+                    json_str(&request.resource_id),
+                    json_str(&request.resource_query),
+                    request.amount,
+                    json_str(&request.raw_segment)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn supply_route_text_plan_json(plan: &SupplyRouteTextPlan) -> String {
+    format!(
+        "[{{\"endpoint_count\": {}, \"requested_fortification\": {}, \"endpoints\": {}, \"suggested_supply_operations\": {}, \"blockers\": {}, \"questions\": {}}}]",
+        plan.endpoints.len(),
+        json_bool(plan.requested_fortification),
+        format!(
+            "[{}]",
+            plan.endpoints
+                .iter()
+                .map(|endpoint| {
+                    format!(
+                        "{{\"state_id\": {}, \"state_query\": {}, \"state_name_key\": {}, \"state_localised_name\": {}, \"province_id\": {}, \"province_localised_name\": {}, \"victory_point_value\": {}, \"source_layer\": {}, \"source_file\": {}}}",
+                        endpoint.state_id,
+                        json_str(&endpoint.state_query),
+                        json_str(&endpoint.state_name_key),
+                        json_optional_str(endpoint.state_localised_name.as_deref()),
+                        endpoint.province_id,
+                        json_optional_str(endpoint.province_localised_name.as_deref()),
+                        endpoint.victory_point_value,
+                        json_str(&endpoint.source_layer),
+                        json_str(&endpoint.source_file)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        supply_route_suggested_operations_json(plan),
+        json_array(&plan.blockers),
+        json_array(&plan.questions)
+    )
+}
+
+fn supply_route_suggested_operations_json(plan: &SupplyRouteTextPlan) -> String {
+    if plan.endpoints.len() != 2 {
+        return "[]".to_string();
+    }
+    let left = plan.endpoints[0].province_id;
+    let right = plan.endpoints[1].province_id;
+    json_array(&[
+        format!("railway_endpoint_pair={left}-{right}=1"),
+        format!("supply-node={left}"),
+        format!("supply-node={right}"),
+        "fortification=blocked_until_user_provides_explicit_province_or_state_ids".to_string(),
+    ])
+}
+
 fn state_transaction_plan_changed_files(plan: &str) -> Vec<String> {
     json_string_array_field_simple(plan, "changed_files")
 }
@@ -2918,17 +3612,62 @@ fn state_transaction_rollback_markdown(input: &Path, changed_files: &[String]) -
     out
 }
 
-fn map_intent_plan_json(text: &str, mod_root: Option<&Path>, index: Option<&GameIndex>) -> String {
+fn map_intent_plan_json(
+    text: &str,
+    mod_root: Option<&Path>,
+    game_root: Option<&Path>,
+    dependency_roots: &[PathBuf],
+    index: Option<&GameIndex>,
+) -> Result<String, String> {
     let lanes = classify_map_lanes(text);
     let state_id = first_labeled_number(text, "state");
     let province_id = first_labeled_number(text, "province");
+    let state_resource_plan = if lanes.iter().any(|lane| lane.lane == "state_resources") {
+        index.map(|index| compile_state_resource_text_plan(text, index))
+    } else {
+        None
+    };
+    let supply_route_plan = if lanes.iter().any(|lane| lane.lane == "supply_network")
+        && map_text_has_route_hint(text)
+    {
+        match index {
+            Some(index) => Some(compile_supply_route_text_plan(
+                text,
+                mod_root,
+                game_root,
+                dependency_roots,
+                index,
+            )?),
+            None => None,
+        }
+    } else {
+        None
+    };
     let mut blockers = Vec::new();
     let mut questions = Vec::new();
-    if map_text_has_place_hint(text) && state_id.is_none() && province_id.is_none() {
+    let compiled_state_resource_ready = state_resource_plan
+        .as_ref()
+        .is_some_and(|plan| !plan.requests.is_empty() && plan.blockers.is_empty());
+    let compiled_supply_route_started = supply_route_plan
+        .as_ref()
+        .is_some_and(|plan| !plan.endpoints.is_empty() || !plan.blockers.is_empty());
+    if map_text_has_place_hint(text)
+        && state_id.is_none()
+        && province_id.is_none()
+        && !compiled_state_resource_ready
+        && !compiled_supply_route_started
+    {
         blockers.push(
             "place name was detected but no explicit state/province id was verified".to_string(),
         );
         questions.push("Provide --state-id or --province-id, or run province-query after indexing game/parent map data.".to_string());
+    }
+    if let Some(plan) = &state_resource_plan {
+        blockers.extend(plan.blockers.iter().cloned());
+    }
+    if let Some(plan) = &supply_route_plan {
+        blockers.extend(plan.blockers.iter().cloned());
+        questions.extend(plan.questions.iter().cloned());
     }
     if lanes.iter().any(|lane| lane.risk == "high") {
         blockers.push(
@@ -2943,7 +3682,7 @@ fn map_intent_plan_json(text: &str, mod_root: Option<&Path>, index: Option<&Game
     let ok = blockers.is_empty();
     let next_commands = if ok {
         vec![
-            "hoi4skill state-transaction-plan --input .hoi4skill/map_intent.json".to_string(),
+            "hoi4skill state-transaction-plan --mod-root <target> --game-root <HOI4 root> --text <request> --require-passed".to_string(),
             "hoi4skill province-query --state-id <id> --game-root <HOI4 root>".to_string(),
         ]
     } else {
@@ -2952,8 +3691,8 @@ fn map_intent_plan_json(text: &str, mod_root: Option<&Path>, index: Option<&Game
             "hoi4skill ambiguity-report --text <request> --game-root <HOI4 root> --mod-root <target>".to_string(),
         ]
     };
-    format!(
-        "{{\n  \"schema\": \"hoi4skill.map_intent_plan.v1\",\n  \"status\": {},\n  \"ok\": {},\n  \"mod_root\": {},\n  \"game_index_available\": {},\n  \"request_text\": {},\n  \"detected_state_id\": {},\n  \"detected_province_id\": {},\n  \"lanes\": [\n{}\n  ],\n  \"blocking_count\": {},\n  \"blockers\": {},\n  \"questions\": {},\n  \"next_commands\": {},\n  \"rules\": {}\n}}\n",
+    Ok(format!(
+        "{{\n  \"schema\": \"hoi4skill.map_intent_plan.v1\",\n  \"status\": {},\n  \"ok\": {},\n  \"mod_root\": {},\n  \"game_index_available\": {},\n  \"request_text\": {},\n  \"detected_state_id\": {},\n  \"detected_province_id\": {},\n  \"compiled_state_resources\": {},\n  \"compiled_supply_routes\": {},\n  \"lanes\": [\n{}\n  ],\n  \"blocking_count\": {},\n  \"blockers\": {},\n  \"questions\": {},\n  \"next_commands\": {},\n  \"rules\": {}\n}}\n",
         json_str(if ok { "map_intent_ready" } else { "blocked" }),
         json_bool(ok),
         json_optional_str(mod_root.map(|root| root.display().to_string()).as_deref()),
@@ -2961,6 +3700,14 @@ fn map_intent_plan_json(text: &str, mod_root: Option<&Path>, index: Option<&Game
         json_str(text),
         json_optional_i64(state_id),
         json_optional_i64(province_id),
+        state_resource_plan
+            .as_ref()
+            .map(state_resource_text_plan_json)
+            .unwrap_or_else(|| "[]".to_string()),
+        supply_route_plan
+            .as_ref()
+            .map(supply_route_text_plan_json)
+            .unwrap_or_else(|| "[]".to_string()),
         lanes
             .iter()
             .map(map_intent_lane_json)
@@ -2971,7 +3718,7 @@ fn map_intent_plan_json(text: &str, mod_root: Option<&Path>, index: Option<&Game
         json_array(&questions),
         json_array(&next_commands),
         json_array(&map_intent_rules())
-    )
+    ))
 }
 
 struct MapIntentLane {
@@ -3116,10 +3863,20 @@ fn map_text_has_place_hint(text: &str) -> bool {
         .any(|needle| text.contains(needle))
 }
 
+fn map_text_has_route_hint(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    (text.contains('从') && text.contains('到'))
+        || text.contains("连接")
+        || text.contains("链接")
+        || lower.contains("from")
+        || lower.contains(" to ")
+}
+
 fn map_intent_rules() -> Vec<String> {
     vec![
         "Chinese place names are candidates only; they do not authorize state or province IDs.".to_string(),
         "State history, supply network, strategic region, and topology lanes must not consume each other's effects.".to_string(),
+        "Railway endpoints may be inferred only from indexed largest victory points; intermediate path provinces and forts require explicit user confirmation.".to_string(),
         "High-risk topology requests cannot be applied by weak AI output.".to_string(),
         "Every state, province, resource, building, railway endpoint, and supply node must come from indexed local evidence or explicit user input.".to_string(),
     ]
