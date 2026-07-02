@@ -8,11 +8,16 @@ pub(crate) fn cmd_parse_feature_cards(args: &[String]) -> Result<(), String> {
     let input = normalize_path(&require_value(&map, "input")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("mod");
-    let dependency_mods = dependency_mod_roots(&map)?;
-    let game_index = value(&map, "game-root")
-        .map(normalize_path)
-        .transpose()?
-        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+    let mod_root = value(&map, "mod-root").map(normalize_path).transpose()?;
+    let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
+    let dependency_mods = dependency_mod_roots_for_optional_edited_mod(
+        &map,
+        mod_root.as_deref(),
+        game_root.is_some(),
+    )?;
+    let game_index = game_root
+        .as_ref()
+        .map(|path| build_game_index_with_mod_paths(path, &dependency_mods))
         .transpose()?;
     enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
     if game_index.is_none() && !dependency_mods.is_empty() {
@@ -28,10 +33,16 @@ pub(crate) fn cmd_parse_feature_cards(args: &[String]) -> Result<(), String> {
 pub(crate) fn parse_decision_idea_cards_json(text: &str, tag: &str, prefix: &str) -> String {
     let cards = parse_cards(text, FEATURE_CARD_HEADERS);
     let safety_suggestions = feature_cards_safety_suggestions(&cards, tag, prefix);
+    let feature_blocking_safety_count = suggestions_safety_blockers(&safety_suggestions).len();
     let mut out = String::new();
     out.push_str("{\n");
+    out.push_str("  \"schema\": \"hoi4skill.feature_cards.v1\",\n");
     out.push_str(&format!("  \"prefix\": {},\n", json_str(prefix)));
     out.push_str(&format!("  \"tag\": {},\n", json_str(tag)));
+    out.push_str(&format!(
+        "  \"feature_blocking_safety_count\": {},\n",
+        feature_blocking_safety_count
+    ));
     out.push_str(&format!(
         "  \"safety\": {},\n",
         suggestions_safety_json(&safety_suggestions)
@@ -200,11 +211,12 @@ pub(crate) fn cmd_apply_feature_cards(args: &[String]) -> Result<(), String> {
     let mod_root = normalize_path(&require_value(&map, "mod-root")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("mod");
-    let dependency_mods = dependency_mod_roots(&map)?;
-    let game_index = value(&map, "game-root")
-        .map(normalize_path)
-        .transpose()?
-        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+    let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
+    let dependency_mods =
+        dependency_mod_roots_for_edited_mod(&map, &mod_root, game_root.is_some())?;
+    let game_index = game_root
+        .as_ref()
+        .map(|path| build_game_index_with_mod_paths(path, &dependency_mods))
         .transpose()?;
     enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
     if game_index.is_none() && !dependency_mods.is_empty() {
@@ -221,11 +233,24 @@ pub(crate) fn cmd_apply_feature_cards(args: &[String]) -> Result<(), String> {
         println!("No file changes were needed.");
     } else {
         println!("Changed:");
-        for path in changed {
+        for path in &changed {
             println!("  {}", path.display());
         }
     }
     run_post_apply_checks(&mod_root, &map, game_index.as_ref(), Some(&input))?;
+    if let Some(output) = value(&map, "output") {
+        let report = apply_writer_report_json(
+            "hoi4skill.feature_cards_apply.v1",
+            &input,
+            &mod_root,
+            tag,
+            prefix,
+            "feature_count",
+            cards.len(),
+            &changed,
+        );
+        write_or_print(&report, Some(output))?;
+    }
     Ok(())
 }
 
@@ -275,6 +300,11 @@ pub(crate) fn enforce_strict_feature_card_gate_with_options(
             game_index,
         ));
         if let Some(index) = game_index {
+            errors.extend(unindexed_explicit_decision_category_errors(
+                &format!("{} `{}`", card.kind, card.title),
+                card,
+                index,
+            ));
             errors.extend(missing_code_index_category_errors(
                 &format!("{} `{}`", card.kind, card.title),
                 &suggestions,
@@ -287,6 +317,8 @@ pub(crate) fn enforce_strict_feature_card_gate_with_options(
             ));
         }
     }
+    errors.sort();
+    errors.dedup();
     if errors.is_empty() {
         Ok(())
     } else {
@@ -400,7 +432,8 @@ pub(crate) fn apply_feature_cards_to_mod_with_index(
                     .get("分类")
                     .map(String::as_str)
                     .unwrap_or("国家决议");
-                let category_id = format!(
+                let explicit_category_id = explicit_decision_category_id(card);
+                let generated_category_id = format!(
                     "{}_{}",
                     prefix,
                     slugify(category_title, &format!("category_{idx}"))
@@ -429,19 +462,27 @@ pub(crate) fn apply_feature_cards_to_mod_with_index(
                             ),
                         ));
                 } else {
-                    let category_picture = resolve_decision_category_picture(
-                        card,
-                        category_title,
-                        &icon_catalog.decision_category_pictures,
-                    );
-                    let category_icon = format!("GFX_decision_{decision_icon}");
-                    categories.entry(category_id.clone()).or_insert_with(|| {
-                        GeneratedDecisionCategory {
-                            target: target.to_string(),
-                            icon: category_icon,
-                            picture: category_picture,
-                        }
-                    });
+                    let category_id = if let Some(category_id) = explicit_category_id {
+                        category_id
+                    } else {
+                        let category_picture = resolve_decision_category_picture(
+                            card,
+                            category_title,
+                            &icon_catalog.decision_category_pictures,
+                        );
+                        let category_icon = format!("GFX_decision_{decision_icon}");
+                        categories
+                            .entry(generated_category_id.clone())
+                            .or_insert_with(|| GeneratedDecisionCategory {
+                                target: target.to_string(),
+                                icon: category_icon,
+                                picture: category_picture,
+                            });
+                        loc_entries
+                            .insert(generated_category_id.clone(), category_title.to_string());
+                        loc_entries.insert(format!("{generated_category_id}_desc"), String::new());
+                        generated_category_id
+                    };
                     decision_blocks.push((
                         decision_id.clone(),
                         render_decision_block_with_icon(
@@ -453,7 +494,6 @@ pub(crate) fn apply_feature_cards_to_mod_with_index(
                             &decision_icon,
                         ),
                     ));
-                    loc_entries.insert(category_id, category_title.to_string());
                 }
                 loc_entries.insert(decision_id.clone(), card.title.clone());
                 loc_entries.insert(
@@ -920,6 +960,37 @@ pub(crate) fn decision_category_name_matches(
             .is_some_and(|title| title.trim() == category_title.trim())
 }
 
+pub(crate) fn explicit_decision_category_id(card: &Card) -> Option<String> {
+    let value = card.fields.get("分类")?.trim().trim_matches('"');
+    if is_reference_identifier(value) {
+        Some(value.to_string())
+    } else {
+        None
+    }
+}
+
+pub(crate) fn unindexed_explicit_decision_category_errors(
+    context: &str,
+    card: &Card,
+    index: &GameIndex,
+) -> Vec<String> {
+    let Some(category_id) = explicit_decision_category_id(card) else {
+        return Vec::new();
+    };
+    if index.decision_categories.is_empty() {
+        return vec![format!(
+            "{context}: strict code index has no indexed decision categories; load the required game/dependency code before reusing decision category `{category_id}`"
+        )];
+    }
+    if index.decision_categories.contains(&category_id) {
+        return Vec::new();
+    }
+    let related = related_code_symbols_text(index, &category_id, Some("decision_category"));
+    vec![format!(
+        "{context}: `分类：{category_id}` references an unindexed decision category; verify it with `check-code-symbol --kind decision_category` before final generation{related}"
+    )]
+}
+
 pub(crate) fn render_decision_block_with_icon(
     card: &Card,
     category_id: &str,
@@ -1050,7 +1121,9 @@ pub(crate) fn render_idea_inner_block_with_picture(
     }
     out.push_str("\t\t\tmodifier = {\n");
     if modifier_lines.is_empty() {
-        out.push_str("\t\t\t\t# TODO: add idea modifiers from card effects\n");
+        if !effect_text.trim().is_empty() {
+            out.push_str("\t\t\t\t# TODO: add idea modifiers from card effects\n");
+        }
     } else {
         for line in modifier_lines {
             out.push_str(&format!("\t\t\t\t{line}\n"));
@@ -2086,7 +2159,7 @@ pub(crate) fn append_localisation_entries(
 }
 
 pub(crate) fn localisation_value(value: &str) -> String {
-    value
+    compile_author_localisation_placeholders(value)
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace(['\r', '\n'], " ")

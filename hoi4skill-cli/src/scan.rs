@@ -1103,13 +1103,13 @@ pub(crate) fn country_creation_syntax_array_json(
 
 pub(crate) fn event_namespace_stats_json(values: &BTreeMap<String, EventNamespaceStats>) -> String {
     format!(
-        "{{{}}}",
+        "[{}]",
         values
             .iter()
             .map(|(namespace, stats)| {
                 let files = stats.files.iter().cloned().collect::<Vec<_>>();
                 format!(
-                    "{}: {{\"max_id\": {}, \"files\": {}, \"country_event\": {}, \"news_event\": {}, \"state_event\": {}}}",
+                    "{{\"namespace\": {}, \"max_id\": {}, \"files\": {}, \"country_event\": {}, \"news_event\": {}, \"state_event\": {}}}",
                     json_str(namespace),
                     stats
                         .max_id

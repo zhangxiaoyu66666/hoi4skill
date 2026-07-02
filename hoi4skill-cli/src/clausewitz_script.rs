@@ -202,10 +202,11 @@ pub(crate) fn blocks_named(text: &str, name: &str) -> Vec<String> {
                 .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
         let after_name = &rest[idx + name.len()..];
         let after_trimmed = after_name.trim_start();
-        let after_ok = after_trimmed
-            .chars()
-            .next()
-            .is_some_and(|c| c == '=' || c == '{');
+        let after_ok = if let Some(after_eq) = after_trimmed.strip_prefix('=') {
+            after_eq.trim_start().starts_with('{')
+        } else {
+            after_trimmed.starts_with('{')
+        };
         if !before_ok || !after_ok {
             rest = after_name;
             continue;

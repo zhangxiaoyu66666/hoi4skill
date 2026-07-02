@@ -17,6 +17,13 @@ pub(crate) fn cmd_detect_hoi4_path(args: &[String]) -> Result<(), String> {
     write_or_print(&json, value(&map, "output"))
 }
 
+pub(crate) fn detect_selected_hoi4_path(explicit_paths: &[PathBuf]) -> Option<PathBuf> {
+    detect_hoi4_path_candidates(explicit_paths, &default_steam_roots())
+        .into_iter()
+        .find(|candidate| candidate.valid)
+        .map(|candidate| candidate.path)
+}
+
 #[derive(Clone)]
 pub(crate) struct Hoi4PathCandidate {
     pub(crate) path: PathBuf,

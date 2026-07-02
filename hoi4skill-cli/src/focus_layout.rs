@@ -8,11 +8,16 @@ pub(crate) fn cmd_parse_focus_layout(args: &[String]) -> Result<(), String> {
     let input = normalize_path(&require_value(&map, "input")?)?;
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("focus");
-    let dependency_mods = dependency_mod_roots(&map)?;
-    let game_index = value(&map, "game-root")
-        .map(normalize_path)
-        .transpose()?
-        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+    let mod_root = value(&map, "mod-root").map(normalize_path).transpose()?;
+    let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
+    let dependency_mods = dependency_mod_roots_for_optional_edited_mod(
+        &map,
+        mod_root.as_deref(),
+        game_root.is_some(),
+    )?;
+    let game_index = game_root
+        .as_ref()
+        .map(|path| build_game_index_with_mod_paths(path, &dependency_mods))
         .transpose()?;
     enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
     if game_index.is_none() && !dependency_mods.is_empty() {
@@ -23,9 +28,7 @@ pub(crate) fn cmd_parse_focus_layout(args: &[String]) -> Result<(), String> {
     if let Some(tree_id) = value(&map, "tree-id") {
         layout.tree_id = tree_id.to_string();
     }
-    let local_root = value(&map, "mod-root")
-        .map(normalize_path)
-        .transpose()?
+    let local_root = mod_root
         .or_else(|| input.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."));
     enforce_strict_focus_layout_gate(&map, &local_root, &layout, tag, game_index.as_ref())?;
@@ -98,6 +101,7 @@ pub(crate) fn parse_focus_layout(text: &str, tag: &str, prefix: &str) -> FocusLa
     let mut focuses: Vec<FocusNode> = Vec::new();
     let mut mutuals: Vec<(String, String, usize)> = Vec::new();
     let mut used = BTreeSet::new();
+    let mut id_aliases = BTreeMap::new();
     let mut row_index = 0usize;
     let tag_part = sanitize_identifier_part(tag, "TAG").to_ascii_uppercase();
 
@@ -119,9 +123,10 @@ pub(crate) fn parse_focus_layout(text: &str, tag: &str, prefix: &str) -> FocusLa
             if is_mutual_token(token) {
                 continue;
             }
-            let (title, id_hint) = parse_focus_token(token);
+            let attrs = parse_focus_token_attributes(token);
             let fallback = generated_focus_fallback_fragment(focuses.len());
-            let mut id = focus_identifier(&tag_part, &title, id_hint.as_deref(), &fallback);
+            let mut id =
+                focus_identifier(&tag_part, &attrs.title, attrs.id_hint.as_deref(), &fallback);
             let base = id.clone();
             let mut n = 2;
             while used.contains(&id) {
@@ -129,21 +134,28 @@ pub(crate) fn parse_focus_layout(text: &str, tag: &str, prefix: &str) -> FocusLa
                 n += 1;
             }
             used.insert(id.clone());
-            let x = (col as i32 * 2) - (count as i32 - 1);
+            if let Some(hint) = attrs.id_hint.as_ref() {
+                id_aliases.insert(hint.clone(), id.clone());
+            }
+            id_aliases.insert(attrs.title.clone(), id.clone());
+            let x = attrs
+                .x
+                .unwrap_or_else(|| (col as i32 * 2) - (count as i32 - 1));
+            let y = attrs.y.unwrap_or(row_index as i32);
             focuses.push(FocusNode {
-                title,
+                title: attrs.title,
                 id: id.clone(),
-                icon: None,
+                icon: attrs.icon,
                 x,
-                y: row_index as i32,
+                y,
                 relative_position_id: None,
                 relative_x: None,
                 relative_y: None,
                 row: row_index,
                 column: col,
-                prerequisite: Vec::new(),
+                prerequisite: attrs.prerequisite,
                 mutually_exclusive: Vec::new(),
-                completion_reward: Vec::new(),
+                completion_reward: attrs.completion_reward,
             });
             row_focus_ids.push(id);
             col += 1;
@@ -165,8 +177,18 @@ pub(crate) fn parse_focus_layout(text: &str, tag: &str, prefix: &str) -> FocusLa
     }
 
     ensure_focus_row_x_spacing(&mut focuses, 2);
+    for focus in &mut focuses {
+        for prerequisite in &mut focus.prerequisite {
+            if let Some(mapped) = id_aliases.get(prerequisite) {
+                *prerequisite = mapped.clone();
+            }
+        }
+    }
     for idx in 0..focuses.len() {
         if focuses[idx].row == 0 {
+            continue;
+        }
+        if !focuses[idx].prerequisite.is_empty() {
             continue;
         }
         let prev_row = focuses[idx].row - 1;
@@ -381,11 +403,12 @@ pub(crate) fn cmd_apply_focus_layout(args: &[String]) -> Result<(), String> {
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("focus");
     let tree_id = value(&map, "tree-id");
-    let dependency_mods = dependency_mod_roots(&map)?;
-    let game_index = value(&map, "game-root")
-        .map(normalize_path)
-        .transpose()?
-        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+    let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
+    let dependency_mods =
+        dependency_mod_roots_for_edited_mod(&map, &mod_root, game_root.is_some())?;
+    let game_index = game_root
+        .as_ref()
+        .map(|path| build_game_index_with_mod_paths(path, &dependency_mods))
         .transpose()?;
     enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
     if game_index.is_none() && !dependency_mods.is_empty() {
@@ -405,11 +428,24 @@ pub(crate) fn cmd_apply_focus_layout(args: &[String]) -> Result<(), String> {
         println!("No file changes were needed.");
     } else {
         println!("Changed:");
-        for path in changed {
+        for path in &changed {
             println!("  {}", path.display());
         }
     }
     run_post_apply_checks(&mod_root, &map, game_index.as_ref(), Some(&input))?;
+    if let Some(output) = value(&map, "output") {
+        let report = apply_writer_report_json(
+            "hoi4skill.focus_layout_apply.v1",
+            &input,
+            &mod_root,
+            tag,
+            prefix,
+            "focus_count",
+            layout.focuses.len(),
+            &changed,
+        );
+        write_or_print(&report, Some(output))?;
+    }
     Ok(())
 }
 
@@ -1082,13 +1118,13 @@ pub(crate) fn semantic_reference_score(
         }
         if reference_contains_semantic_term(&lower, keyword) {
             score += 10;
+            if reference_contains_exact_token(&lower, keyword) {
+                score += 3;
+            }
         }
     }
-    let country_match = semantic_reference_country_match(title, reference);
-    if lower.contains("_generic_") && country_match {
-        score -= 1;
-    } else if lower.contains("_generic_") {
-        score += 1;
+    if lower.contains("_generic_") {
+        score += 3;
     }
     if contains_ascii_any(&lower, &["attack_", "crush_", "counter_", "anti_", "ban_"]) {
         score -= 4;
@@ -1098,21 +1134,6 @@ pub(crate) fn semantic_reference_score(
             && !contains_text_any(title, family.title_terms)
         {
             score -= family.mismatch_penalty;
-        }
-    }
-    for country in SEMANTIC_COUNTRY_FAMILIES {
-        if contains_text_any(title, country.title_terms)
-            && reference_contains_semantic_any(&lower, country.reference_terms)
-        {
-            score += 8;
-            if reference_contains_primary_country_token(&lower, country) {
-                score += 2;
-            }
-        }
-        if reference_contains_semantic_any(&lower, country.reference_terms)
-            && !contains_text_any(title, country.title_terms)
-        {
-            score -= country.mismatch_penalty;
         }
     }
     if reference_contains_semantic_any(
@@ -1133,11 +1154,8 @@ pub(crate) fn semantic_reference_score(
 }
 
 pub(crate) fn semantic_reference_country_match(title: &str, reference: &str) -> bool {
-    let lower = reference.to_ascii_lowercase();
-    SEMANTIC_COUNTRY_FAMILIES.iter().any(|country| {
-        contains_text_any(title, country.title_terms)
-            && reference_contains_semantic_any(&lower, country.reference_terms)
-    })
+    let _ = (title, reference);
+    false
 }
 
 pub(crate) fn focus_icon_keywords(title: &str) -> Vec<&'static str> {
@@ -1152,7 +1170,7 @@ pub(crate) fn focus_icon_keywords(title: &str) -> Vec<&'static str> {
         &mut keywords,
         title,
         &["共产", "左翼", "马克思", "列宁", "布尔什维克"],
-        &["communist", "communism", "communists", "prc", "left"],
+        &["communist", "communism", "communists", "left"],
     );
     add_keywords_if(
         &mut keywords,
@@ -1228,116 +1246,6 @@ pub(crate) fn focus_icon_keywords(title: &str) -> Vec<&'static str> {
             "authoritarian",
             "dictatorship",
         ],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["中共", "中国共产党"],
-        &[
-            "chi",
-            "china",
-            "chinese",
-            "prc",
-            "cpc",
-            "communist",
-            "communists",
-        ],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["苏维埃", "苏联"],
-        &["soviet", "sov"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["俄罗斯", "俄国", "沙俄"],
-        &["sov", "russia", "russian", "tsar"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["中国", "中华", "国民党", "南京"],
-        &["chi", "china", "chinese", "prc", "kuomintang", "kmt"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["德国", "德意志", "普鲁士", "第三帝国"],
-        &["ger", "germany", "german", "reich", "kaiser"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["日本", "大和", "东京"],
-        &["jap", "japan", "japanese"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["美国", "美利坚", "华盛顿"],
-        &["usa", "america", "american"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["英国", "英格兰", "不列颠", "伦敦"],
-        &["eng", "britain", "british", "uk"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["法国", "法兰西", "巴黎"],
-        &["fra", "france", "french"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["意大利", "罗马"],
-        &["ita", "italy", "italian"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["韩国", "朝鲜", "高丽", "汉城", "首尔", "平壤"],
-        &["kor", "korea", "korean"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["西班牙", "马德里"],
-        &["spr", "spain", "spanish"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["波兰", "华沙"],
-        &["pol", "poland", "polish"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["印度", "德里"],
-        &["raj", "india", "indian"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["墨西哥"],
-        &["mex", "mexico", "mexican"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["巴西"],
-        &["bra", "brazil", "brazilian"],
-    );
-    add_keywords_if(
-        &mut keywords,
-        title,
-        &["土耳其", "安卡拉"],
-        &["tur", "turkey", "turkish"],
     );
     add_keywords_if(
         &mut keywords,
@@ -1536,23 +1444,20 @@ fn reference_contains_semantic_term(reference: &str, term: &str) -> bool {
     reference.contains(term)
 }
 
-fn reference_contains_primary_country_token(reference: &str, country: &SemanticFamily) -> bool {
-    country
-        .reference_terms
-        .first()
-        .is_some_and(|tag| reference_contains_semantic_term(reference, tag))
+fn reference_contains_exact_token(reference: &str, term: &str) -> bool {
+    reference
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| token == term)
 }
 
 fn title_has_country_context(title: &str) -> bool {
-    SEMANTIC_COUNTRY_FAMILIES
-        .iter()
-        .any(|country| contains_text_any(title, country.title_terms))
+    let _ = title;
+    false
 }
 
 fn is_country_reference_term(term: &str) -> bool {
-    SEMANTIC_COUNTRY_FAMILIES
-        .iter()
-        .any(|family| family.reference_terms.contains(&term))
+    let _ = term;
+    false
 }
 
 struct SemanticFamily {
@@ -1605,84 +1510,6 @@ const SEMANTIC_IDEOLOGY_FAMILIES: &[SemanticFamily] = &[
     },
 ];
 
-const SEMANTIC_COUNTRY_FAMILIES: &[SemanticFamily] = &[
-    SemanticFamily {
-        title_terms: &["CHI", "PRC", "中国", "中华", "中共", "国民党", "南京"],
-        reference_terms: &["chi", "china", "chinese", "prc", "cpc", "kuomintang", "kmt"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["SOV", "RUS", "苏联", "苏维埃", "俄罗斯", "俄国", "沙俄"],
-        reference_terms: &["sov", "soviet", "russia", "russian"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["GER", "德国", "德意志", "普鲁士", "第三帝国"],
-        reference_terms: &["ger", "germany", "german", "reich"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["JAP", "日本", "大和", "东京"],
-        reference_terms: &["jap", "japan", "japanese"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["USA", "美国", "美利坚", "华盛顿"],
-        reference_terms: &["usa", "america", "american"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["ENG", "UK", "英国", "英格兰", "不列颠", "伦敦"],
-        reference_terms: &["eng", "britain", "british", "uk"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["FRA", "法国", "法兰西", "巴黎"],
-        reference_terms: &["fra", "france", "french"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["ITA", "意大利", "罗马"],
-        reference_terms: &["ita", "italy", "italian"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["KOR", "韩国", "朝鲜", "高丽", "汉城", "首尔", "平壤"],
-        reference_terms: &["kor", "korea", "korean"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["SPR", "SPA", "西班牙", "马德里"],
-        reference_terms: &["spr", "spain", "spanish"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["POL", "波兰", "华沙"],
-        reference_terms: &["pol", "poland", "polish"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["RAJ", "IND", "印度", "德里"],
-        reference_terms: &["raj", "india", "indian"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["MEX", "墨西哥"],
-        reference_terms: &["mex", "mexico", "mexican"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["BRA", "巴西"],
-        reference_terms: &["bra", "brazil", "brazilian"],
-        mismatch_penalty: 5,
-    },
-    SemanticFamily {
-        title_terms: &["TUR", "土耳其", "安卡拉"],
-        reference_terms: &["tur", "turkey", "turkish"],
-        mismatch_penalty: 5,
-    },
-];
-
 pub(crate) fn link_mutual(focuses: &mut [FocusNode], left: &str, right: &str) {
     for f in focuses {
         if f.id == left && !f.mutually_exclusive.iter().any(|x| x == right) {
@@ -1710,6 +1537,114 @@ pub(crate) fn parse_focus_token(token: &str) -> (String, Option<String>) {
         return (title, Some(hint));
     }
     (token.to_string(), None)
+}
+
+pub(crate) struct FocusTokenAttributes {
+    pub(crate) title: String,
+    pub(crate) id_hint: Option<String>,
+    pub(crate) icon: Option<String>,
+    pub(crate) x: Option<i32>,
+    pub(crate) y: Option<i32>,
+    pub(crate) prerequisite: Vec<String>,
+    pub(crate) completion_reward: Vec<String>,
+}
+
+pub(crate) fn parse_focus_token_attributes(token: &str) -> FocusTokenAttributes {
+    let parts = token
+        .split('|')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    if parts.len() <= 1
+        || parts[1..]
+            .iter()
+            .all(|part| split_focus_attribute(part).is_none())
+    {
+        let (title, id_hint) = parse_focus_token(token);
+        return FocusTokenAttributes {
+            title,
+            id_hint,
+            icon: None,
+            x: None,
+            y: None,
+            prerequisite: Vec::new(),
+            completion_reward: Vec::new(),
+        };
+    }
+    let mut parts = parts.into_iter();
+    let first = parts.next().unwrap_or(token.trim());
+    let (title, mut id_hint) = parse_focus_token(first);
+    let mut attrs = FocusTokenAttributes {
+        title,
+        id_hint: id_hint.take(),
+        icon: None,
+        x: None,
+        y: None,
+        prerequisite: Vec::new(),
+        completion_reward: Vec::new(),
+    };
+    for part in parts {
+        let Some((key, value)) = split_focus_attribute(part) else {
+            continue;
+        };
+        let key_lower = key.to_ascii_lowercase();
+        match key_lower.as_str() {
+            "id" | "focus_id" => {
+                let hint = sanitize_identifier_part(value, "");
+                if !hint.is_empty() {
+                    attrs.id_hint = Some(hint);
+                }
+            }
+            "icon" | "gfx" => {
+                let icon = value.trim();
+                if !icon.is_empty() {
+                    attrs.icon = Some(icon.to_string());
+                }
+            }
+            "x" => attrs.x = value.trim().parse::<i32>().ok(),
+            "y" => attrs.y = value.trim().parse::<i32>().ok(),
+            "prerequisite" | "prereq" | "parent" => {
+                attrs.prerequisite.extend(
+                    split_cn_list(value)
+                        .into_iter()
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(str::to_string),
+                );
+            }
+            "reward" | "completion_reward" => {
+                attrs.completion_reward = focus_reward_lines_from_effects(value);
+            }
+            _ if key == "图标" => {
+                let icon = value.trim();
+                if !icon.is_empty() {
+                    attrs.icon = Some(icon.to_string());
+                }
+            }
+            _ if key == "前置" || key == "前置国策" => {
+                attrs.prerequisite.extend(
+                    split_cn_list(value)
+                        .into_iter()
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(str::to_string),
+                );
+            }
+            _ if key == "奖励" || key == "国策效果" => {
+                attrs.completion_reward = focus_reward_lines_from_effects(value);
+            }
+            _ => {}
+        }
+    }
+    attrs
+}
+
+pub(crate) fn split_focus_attribute(part: &str) -> Option<(&str, &str)> {
+    let (idx, sep) = part
+        .char_indices()
+        .find(|(_, ch)| matches!(*ch, '=' | ':' | '：' | '＝'))?;
+    let value_start = idx + sep.len_utf8();
+    Some((part[..idx].trim(), part[value_start..].trim()))
 }
 
 pub(crate) fn bracket_id_hint(token: &str, open: char, close: char) -> Option<(String, String)> {

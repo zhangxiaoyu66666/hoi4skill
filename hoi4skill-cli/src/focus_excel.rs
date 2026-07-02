@@ -37,11 +37,16 @@ pub(crate) fn cmd_parse_focus_excel(args: &[String]) -> Result<(), String> {
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("focus");
     let sheet = value(&map, "sheet");
-    let dependency_mods = dependency_mod_roots(&map)?;
-    let game_index = value(&map, "game-root")
-        .map(normalize_path)
-        .transpose()?
-        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+    let mod_root = value(&map, "mod-root").map(normalize_path).transpose()?;
+    let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
+    let dependency_mods = dependency_mod_roots_for_optional_edited_mod(
+        &map,
+        mod_root.as_deref(),
+        game_root.is_some(),
+    )?;
+    let game_index = game_root
+        .as_ref()
+        .map(|path| build_game_index_with_mod_paths(path, &dependency_mods))
         .transpose()?;
     enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
     if game_index.is_none() && !dependency_mods.is_empty() {
@@ -52,9 +57,7 @@ pub(crate) fn cmd_parse_focus_excel(args: &[String]) -> Result<(), String> {
     if let Some(tree_id) = value(&map, "tree-id") {
         layout.tree_id = tree_id.to_string();
     }
-    let local_root = value(&map, "mod-root")
-        .map(normalize_path)
-        .transpose()?
+    let local_root = mod_root
         .or_else(|| input.parent().map(Path::to_path_buf))
         .unwrap_or_else(|| PathBuf::from("."));
     enforce_strict_focus_layout_gate(&map, &local_root, &layout, tag, game_index.as_ref())?;
@@ -78,11 +81,12 @@ pub(crate) fn cmd_apply_focus_excel(args: &[String]) -> Result<(), String> {
     let tag = value(&map, "tag").unwrap_or("TAG");
     let prefix = value(&map, "prefix").unwrap_or("focus");
     let sheet = value(&map, "sheet");
-    let dependency_mods = dependency_mod_roots(&map)?;
-    let game_index = value(&map, "game-root")
-        .map(normalize_path)
-        .transpose()?
-        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+    let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
+    let dependency_mods =
+        dependency_mod_roots_for_edited_mod(&map, &mod_root, game_root.is_some())?;
+    let game_index = game_root
+        .as_ref()
+        .map(|path| build_game_index_with_mod_paths(path, &dependency_mods))
         .transpose()?;
     enforce_tag_request_contract(&map, tag, game_index.as_ref())?;
     if game_index.is_none() && !dependency_mods.is_empty() {

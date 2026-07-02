@@ -76,6 +76,634 @@ pub(crate) fn cmd_register_gfx_icons(args: &[String]) -> Result<(), String> {
     )
 }
 
+pub(crate) fn cmd_register_gui_asset(args: &[String]) -> Result<(), String> {
+    let map = parse_args(args);
+    let root = normalize_path(&require_value(&map, "mod-root")?)?;
+    if !root.is_dir() {
+        return Err(format!("mod root does not exist: {}", root.display()));
+    }
+    let sprite = require_value(&map, "sprite")
+        .or_else(|_| require_value(&map, "name"))
+        .map(|value| value.trim().trim_matches('"').to_string())?;
+    let texturefile = require_value(&map, "texturefile")
+        .or_else(|_| require_value(&map, "texture"))
+        .map(|value| value.replace('\\', "/").trim_matches('"').to_string())?;
+    let gfx_file = value(&map, "gfx-file")
+        .map(|value| value.replace('\\', "/"))
+        .unwrap_or_else(|| "interface/generated_gui_assets.gfx".to_string());
+    let execute = map.flags.contains("execute");
+    let approved = map.flags.contains("approve-new-asset")
+        || map.flags.contains("authorize-new-asset")
+        || map.flags.contains("user-approved");
+    let expected_dimensions = gui_asset_expected_dimensions(&map)?;
+    let report = register_gui_asset(
+        &root,
+        &sprite,
+        &texturefile,
+        &gfx_file,
+        execute,
+        approved,
+        expected_dimensions,
+    )?;
+    write_or_print(
+        &gui_asset_registration_report_json(&report),
+        value(&map, "output"),
+    )?;
+    if map.flags.contains("require-passed") && !report.ok {
+        return Err("register-gui-asset did not pass".to_string());
+    }
+    Ok(())
+}
+
+pub(crate) fn cmd_asset_import_plan(args: &[String]) -> Result<(), String> {
+    let map = parse_args(args);
+    let root = normalize_path(&require_value(&map, "mod-root")?)?;
+    let file = value(&map, "file")
+        .or_else(|| value(&map, "input"))
+        .map(normalize_path)
+        .transpose()?;
+    let kind = value(&map, "kind").unwrap_or("flag").to_ascii_lowercase();
+    let tag = value(&map, "tag").map(str::to_string);
+    let sprite = value(&map, "sprite")
+        .map(str::to_string)
+        .or_else(|| asset_import_default_sprite(&kind, &map));
+    let extension = file
+        .as_ref()
+        .and_then(|path| path.extension().and_then(OsStr::to_str))
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let mut blockers = Vec::new();
+    let mut questions = Vec::new();
+    if !root.exists() {
+        questions.push(format!(
+            "mod root `{}` does not exist yet; asset writers will create target directories only after approval",
+            root.display()
+        ));
+    }
+    if let Some(file) = &file {
+        if !file.is_file() {
+            blockers.push(format!("asset source `{}` does not exist", file.display()));
+        }
+    } else {
+        blockers.push("asset-import-plan requires --file or --input".to_string());
+    }
+    let supported = asset_import_supported(&kind, &extension);
+    if !supported {
+        blockers.push(format!(
+            "unsupported asset source format `{extension}` for kind `{kind}`"
+        ));
+    }
+    if kind == "flag" && tag.is_none() {
+        blockers.push("flag asset import requires --tag or --flag-id".to_string());
+    }
+    if kind != "flag" && sprite.is_none() {
+        blockers
+            .push("sprite asset import requires --sprite or an inferrable kind/prefix".to_string());
+    }
+    let ok = blockers.is_empty();
+    let json = asset_import_plan_json(
+        ok,
+        &root,
+        file.as_deref(),
+        &kind,
+        &extension,
+        tag.as_deref(),
+        sprite.as_deref(),
+        supported,
+        &questions,
+        &blockers,
+    );
+    write_or_print(&json, value(&map, "output"))?;
+    if map.flags.contains("require-passed") && !ok {
+        return Err(blockers.join("; "));
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GuiAssetRegistrationReport {
+    pub(crate) ok: bool,
+    pub(crate) status: String,
+    pub(crate) executed: bool,
+    pub(crate) approved: bool,
+    pub(crate) mod_root: PathBuf,
+    pub(crate) sprite: String,
+    pub(crate) texturefile: String,
+    pub(crate) local_texture_path: PathBuf,
+    pub(crate) gfx_file: PathBuf,
+    pub(crate) changed_files: Vec<PathBuf>,
+    pub(crate) blockers: Vec<String>,
+    pub(crate) questions: Vec<String>,
+    pub(crate) image_probe: Option<GuiImageProbe>,
+    pub(crate) expected_dimensions: Option<(u32, u32)>,
+    pub(crate) code: String,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct GuiImageProbe {
+    pub(crate) format: String,
+    pub(crate) width: u32,
+    pub(crate) height: u32,
+    pub(crate) alpha_capable: bool,
+}
+
+pub(crate) fn register_gui_asset(
+    root: &Path,
+    sprite: &str,
+    texturefile: &str,
+    gfx_file: &str,
+    execute: bool,
+    approved: bool,
+    expected_dimensions: Option<(u32, u32)>,
+) -> Result<GuiAssetRegistrationReport, String> {
+    let mut blockers = Vec::new();
+    let mut questions = Vec::new();
+    let texturefile = texturefile.replace('\\', "/");
+    let gfx_file = gfx_file.replace('\\', "/");
+    if !sprite.starts_with("GFX_") || !is_identifier_like(sprite) {
+        blockers.push(format!("invalid_gui_sprite_name:{sprite}"));
+        questions
+            .push("Provide a valid indexed-style GUI sprite id beginning with `GFX_`.".to_string());
+    }
+    if texturefile.starts_with('/') || texturefile.contains("..") {
+        blockers.push(format!("unsafe_gui_texturefile:{texturefile}"));
+        questions
+            .push("Texturefile must be a safe mod-relative path under gfx/interface/.".to_string());
+    }
+    if !texturefile
+        .to_ascii_lowercase()
+        .starts_with("gfx/interface/")
+    {
+        blockers.push(format!(
+            "gui_texturefile_outside_gfx_interface:{texturefile}"
+        ));
+        questions.push("GUI assets must live under gfx/interface/ so HOI4 and strict-code-index can resolve them.".to_string());
+    }
+    let ext = Path::new(&texturefile)
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(ext.as_str(), "dds" | "png" | "tga") {
+        blockers.push(format!("unsupported_gui_texture_extension:{texturefile}"));
+        questions.push("Provide a .dds, .png, or .tga GUI texture asset.".to_string());
+    }
+    if gfx_file.starts_with('/') || gfx_file.contains("..") {
+        blockers.push(format!("unsafe_gui_gfx_file:{gfx_file}"));
+        questions.push(
+            "GFX registration file must be a safe mod-relative interface/*.gfx path.".to_string(),
+        );
+    }
+    if !gfx_file.to_ascii_lowercase().starts_with("interface/")
+        || !gfx_file.to_ascii_lowercase().ends_with(".gfx")
+    {
+        blockers.push(format!("gui_gfx_file_not_interface_gfx:{gfx_file}"));
+        questions.push("Write GUI sprite registrations to an interface/*.gfx file.".to_string());
+    }
+    if !approved {
+        blockers.push("gui_asset_registration_requires_user_approval".to_string());
+        questions.push("Rerun with --approve-new-asset only after the user confirms this new GUI asset should be registered.".to_string());
+    }
+    let local_texture_path = root.join(texturefile.split('/').collect::<PathBuf>());
+    if !local_texture_path.is_file() {
+        blockers.push(format!("gui_texturefile_missing:{texturefile}"));
+        questions.push(format!(
+            "Create or copy the approved transparent GUI asset to `{texturefile}` before registering `{sprite}`."
+        ));
+    }
+    let image_probe = if local_texture_path.is_file() {
+        match probe_gui_image_asset(&local_texture_path) {
+            Ok(probe) => {
+                if probe.width == 0 || probe.height == 0 {
+                    blockers.push(format!("gui_texture_invalid_dimensions:{texturefile}"));
+                    questions.push(
+                        "Replace the GUI asset with an image whose width and height are non-zero."
+                            .to_string(),
+                    );
+                }
+                if !probe.alpha_capable {
+                    blockers.push(format!("gui_texture_missing_alpha_channel:{texturefile}"));
+                    questions.push("GUI assets should have a transparent-capable alpha channel; provide a PNG/TGA/DDS with alpha before registering.".to_string());
+                }
+                if let Some((expected_width, expected_height)) = expected_dimensions {
+                    if probe.width != expected_width || probe.height != expected_height {
+                        blockers.push(format!(
+                            "gui_texture_dimension_mismatch:{texturefile}:expected_{}x{}:actual_{}x{}",
+                            expected_width, expected_height, probe.width, probe.height
+                        ));
+                        questions.push(format!(
+                            "Resize or replace `{texturefile}` to exactly {}x{} before registering `{sprite}`.",
+                            expected_width, expected_height
+                        ));
+                    }
+                }
+                Some(probe)
+            }
+            Err(reason) => {
+                blockers.push(format!("gui_texture_probe_failed:{texturefile}"));
+                questions.push(format!(
+                    "Replace `{texturefile}` with a readable GUI image; probe failed: {reason}"
+                ));
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let lookup = sprite_lookup(root)?;
+    let texture_key = normalize_texture_key(&texturefile);
+    let existing_texture = lookup.name_to_texture.get(sprite).cloned();
+    if let Some(existing) = existing_texture.as_deref() {
+        if existing != texture_key {
+            blockers.push(format!("gui_sprite_name_conflict:{sprite}:{existing}"));
+            questions.push(format!(
+                "Sprite `{sprite}` already points to `{existing}`; choose a new sprite id or reuse the existing texture."
+            ));
+        }
+    }
+    blockers.sort();
+    blockers.dedup();
+    questions.sort();
+    questions.dedup();
+    let gfx_path = root.join(gfx_file.split('/').collect::<PathBuf>());
+    let code = render_sprite_type_block(
+        sprite,
+        &texturefile,
+        "GUI asset registered by hoi4skill after explicit user approval.",
+        GfxSpriteRenderKind::StandardLower,
+    );
+    let mut changed_files = Vec::new();
+    let mut status = if blockers.is_empty() {
+        if existing_texture.as_deref() == Some(texture_key.as_str()) {
+            "existing".to_string()
+        } else if execute {
+            "registered".to_string()
+        } else {
+            "planned".to_string()
+        }
+    } else {
+        "blocked".to_string()
+    };
+    if blockers.is_empty() && execute && existing_texture.as_deref() != Some(texture_key.as_str()) {
+        let changed = append_blocks_to_named_wrapper(
+            &gfx_path,
+            "spriteTypes",
+            "# Generated GUI asset registrations by hoi4skill\n",
+            &[(sprite.to_string(), code.clone())],
+        )?;
+        if changed {
+            changed_files.push(gfx_path.clone());
+        } else {
+            status = "existing".to_string();
+        }
+    }
+    Ok(GuiAssetRegistrationReport {
+        ok: blockers.is_empty(),
+        status,
+        executed: execute && blockers.is_empty(),
+        approved,
+        mod_root: root.to_path_buf(),
+        sprite: sprite.to_string(),
+        texturefile,
+        local_texture_path,
+        gfx_file: gfx_path,
+        changed_files,
+        blockers,
+        questions,
+        image_probe,
+        expected_dimensions,
+        code,
+    })
+}
+
+fn asset_import_supported(kind: &str, extension: &str) -> bool {
+    match kind {
+        "flag" | "country_flag" => matches!(extension, "jpg" | "jpeg" | "png" | "webp" | "tga"),
+        "focus_icon" | "idea_icon" | "decision_icon" | "event_picture" | "portrait"
+        | "gui_asset" => {
+            matches!(extension, "dds" | "png" | "tga" | "jpg" | "jpeg" | "webp")
+        }
+        _ => false,
+    }
+}
+
+fn asset_import_default_sprite(kind: &str, map: &ArgMap) -> Option<String> {
+    let id = value(map, "id")
+        .or_else(|| value(map, "name"))
+        .or_else(|| value(map, "tag"))?;
+    let slug = slugify(id, "asset");
+    let prefix = match kind {
+        "focus_icon" => "GFX_goal",
+        "idea_icon" => "GFX_idea",
+        "decision_icon" => "GFX_decision",
+        "event_picture" => "GFX_report_event",
+        "portrait" => "GFX_portrait",
+        "gui_asset" => "GFX_gui",
+        _ => return None,
+    };
+    Some(format!("{prefix}_{slug}"))
+}
+
+fn asset_import_plan_json(
+    ok: bool,
+    root: &Path,
+    file: Option<&Path>,
+    kind: &str,
+    extension: &str,
+    tag: Option<&str>,
+    sprite: Option<&str>,
+    supported: bool,
+    questions: &[String],
+    blockers: &[String],
+) -> String {
+    let mut map = BTreeMap::new();
+    map.insert(
+        "schema".to_string(),
+        json_str("hoi4skill.asset_import_plan.v1"),
+    );
+    map.insert("ok".to_string(), json_bool(ok).to_string());
+    map.insert(
+        "status".to_string(),
+        json_str(if ok {
+            "asset_import_plan_ready"
+        } else {
+            "blocked"
+        }),
+    );
+    map.insert("direct_write".to_string(), json_bool(false).to_string());
+    map.insert(
+        "mod_root".to_string(),
+        json_str(&root.display().to_string()),
+    );
+    map.insert(
+        "source_file".to_string(),
+        json_optional_str(file.map(|path| path.display().to_string()).as_deref()),
+    );
+    map.insert("kind".to_string(), json_str(kind));
+    map.insert("input_extension".to_string(), json_str(extension));
+    map.insert(
+        "supported_input".to_string(),
+        json_bool(supported).to_string(),
+    );
+    map.insert("tag".to_string(), json_optional_str(tag));
+    map.insert("sprite".to_string(), json_optional_str(sprite));
+    map.insert(
+        "planned_outputs".to_string(),
+        asset_import_planned_outputs_json(root, kind, tag, sprite),
+    );
+    map.insert(
+        "next_commands".to_string(),
+        json_array(&asset_import_next_commands(kind, tag, sprite)),
+    );
+    map.insert("questions".to_string(), json_array(questions));
+    map.insert("blocker_count".to_string(), blockers.len().to_string());
+    map.insert("blockers".to_string(), json_array(blockers));
+    map.insert(
+        "rules".to_string(),
+        json_array(&[
+            "asset-import-plan is plan-only and never writes image or GFX files".to_string(),
+            "flag assets must become normal/medium/small TGA triplets before tag/cosmetic references use them".to_string(),
+            "sprite assets must be registered before focus/idea/event/decision/GUI code references them".to_string(),
+            "missing assets require user choice: provide file, generate placeholder, or reuse indexed parent asset".to_string(),
+        ]),
+    );
+    json_raw_object(&map)
+}
+
+fn asset_import_planned_outputs_json(
+    root: &Path,
+    kind: &str,
+    tag: Option<&str>,
+    sprite: Option<&str>,
+) -> String {
+    let outputs = if kind == "flag" || kind == "country_flag" {
+        let id = tag.unwrap_or("<TAG>");
+        vec![
+            format!(
+                "{}:82x52",
+                root.join("gfx/flags").join(format!("{id}.tga")).display()
+            ),
+            format!(
+                "{}:41x26",
+                root.join("gfx/flags/medium")
+                    .join(format!("{id}.tga"))
+                    .display()
+            ),
+            format!(
+                "{}:10x7",
+                root.join("gfx/flags/small")
+                    .join(format!("{id}.tga"))
+                    .display()
+            ),
+        ]
+    } else {
+        let sprite = sprite.unwrap_or("<GFX_sprite>");
+        let texture = match kind {
+            "focus_icon" => "gfx/interface/goals/<asset>.dds",
+            "idea_icon" => "gfx/interface/ideas/<asset>.dds",
+            "decision_icon" => "gfx/interface/decisions/<asset>.dds",
+            "event_picture" => "gfx/event_pictures/<asset>.dds",
+            "portrait" => "gfx/leaders/<TAG>/<asset>.dds",
+            "gui_asset" => "gfx/interface/gui/<asset>.dds",
+            _ => "gfx/interface/<asset>.dds",
+        };
+        vec![
+            format!("{sprite}:{texture}"),
+            "interface/generated_assets.gfx".to_string(),
+        ]
+    };
+    json_array(&outputs)
+}
+
+fn asset_import_next_commands(kind: &str, tag: Option<&str>, sprite: Option<&str>) -> Vec<String> {
+    if kind == "flag" || kind == "country_flag" {
+        vec![format!(
+            "hoi4skill flag-image-import --mod-root <target> --file <image> --tag {} --execute --require-passed",
+            tag.unwrap_or("<TAG>")
+        )]
+    } else {
+        vec![
+            format!(
+                "hoi4skill register-gui-asset --mod-root <target> --sprite {} --texturefile <gfx/path.dds|png|tga> --approve-new-asset --execute --require-passed",
+                sprite.unwrap_or("<GFX_sprite>")
+            ),
+            "hoi4skill gfx-audit --mod-root <target> --require-passed".to_string(),
+        ]
+    }
+}
+
+pub(crate) fn gui_asset_registration_report_json(report: &GuiAssetRegistrationReport) -> String {
+    let changed_files = report
+        .changed_files
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    format!(
+        "{{\n  \"schema\": \"hoi4skill.gui_asset_registration.v1\",\n  \"status\": {},\n  \"ok\": {},\n  \"executed\": {},\n  \"approved\": {},\n  \"mod_root\": {},\n  \"sprite\": {},\n  \"texturefile\": {},\n  \"local_texture_path\": {},\n  \"gfx_file\": {},\n  \"changed_files\": {},\n  \"blocking_count\": {},\n  \"blockers\": {},\n  \"questions\": {},\n  \"image_probe\": {},\n  \"expected_dimensions\": {},\n  \"dimension_check\": {},\n  \"transparent_background_required\": true,\n  \"written_to_mod\": {},\n  \"code\": {},\n  \"next_commands\": {}\n}}\n",
+        json_str(&report.status),
+        json_bool(report.ok),
+        json_bool(report.executed),
+        json_bool(report.approved),
+        json_str(&report.mod_root.display().to_string()),
+        json_str(&report.sprite),
+        json_str(&report.texturefile),
+        json_str(&report.local_texture_path.display().to_string()),
+        json_str(&report.gfx_file.display().to_string()),
+        json_array(&changed_files),
+        report.blockers.len(),
+        json_array(&report.blockers),
+        json_array(&report.questions),
+        gui_image_probe_json(report.image_probe.as_ref()),
+        gui_expected_dimensions_json(report.expected_dimensions),
+        gui_asset_dimension_check_status(report),
+        json_bool(report.executed && report.ok),
+        json_str(&report.code),
+        json_array(&vec![
+            "hoi4skill gfx-audit --mod-root <mod-root> --changed interface/generated_gui_assets.gfx --require-passed".to_string(),
+            "hoi4skill validate <mod-root> --game-root <HOI4 root> --strict-code-index".to_string(),
+            "hoi4skill apply-gui-intent --mod-root <mod-root> --input <gui intent> --game-root <HOI4 root> --execute --final-check --require-passed".to_string(),
+        ]),
+    )
+}
+
+fn gui_asset_expected_dimensions(map: &ArgMap) -> Result<Option<(u32, u32)>, String> {
+    if let Some(value) = value(map, "dimensions")
+        .or_else(|| value(map, "expected-dimensions"))
+        .or_else(|| value(map, "size"))
+    {
+        let normalized = value
+            .to_ascii_lowercase()
+            .replace(['×', '*'], "x")
+            .replace(' ', "");
+        let Some((width, height)) = normalized.split_once('x') else {
+            return Err(format!("invalid --dimensions `{value}`; expected WxH"));
+        };
+        let width = width
+            .parse::<u32>()
+            .map_err(|_| format!("invalid --dimensions width `{value}`"))?;
+        let height = height
+            .parse::<u32>()
+            .map_err(|_| format!("invalid --dimensions height `{value}`"))?;
+        return Ok(Some((width, height)));
+    }
+    match (value(map, "expected-width"), value(map, "expected-height")) {
+        (Some(width), Some(height)) => Ok(Some((
+            width
+                .parse::<u32>()
+                .map_err(|_| format!("invalid --expected-width `{width}`"))?,
+            height
+                .parse::<u32>()
+                .map_err(|_| format!("invalid --expected-height `{height}`"))?,
+        ))),
+        (None, None) => Ok(None),
+        _ => Err("--expected-width and --expected-height must be supplied together".to_string()),
+    }
+}
+
+fn gui_expected_dimensions_json(value: Option<(u32, u32)>) -> String {
+    value
+        .map(|(width, height)| format!("{{\"width\": {width}, \"height\": {height}}}"))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn gui_asset_dimension_check_status(report: &GuiAssetRegistrationReport) -> String {
+    let status = match (report.image_probe.as_ref(), report.expected_dimensions) {
+        (Some(probe), Some((width, height))) if probe.width == width && probe.height == height => {
+            "passed_expected_dimensions"
+        }
+        (Some(_), Some(_)) => "failed_expected_dimensions",
+        (Some(_), None) => {
+            "passed_header_probe; still compare against parent-mod visual sample before release"
+        }
+        (None, _) => "failed_or_missing_header_probe",
+    };
+    json_str(status)
+}
+
+fn gui_image_probe_json(probe: Option<&GuiImageProbe>) -> String {
+    probe
+        .map(|probe| {
+            format!(
+                "{{\"format\": {}, \"width\": {}, \"height\": {}, \"alpha_capable\": {}}}",
+                json_str(&probe.format),
+                probe.width,
+                probe.height,
+                json_bool(probe.alpha_capable),
+            )
+        })
+        .unwrap_or_else(|| "null".to_string())
+}
+
+pub(crate) fn probe_gui_image_asset(path: &Path) -> Result<GuiImageProbe, String> {
+    let bytes = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return probe_png_image_header(&bytes);
+    }
+    if bytes.starts_with(b"DDS ") {
+        return probe_dds_image_header(&bytes);
+    }
+    if path
+        .extension()
+        .and_then(OsStr::to_str)
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("tga"))
+    {
+        return probe_tga_image_header(&bytes);
+    }
+    Err("unsupported or unreadable GUI image header".to_string())
+}
+
+fn probe_png_image_header(bytes: &[u8]) -> Result<GuiImageProbe, String> {
+    if bytes.len() < 33 || &bytes[12..16] != b"IHDR" {
+        return Err("PNG IHDR header is missing".to_string());
+    }
+    let width = u32::from_be_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let height = u32::from_be_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
+    let color_type = bytes[25];
+    Ok(GuiImageProbe {
+        format: "png".to_string(),
+        width,
+        height,
+        alpha_capable: matches!(color_type, 4 | 6),
+    })
+}
+
+fn probe_dds_image_header(bytes: &[u8]) -> Result<GuiImageProbe, String> {
+    if bytes.len() < 128 {
+        return Err("DDS header is shorter than 128 bytes".to_string());
+    }
+    let height = u32::from_le_bytes([bytes[12], bytes[13], bytes[14], bytes[15]]);
+    let width = u32::from_le_bytes([bytes[16], bytes[17], bytes[18], bytes[19]]);
+    let pixel_flags = u32::from_le_bytes([bytes[80], bytes[81], bytes[82], bytes[83]]);
+    let fourcc = &bytes[84..88];
+    let alpha_bits = u32::from_le_bytes([bytes[108], bytes[109], bytes[110], bytes[111]]);
+    let alpha_capable = pixel_flags & 0x1 != 0
+        || alpha_bits != 0
+        || matches!(fourcc, b"DXT3" | b"DXT5" | b"BC2 " | b"BC3 " | b"ATI2");
+    Ok(GuiImageProbe {
+        format: "dds".to_string(),
+        width,
+        height,
+        alpha_capable,
+    })
+}
+
+fn probe_tga_image_header(bytes: &[u8]) -> Result<GuiImageProbe, String> {
+    if bytes.len() < 18 {
+        return Err("TGA header is shorter than 18 bytes".to_string());
+    }
+    let width = u16::from_le_bytes([bytes[12], bytes[13]]) as u32;
+    let height = u16::from_le_bytes([bytes[14], bytes[15]]) as u32;
+    let pixel_depth = bytes[16];
+    let descriptor = bytes[17];
+    let alpha_bits = descriptor & 0x0f;
+    Ok(GuiImageProbe {
+        format: "tga".to_string(),
+        width,
+        height,
+        alpha_capable: alpha_bits > 0 || pixel_depth == 32,
+    })
+}
+
 #[derive(Clone)]
 pub(crate) struct Sprite {
     pub(crate) name: String,
@@ -1036,6 +1664,7 @@ pub(crate) fn gfx_registration_report_json(report: &GfxRegistrationReport) -> St
         .len();
     let mut out = String::new();
     out.push_str("{\n");
+    out.push_str("  \"schema\": \"hoi4skill.gfx_registration.v1\",\n");
     out.push_str(&format!(
         "  \"mod_root\": {},\n",
         json_str(&report.mod_root.display().to_string())

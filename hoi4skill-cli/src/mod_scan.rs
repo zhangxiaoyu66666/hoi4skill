@@ -188,11 +188,11 @@ pub(crate) fn scan_mod_style_json(
     ));
     out.push_str(&format!(
         "  \"file_extensions\": {},\n",
-        json_i64_object(&extension_counts)
+        json_i64_entries(&extension_counts)
     ));
     out.push_str(&format!(
         "  \"common_modules\": {},\n",
-        json_i64_object(&common_modules)
+        json_i64_entries(&common_modules)
     ));
     out.push_str(&format!(
         "  \"focus_trees\": {},\n",
@@ -200,11 +200,11 @@ pub(crate) fn scan_mod_style_json(
     ));
     out.push_str(&format!(
         "  \"focus_id_prefixes\": {},\n",
-        json_i64_object(&focus_prefixes)
+        json_i64_entries(&focus_prefixes)
     ));
     out.push_str(&format!(
         "  \"focus_icons\": {},\n",
-        json_i64_object(&focus_icons)
+        json_i64_entries(&focus_icons)
     ));
     out.push_str(&format!(
         "  \"event_namespaces\": {},\n",
@@ -212,7 +212,7 @@ pub(crate) fn scan_mod_style_json(
     ));
     out.push_str(&format!(
         "  \"localisation_languages\": {},\n",
-        json_i64_object(&localisation_languages)
+        json_i64_entries(&localisation_languages)
     ));
     out.push_str(&format!(
         "  \"localisation_files\": {},\n",
@@ -223,10 +223,13 @@ pub(crate) fn scan_mod_style_json(
         "  \"gfx_sprites_truncated\": {},\n",
         json_bool(sprite_total > options.max_sprites)
     ));
-    out.push_str(&format!("  \"gfx_sprites\": {},\n", json_object(&sprites)));
+    out.push_str(&format!(
+        "  \"gfx_sprites\": {},\n",
+        json_string_entries(&sprites)
+    ));
     out.push_str(&format!(
         "  \"idea_pictures\": {},\n",
-        json_i64_object(&idea_pictures)
+        json_i64_entries(&idea_pictures)
     ));
     out.push_str(&format!(
         "  \"decision_categories\": {},\n",
@@ -566,11 +569,11 @@ pub(crate) fn mod_knowledge_json(
     ));
     out.push_str(&format!(
         "  \"file_extensions\": {},\n",
-        json_i64_object(&extension_counts)
+        json_i64_entries(&extension_counts)
     ));
     out.push_str(&format!(
         "  \"common_modules\": {},\n",
-        json_i64_object(&common_modules)
+        json_i64_entries(&common_modules)
     ));
     out.push_str("  \"knowledge_base\": {");
     out.push_str(&format!(
@@ -635,11 +638,11 @@ pub(crate) fn mod_knowledge_json(
     ));
     out.push_str(&format!(
         "\"focus_id_prefixes\": {}, ",
-        json_i64_object(&focus_prefixes)
+        json_i64_entries(&focus_prefixes)
     ));
     out.push_str(&format!(
         "\"focus_icons\": {}, ",
-        json_i64_object(&focus_icons)
+        json_i64_entries(&focus_icons)
     ));
     out.push_str(&format!(
         "\"event_namespaces\": {}, ",
@@ -651,17 +654,20 @@ pub(crate) fn mod_knowledge_json(
     ));
     out.push_str(&format!(
         "\"idea_pictures\": {}, ",
-        json_i64_object(&idea_pictures)
+        json_i64_entries(&idea_pictures)
     ));
     out.push_str(&format!(
         "\"localisation_languages\": {}, ",
-        json_i64_object(&localisation_languages)
+        json_i64_entries(&localisation_languages)
     ));
     out.push_str(&format!(
         "\"gfx_sprites_truncated\": {}, ",
         json_bool(sprite_total > max_sprites)
     ));
-    out.push_str(&format!("\"gfx_sprites\": {}, ", json_object(&sprites)));
+    out.push_str(&format!(
+        "\"gfx_sprites\": {}, ",
+        json_string_entries(&sprites)
+    ));
     out.push_str(&format!(
         "\"content_samples\": {{\"focuses\": {}, \"events\": {}, \"ideas\": {}, \"decision_categories\": {}, \"decisions\": {}}}",
         imported_focuses_json(&focuses),

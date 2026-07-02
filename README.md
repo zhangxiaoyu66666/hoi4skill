@@ -2,7 +2,7 @@
 
 **hoi4skill** 是一个中文优先的 **Hearts of Iron IV（钢铁雄心 IV）MOD 辅助创作工具**。
 
-它的目标很简单：把中文设计稿、国策草图、事件卡片、决议/民族精神/科技设定等内容，尽量安全地转换成 HOI4 可以识别的文件，并提供校验、索引和 `error.log` 反向分析能力。
+它的目标很直接：让用户用中文、Word、Excel、Markdown 或一句话描述 MOD 想法，由 AI 负责规划与解释，由 Rust CLI 读取本机游戏 / 目标 MOD / 父 MOD 证据，组装 HOI4 文件并在发布前做严格校验。AI 不直接手写未经验证的游戏代码，所有 effect、trigger、modifier、sprite、tag、technology、scope/container 等引用都必须来自本机索引；查不到就报错并生成修复上下文。
 
 > 本项目为非官方 MOD 工具，不隶属于 Paradox Interactive，不包含、不分发任何 Hearts of Iron IV 游戏资产。
 
@@ -17,20 +17,18 @@
 
 ### 当前已支持
 
-- **创建 MOD 骨架**：快速生成基础 MOD 文件夹结构。
-- **扫描现有 MOD**：在修改前读取 MOD 风格、文件结构和已有内容。
-- **静态校验**：检查常见 HOI4 MOD 错误，减少启动爆炸概率。
-- **国策树生成**：从纯文本草图或 Excel 表格画出的国策树生成 focus tree 相关文件，国策坐标按同一行 `x` 间隔 2 防重叠。
-- **卡片式内容解析与写入**：支持决议、民族精神、事件、科技、特殊 GUI、scripted helper、state-effect 等内容。
-- **GFX 图标注册**：辅助把图标注册到 `interface/*.gfx`。
-- **游戏 / MOD 索引构建**：索引国家 tag、sprite、state、province、technology 等引用信息。
-- **Clausewitz 对照表**：从本地游戏文档索引 effect / modifier，并输出模型可读的常见意图到真实语法对照表。
-- **严格代码库终检**：在最终输出前用本地游戏 / 授权依赖 MOD 索引校验 effect、modifier、sprite、idea picture、technology、tag 等引用；查不到就报错，要求 AI 修复。
-- **用户文本对照检查**：把用户给出的文件、表格、国策名、事件名、决议名、民族精神名等玩家可见文本，与生成后的 MOD 本地化 / 脚本输出做简单文本对照。
-- **历史文件编辑计划**：在修改 `history/states` 等危险区域前，先生成编辑计划，避免乱猜 state id / province id。
-- **`error.log` 反向分析**：读取 HOI4 报错日志，辅助定位和修复 MOD 问题。
-- **本地化快速翻译**：读取任意 `localisation/<source_language>`，对照目标语言键名，生成任意目标语言的翻译 prompt / yml 骨架，并支持写回后查漏。
-- **AI 工作流辅助**：适合配合 Codex、ChatGPT、啊拼等工具，把“人话需求”转成带证据闸门的 MOD 文件改动，先确认上下文够不够，再限制可写文件范围。
+- **一句话 / 文档生成 MOD 计划**：`author-compiler-plan` 和 `run-workflow` 可读取内联文本、Markdown、纯文本、CSV/TSV、Word、Excel 和图片资产，把需求拆成国策、事件、决议、民族精神、动态修正、history/OOB、GUI、地图、资源等受控 lane。
+- **本地知识库与增量刷新**：读取用户本机 HOI4、目标 MOD、父 MOD / 依赖 MOD 文件，建立符号、模板、风格、事件链、地图、GUI、资源索引；文件变化后走增量刷新，不把官方或第三方源码内置进仓库。
+- **严格代码索引与 AI 保险**：`validate --strict-code-index`、`semantic-repair-search`、`validate-repair-context`、`weak-ai-regression-suite` 会把不存在的 effect / trigger / modifier / sprite / tag / technology / scope typo 变成硬错误，并返回本地相关代码候选给 AI 修复。
+- **作用域 / 容器分类**：区分国家、州、省份、MIO、角色、科技、装备、GUI、地图等容器，防止把地区修正、MIO 代码、民族精神、动态修正混在一起；已知的共用语法由索引和作用域契约确认。
+- **国策、事件链、决议、民族精神**：支持从中文卡片 / 表格 / 草图生成或扩展内容；事件链可检查触发来源、后续事件、死事件、循环、分支合流和路线阻断。
+- **动态修正与 scripted helper**：可把“某效果 + 数值”编译为 scripted_effects 里的可复用动态修正协议，并阻止 AI 把动态修正当普通民族精神乱写。
+- **history / OOB / start-date 场景**：支持国家历史、州历史、科技、外交战争、领袖、OOB、陆空海单位分类、师模板和省份查询的组合计划，避免从地名或记忆乱猜 state / province id。
+- **地图数据计划**：按低风险州 / 省份编辑、中风险补给 / 战略区域、高风险拓扑拆分 map 改动，并要求拓扑、运行日志和发布 gate 证据。
+- **资源与 interface/GFX 注册**：支持 jpg / jpeg / png / webp / tga 国旗三尺寸导入，GUI asset、国策图标、民族精神图标、决议图标、事件图、头像等 sprite / `interface/*.gfx` 注册和 `gfx-audit`。
+- **GUI 后端工作流**：可从父 MOD 学习 GUI 风格模板，规划 standalone、决议附 GUI、topbar 挂载、map window 等后端结构，并用 `gui-output-audit`、`gui-runtime-*` 收集运行和截图证据；可视化拖拽编辑器仍属于未来前端。
+- **本地化与文案安全**：支持颜色、图标、旗帜、leader、country / cosmetic tag 占位符解析，检查 `£icon`、`[TAG.GetName]`、颜色控制符和用户原文是否丢失；支持多语言本地化翻译 prompt / 写回查漏。
+- **一键导出与发布 gate**：`runtime-release-gate` 和 `export-mod` 在导出到 HOI4 launcher 目录前要求严格校验、运行日志、文本对齐、资源、地图 / GUI 可选证据、manifest 和 rollback 记录。
 
 ### 构建方式
 
@@ -67,6 +65,10 @@ hoi4skill query-clausewitz-library --system event --query "uprising country even
 hoi4skill prepare-edit-context --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output edit_context.md
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --output workflow_report.json
 hoi4skill run-workflow --input "M:\path\copy.txt" --mod-root "M:\path\existing_mod" --tag SOV --prefix sov_nep --game-root "C:\path\Hearts of Iron IV" --final-check --output workflow_report.json
+hoi4skill author-compiler-plan --text "国策效果：添加民族精神 伟大的中国共产党 效果：政治点数+5%" --mod-root "M:\path\existing_mod" --game-root "C:\path\Hearts of Iron IV" --output author_plan.json
+hoi4skill asset-import-plan --mod-root "M:\path\existing_mod" --kind flag --tag PRC --file flag.png --require-passed --output flag_plan.json
+hoi4skill scenario-compiler-plan --text "中国共产党拥有1936年科技，王明在台上，江西归PRC，开局与CHI战争" --mod-root "M:\path\existing_mod" --game-root "C:\path\Hearts of Iron IV" --output scenario_plan.json
+hoi4skill gui-request-workflow --mod-root "M:\path\existing_mod" --style-mod "M:\path\parent_mod" --game-root "C:\path\Hearts of Iron IV" --text "做一个决议附GUI显示工业计划" --output-dir .hoi4skill/gui_request_workflow
 hoi4skill check-text-alignment --mod-root "M:\path\existing_mod" --input "M:\path\copy.txt" --expect-title "国策标题"
 hoi4skill validate "M:\path\existing_mod" --game-root "C:\path\Hearts of Iron IV" --strict-code-index --text-source "M:\path\copy.txt" --expect-title "事件标题"
 hoi4skill plan-history-edit "M:\path\existing_mod" --text "edit history/states owner for state_id 64" --state-id 64 --game-root "C:\path\Hearts of Iron IV" --output history_plan.json
@@ -81,8 +83,8 @@ hoi4skill validate "M:\path\existing_mod" --game-root "C:\path\Hearts of Iron IV
 
 - 想做 HOI4 MOD，但不想手搓每一个大括号的人。
 - 想用 AI 辅助写 MOD，但又担心 AI 把文件结构写炸的人。
-- 想把中文设定、国策构想、事件草稿变成结构化 MOD 文件的人。
-- 想给自己的 MOD 团队建立更稳定工作流的人。
+- 想把中文设定、国策构想、事件草稿、开局历史、地图调整、GUI 需求变成结构化 MOD 文件的人。
+- 想做 KR / KX / TNO / OWB 这类大型或父 MOD 子 MOD，但又需要本地证据、严格校验、分包协作和发布 gate 的团队。
 
 ### 安装到 AI 编程工具
 

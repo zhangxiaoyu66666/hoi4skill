@@ -2,6 +2,8 @@
 
 `hoi4-mod-maker` is packaged as a standard `SKILL.md` Agent Skill. The release zip also includes the Windows `hoi4skill.exe` binary under the skill folder so agents can use the Rust backend without rebuilding first.
 
+Version 0.3 focuses on large HOI4 mod workflows: local game/mod/dependency indexing, one-sentence and document-driven authoring, strict code-index validation, semantic repair context for bad AI output, focus/event/decision/national-spirit/dynamic-modifier/history/OOB/map/GUI planning, asset registration, runtime gates, and export manifests.
+
 ## Download
 
 Download the latest `hoi4skill-agent-skill-v*.zip` from:

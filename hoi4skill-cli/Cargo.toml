@@ -1,6 +1,6 @@
 [package]
 name = "hoi4skill"
-version = "0.2.18"
+version = "0.3.0"
 edition = "2021"
 license = "GPL-3.0-only"
 description = "Rust CLI backend for the hoi4-mod-maker Codex skill."
@@ -12,4 +12,6 @@ codegen-units = 1
 
 [dependencies]
 calamine = "0.35.0"
+image = { version = "0.25", default-features = false, features = ["jpeg", "webp"] }
+png = "0.17"
 zip = { version = "7.2.0", default-features = false, features = ["deflate"] }

@@ -255,14 +255,18 @@ fn gfx_issues_json(issues: &[GfxIssue], max_items: usize) -> String {
 
 fn gfx_audit_changed_files(root: &Path, map: &ArgMap) -> Result<Vec<String>, String> {
     let mut files = Vec::new();
-    for raw in repeated_values(map, "changed") {
-        let path = PathBuf::from(raw);
-        let rel = if path.is_absolute() {
-            relative_slash_path(root, &path)
-        } else {
-            slash_path(&path)
-        };
-        files.push(rel);
+    for key in ["changed", "changed-file"] {
+        for raw in repeated_values(map, key) {
+            let path = PathBuf::from(raw);
+            let rel = if path.is_absolute() {
+                relative_slash_path(root, &path)
+            } else {
+                slash_path(&path)
+            };
+            if !files.iter().any(|item| item == &rel) {
+                files.push(rel);
+            }
+        }
     }
     Ok(files)
 }

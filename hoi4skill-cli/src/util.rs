@@ -34,10 +34,11 @@ pub(crate) fn suggestions_json(values: &[Suggestion]) -> String {
             .iter()
             .map(|s| {
                 format!(
-                    "{{\"kind\": {}, \"code\": {}, \"source\": {}, \"note\": {}}}",
+                    "{{\"kind\": {}, \"code\": {}, \"source\": {}, \"effect_strategy\": {}, \"note\": {}}}",
                     json_str(&s.kind),
                     json_str(&s.code),
                     json_str(&s.source),
+                    json_str(suggestion_effect_strategy(s)),
                     json_str(&s.note)
                 )
             })
@@ -107,6 +108,34 @@ pub(crate) fn suggestions_safety_blockers(values: &[Suggestion]) -> Vec<String> 
         }
     }
     blockers
+}
+
+pub(crate) fn apply_writer_report_json(
+    schema: &str,
+    input: &Path,
+    mod_root: &Path,
+    tag: &str,
+    prefix: &str,
+    count_key: &str,
+    count: usize,
+    changed_files: &[PathBuf],
+) -> String {
+    let changed = changed_files
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    format!(
+        "{{\n  \"schema\": {},\n  \"ok\": true,\n  \"input\": {},\n  \"mod_root\": {},\n  \"tag\": {},\n  \"prefix\": {},\n  \"{}\": {},\n  \"changed_file_count\": {},\n  \"changed_files\": {}\n}}\n",
+        json_str(schema),
+        json_str(&input.display().to_string()),
+        json_str(&mod_root.display().to_string()),
+        json_str(tag),
+        json_str(prefix),
+        count_key,
+        count,
+        changed.len(),
+        json_array(&changed)
+    )
 }
 
 pub(crate) fn html_escape(s: &str) -> String {

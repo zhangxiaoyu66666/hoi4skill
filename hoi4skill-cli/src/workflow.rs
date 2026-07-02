@@ -115,10 +115,171 @@ pub(crate) fn workflow_input_from_path(
             focus_layout: Some(focus_layout),
         });
     }
+    let text = read_text_document(input)?;
     Ok(WorkflowInput {
-        text: read_utf8_lossy(input)?,
+        text: normalise_single_work_package_request_text(&text, None),
         focus_layout: None,
     })
+}
+
+pub(crate) fn workflow_input_from_text(text: &str) -> WorkflowInput {
+    WorkflowInput {
+        text: normalise_single_work_package_request_text(text, None),
+        focus_layout: None,
+    }
+}
+
+pub(crate) fn workflow_dynamic_modifier_intents(text: &str) -> Vec<String> {
+    let labels = [
+        "动态修正",
+        "dynamic_modifier",
+        "dynamic modifier",
+        "dynamic modifiers",
+    ];
+    let mut out = Vec::new();
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some((key, value)) = split_field(trimmed) {
+            let normalised = normalise_workflow_lane_label(key);
+            if labels
+                .iter()
+                .any(|label| normalised == normalise_workflow_lane_label(label))
+            {
+                if let Some(value) = current.take() {
+                    out.push(value);
+                }
+                let value = value.trim();
+                if !value.is_empty() {
+                    current = Some(value.to_string());
+                }
+                continue;
+            }
+            if workflow_line_starts_new_lane(&normalised) {
+                if let Some(value) = current.take() {
+                    out.push(value);
+                }
+                continue;
+            }
+        }
+        if let Some(current_value) = current.as_mut() {
+            if workflow_dynamic_modifier_continuation(trimmed) {
+                current_value.push_str(" | ");
+                current_value.push_str(trimmed);
+            }
+        }
+    }
+    if let Some(value) = current {
+        out.push(value);
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+pub(crate) fn workflow_localisation_entries(text: &str) -> Vec<String> {
+    workflow_labeled_entries(text, &["本地化", "localisation", "localization", "loc"])
+}
+
+pub(crate) fn workflow_localisation_token_issues(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for entry in workflow_localisation_entries(text) {
+        let Some(value) = workflow_localisation_visible_value(&entry) else {
+            continue;
+        };
+        let compiled = compile_author_localisation_placeholders_without_index(value);
+        let (_, issues) = extract_localisation_tokens(&compiled);
+        for issue in issues {
+            out.push(format!(
+                "{}: {}: {}",
+                workflow_localisation_entry_label(&entry),
+                issue.kind,
+                issue.message
+            ));
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn workflow_localisation_entry_label(entry: &str) -> String {
+    if let Some((key, _)) = entry.split_once('=') {
+        return key.trim().trim_matches('"').trim().to_string();
+    }
+    if let Some((key, _)) = split_field(entry) {
+        return key.trim().trim_matches('"').trim().to_string();
+    }
+    truncate_chars(entry.trim(), 40)
+}
+
+fn workflow_labeled_entries(text: &str, labels: &[&str]) -> Vec<String> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim();
+        let Some((key, value)) = split_field(trimmed) else {
+            continue;
+        };
+        let normalised = normalise_workflow_lane_label(key);
+        if labels
+            .iter()
+            .any(|label| normalised == normalise_workflow_lane_label(label))
+        {
+            let value = value.trim();
+            if !value.is_empty() {
+                out.push(value.to_string());
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+fn normalise_workflow_lane_label(value: &str) -> String {
+    value
+        .trim()
+        .trim_matches('`')
+        .trim()
+        .chars()
+        .filter(|ch| !matches!(ch, ' ' | '\t' | '_' | '-' | ':' | '：'))
+        .collect::<String>()
+        .to_ascii_lowercase()
+}
+
+fn workflow_line_starts_new_lane(normalised_label: &str) -> bool {
+    [
+        "国策",
+        "focus",
+        "事件",
+        "event",
+        "决议",
+        "decision",
+        "民族精神",
+        "nationalspirit",
+        "idea",
+        "本地化",
+        "localisation",
+        "localization",
+        "loc",
+    ]
+    .iter()
+    .any(|label| normalised_label == normalise_workflow_lane_label(label))
+}
+
+fn workflow_dynamic_modifier_continuation(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.starts_with("custom_effect_tooltip")
+        || lower.starts_with("set_temp_variable")
+        || lower.starts_with("change_")
+        || lower.starts_with("描述：")
+        || lower.starts_with("描述:")
+        || lower.starts_with("effect:")
+        || lower.starts_with("效果：")
+        || lower.starts_with("效果:")
 }
 
 pub(crate) fn cmd_generate_mod(args: &[String]) -> Result<(), String> {
@@ -505,7 +666,7 @@ pub(crate) fn one_sentence_input_text(map: &ArgMap) -> Result<String, String> {
         return Ok(text.trim().to_string());
     }
     if let Some(input) = value(map, "input") {
-        return read_utf8_lossy(&normalize_path(input)?);
+        return read_text_document(&normalize_path(input)?);
     }
     let text = map.positionals.join(" ");
     if text.trim().is_empty() {
@@ -558,6 +719,7 @@ pub(crate) fn synthesize_one_sentence_workflow(text: &str, tag: &str, prefix: &s
         || lower.contains("debuff")
         || long_term_effect;
     let wants_event = text.contains("事件") || text.contains("新闻");
+    let wants_event_chain = wants_event && one_sentence_wants_event_chain(text);
     let wants_technology = text.contains("科技") || text.contains("技术");
     let wants_gui = lower.contains("gui")
         || text.contains("界面")
@@ -636,18 +798,62 @@ pub(crate) fn synthesize_one_sentence_workflow(text: &str, tag: &str, prefix: &s
         } else {
             "国家事件"
         };
-        out.push_str(&format!(
-            "事件：{}\n类型：{}\n目标：{}\n命名空间：{}\n标题：{}\n描述：{}\n选项A：继续\n效果A：{}\n\n",
-            infer_one_sentence_event_title(text, &title),
-            event_type,
-            tag,
-            prefix,
-            infer_one_sentence_event_title(text, &title),
-            one_sentence_description(text),
-            effects
-        ));
+        let event_title = infer_one_sentence_event_title(text, &title);
+        if wants_event_chain {
+            let final_effect = if effects.trim().is_empty() {
+                "增加政治权力25".to_string()
+            } else {
+                effects.clone()
+            };
+            let chain_key_base = sanitize_identifier_part(prefix, "event_chain");
+            let opening_key = format!("{chain_key_base}_opening");
+            let reaction_key = format!("{chain_key_base}_reaction");
+            let resolution_key = format!("{chain_key_base}_resolution");
+            out.push_str(&format!(
+                "事件：{event_title}：序幕\n事件键：{opening_key}\n类型：{event_type}\n目标：{tag}\n命名空间：{prefix}\n标题：{event_title}：序幕\n描述：{}\n选项A：继续观察\n后续事件A：{reaction_key}\n延迟A：3\n\n",
+                one_sentence_description(text)
+            ));
+            out.push_str(&format!(
+                "事件：{event_title}：各方反应\n事件键：{reaction_key}\n类型：{event_type}\n目标：{tag}\n命名空间：{prefix}\n标题：{event_title}：各方反应\n描述：围绕“{}”的消息扩散后，各派力量开始重新估量局势。\n选项A：推动进程\n后续事件A：{resolution_key}\n延迟A：7\n\n",
+                one_sentence_description(text)
+            ));
+            out.push_str(&format!(
+                "事件：{event_title}：最终定局\n事件键：{resolution_key}\n类型：{event_type}\n目标：{tag}\n命名空间：{prefix}\n标题：{event_title}：最终定局\n描述：事态进入收束阶段，国家机器开始把临时应对转化为新的政治现实。\n选项A：确认结果\n效果A：{final_effect}\n\n"
+            ));
+        } else {
+            out.push_str(&format!(
+                "事件：{}\n类型：{}\n目标：{}\n命名空间：{}\n标题：{}\n描述：{}\n选项A：继续\n效果A：{}\n\n",
+                event_title,
+                event_type,
+                tag,
+                prefix,
+                event_title,
+                one_sentence_description(text),
+                effects
+            ));
+        }
     }
     out
+}
+
+pub(crate) fn one_sentence_wants_event_chain(text: &str) -> bool {
+    let lower = text.to_ascii_lowercase();
+    contains_any(
+        text,
+        &[
+            "事件链",
+            "连续事件",
+            "连锁事件",
+            "系列事件",
+            "多段事件",
+            "多事件",
+            "一串事件",
+            "后续事件",
+            "链式事件",
+            "三段事件",
+        ],
+    ) || lower.contains("event chain")
+        || lower.contains("chain of events")
 }
 
 pub(crate) fn wants_default_focus_tree_template(text: &str) -> bool {
@@ -1428,6 +1634,9 @@ pub(crate) fn run_workflow_json_with_focus_layout_options(
     let focus_text = extract_focus_layout_text(text);
     let feature_cards = parse_cards(&feature_text, FEATURE_CARD_HEADERS);
     let event_cards = parse_cards(&event_text, &["事件"]);
+    let dynamic_modifier_intents = workflow_dynamic_modifier_intents(text);
+    let localisation_entries = workflow_localisation_entries(text);
+    let localisation_token_issues = workflow_localisation_token_issues(text);
     let mut focus_layout = supplied_focus_layout.cloned().or_else(|| {
         (!focus_text.trim().is_empty())
             .then(|| parse_focus_layout_with_rewards(&focus_text, tag, prefix))
@@ -1474,6 +1683,11 @@ pub(crate) fn run_workflow_json_with_focus_layout_options(
         prefix,
         game_index,
     ));
+    safety_blockers.extend(
+        localisation_token_issues
+            .iter()
+            .map(|issue| format!("localisation token preflight: {issue}")),
+    );
     let safety = workflow_safety_json_from_blockers(&safety_blockers);
 
     let mut changed = Vec::new();
@@ -1551,7 +1765,11 @@ pub(crate) fn run_workflow_json_with_focus_layout_options(
         mod_root.is_some(),
         dry_run,
         validation.as_ref(),
-        feature_cards.len() + event_cards.len() + usize::from(has_focus_layout),
+        feature_cards.len()
+            + event_cards.len()
+            + dynamic_modifier_intents.len()
+            + localisation_entries.len()
+            + usize::from(has_focus_layout),
         !safety_blockers.is_empty(),
     );
 
@@ -1566,10 +1784,13 @@ pub(crate) fn run_workflow_json_with_focus_layout_options(
         json_optional_str(mod_root.map(|path| path.to_string_lossy()).as_deref())
     ));
     out.push_str(&format!(
-        "  \"detected\": {{\"focus_layout\": {}, \"feature_cards\": {}, \"event_cards\": {}}},\n",
+        "  \"detected\": {{\"focus_layout\": {}, \"feature_cards\": {}, \"event_cards\": {}, \"dynamic_modifier_intents\": {}, \"localisation_entries\": {}, \"localisation_token_issues\": {}}},\n",
         json_bool(has_focus_layout),
         feature_cards.len(),
-        event_cards.len()
+        event_cards.len(),
+        dynamic_modifier_intents.len(),
+        localisation_entries.len(),
+        localisation_token_issues.len()
     ));
     out.push_str(&format!(
         "  \"scope_contract\": {},\n",
@@ -1581,6 +1802,12 @@ pub(crate) fn run_workflow_json_with_focus_layout_options(
         json_optional_raw(focus_plan.as_deref()),
         json_optional_raw(feature_plan.as_deref()),
         json_optional_raw(event_plan.as_deref())
+    ));
+    out.push_str(&format!(
+        "  \"auxiliary_inputs\": {{\"dynamic_modifier_intents\": {}, \"localisation_entries\": {}, \"localisation_token_issues\": {}}},\n",
+        json_array(&dynamic_modifier_intents),
+        json_array(&localisation_entries),
+        json_array(&localisation_token_issues)
     ));
     out.push_str(&format!(
         "  \"changed_files\": {},\n",
@@ -1921,10 +2148,20 @@ pub(crate) fn requirement_scope_contract_json(scope: &RequirementScopeContract) 
 }
 
 pub(crate) fn focus_layout_json(layout: &FocusLayout, tag: &str, prefix: &str) -> String {
+    let focus_blocking_safety_count = layout
+        .focuses
+        .iter()
+        .flat_map(focus_node_safety_blockers)
+        .count();
     let mut out = String::new();
     out.push_str("{\n");
+    out.push_str("  \"schema\": \"hoi4skill.focus_layout.v1\",\n");
     out.push_str(&format!("  \"tag\": {},\n", json_str(tag)));
     out.push_str(&format!("  \"prefix\": {},\n", json_str(prefix)));
+    out.push_str(&format!(
+        "  \"focus_blocking_safety_count\": {},\n",
+        focus_blocking_safety_count
+    ));
     out.push_str(&format!("  \"tree_id\": {},\n", json_str(&layout.tree_id)));
     out.push_str(&format!(
         "  \"safety\": {},\n",
@@ -2138,7 +2375,18 @@ pub(crate) fn is_focus_layout_reward_comment(trimmed: &str) -> bool {
 }
 
 pub(crate) fn is_workflow_card_header(key: &str) -> bool {
-    is_feature_card_header(key) || key == "事件"
+    is_feature_card_header(key)
+        || matches!(
+            normalise_workflow_lane_label(key).as_str(),
+            "事件"
+                | "event"
+                | "动态修正"
+                | "dynamicmodifier"
+                | "本地化"
+                | "localisation"
+                | "localization"
+                | "loc"
+        )
 }
 
 pub(crate) fn has_workflow_card_header(text: &str) -> bool {

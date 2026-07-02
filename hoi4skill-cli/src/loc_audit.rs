@@ -54,12 +54,21 @@ struct LocAuditReport {
     missing: Vec<LocIssue>,
     orphan: Vec<LocIssue>,
     duplicate: Vec<LocIssue>,
+    token_issues: Vec<LocTokenIssue>,
 }
 
 #[derive(Clone)]
 struct LocIssue {
     key: String,
     files: Vec<String>,
+}
+
+#[derive(Clone)]
+struct LocTokenIssue {
+    key: String,
+    file: String,
+    line: usize,
+    issues: Vec<LocalisationTokenIssue>,
 }
 
 struct LocSyncReport {
@@ -74,8 +83,16 @@ struct LocSyncReport {
     extra_in_to: Vec<LocIssue>,
     duplicate_from: Vec<LocIssue>,
     duplicate_to: Vec<LocIssue>,
+    token_mismatches: Vec<LocTokenMismatch>,
     warnings: Vec<String>,
     suggested_commands: Vec<String>,
+}
+
+struct LocTokenMismatch {
+    key: String,
+    source: LocalisationTokenEntry,
+    translated: LocalisationTokenEntry,
+    comparison: LocalisationTokenComparison,
 }
 
 impl LocAuditReport {
@@ -86,6 +103,8 @@ impl LocAuditReport {
             .retain(|issue| loc_issue_touches_changed(issue, changed_files));
         self.duplicate
             .retain(|issue| loc_issue_touches_changed(issue, changed_files));
+        self.token_issues
+            .retain(|issue| loc_token_issue_touches_changed(issue, changed_files));
     }
 }
 
@@ -128,6 +147,7 @@ fn audit_localisation(root: &Path) -> Result<LocAuditReport, String> {
             files: files.clone(),
         })
         .collect::<Vec<_>>();
+    let token_issues = collect_localisation_token_audit_issues(root)?;
 
     Ok(LocAuditReport {
         languages,
@@ -137,6 +157,7 @@ fn audit_localisation(root: &Path) -> Result<LocAuditReport, String> {
         missing,
         orphan,
         duplicate,
+        token_issues,
     })
 }
 
@@ -168,6 +189,20 @@ fn build_loc_sync_report(root: &Path, from: &str, to: &str) -> Result<LocSyncRep
         .collect::<Vec<_>>();
     let duplicate_from = duplicate_loc_issues(&from_defs.locations);
     let duplicate_to = duplicate_loc_issues(&to_defs.locations);
+    let token_mismatches = from_keys
+        .intersection(&to_keys)
+        .filter_map(|key| {
+            let source = from_defs.values.get(key)?;
+            let translated = to_defs.values.get(key)?;
+            let comparison = compare_localisation_tokens(&source.value, &translated.value);
+            (!comparison.ok()).then(|| LocTokenMismatch {
+                key: key.clone(),
+                source: source.clone(),
+                translated: translated.clone(),
+                comparison,
+            })
+        })
+        .collect::<Vec<_>>();
 
     let mut warnings = Vec::new();
     if from_defs.files_total == 0 {
@@ -189,6 +224,12 @@ fn build_loc_sync_report(root: &Path, from: &str, to: &str) -> Result<LocSyncRep
             "duplicate localisation keys should be resolved before translation sync".to_string(),
         );
     }
+    if !token_mismatches.is_empty() {
+        warnings.push(format!(
+            "{} common key(s) have mismatched HOI4 localisation tokens between `{from}` and `{to}`",
+            token_mismatches.len()
+        ));
+    }
 
     Ok(LocSyncReport {
         from: from.to_string(),
@@ -202,9 +243,11 @@ fn build_loc_sync_report(root: &Path, from: &str, to: &str) -> Result<LocSyncRep
         extra_in_to,
         duplicate_from,
         duplicate_to,
+        token_mismatches,
         warnings,
         suggested_commands: vec![
             format!("hoi4skill translate-localisation --mod-root <mod-root> --from {from} --to {to} --format prompt --output loc_sync_{from}_to_{to}.md"),
+            format!("hoi4skill localisation-token-check --source <mod-root>/localisation/{from} --translated <mod-root>/localisation/{to} --strict --output loc_token_check_{from}_to_{to}.json"),
             format!("hoi4skill loc-audit <mod-root> --output loc_audit_{from}_{to}.json"),
             "hoi4skill validate <mod-root> --changed-only --strict-code-index".to_string(),
         ],
@@ -215,6 +258,7 @@ struct LanguageLocalisationDefinitions {
     files_total: usize,
     keys: BTreeMap<String, Vec<String>>,
     locations: BTreeMap<String, Vec<String>>,
+    values: BTreeMap<String, LocalisationTokenEntry>,
 }
 
 fn collect_language_localisation_definitions(
@@ -225,11 +269,13 @@ fn collect_language_localisation_definitions(
     let mut files_total = 0;
     let mut keys = BTreeMap::<String, Vec<String>>::new();
     let mut locations = BTreeMap::<String, Vec<String>>::new();
+    let mut values = BTreeMap::<String, LocalisationTokenEntry>::new();
     if !language_root.exists() {
         return Ok(LanguageLocalisationDefinitions {
             files_total,
             keys,
             locations,
+            values,
         });
     }
     for file in collect_files(&language_root)? {
@@ -243,18 +289,30 @@ fn collect_language_localisation_definitions(
         }
         files_total += 1;
         let rel = rel_slash(root, &file);
-        for (line_no, key) in localisation_keys_with_lines(&read_utf8_lossy(&file)?) {
+        let text = read_utf8_lossy(&file)?;
+        for (line_idx, line) in text.lines().enumerate() {
+            let line_no = line_idx + 1;
+            let Some((key, value)) = parse_localisation_line(line) else {
+                continue;
+            };
             keys.entry(key.clone()).or_default().push(rel.clone());
             locations
-                .entry(key)
+                .entry(key.clone())
                 .or_default()
                 .push(format!("{rel}:{line_no}"));
+            values.entry(key.clone()).or_insert(LocalisationTokenEntry {
+                key,
+                value,
+                file: rel.clone(),
+                line: line_no,
+            });
         }
     }
     Ok(LanguageLocalisationDefinitions {
         files_total,
         keys,
         locations,
+        values,
     })
 }
 
@@ -347,6 +405,36 @@ fn collect_project_localisation_refs(
     Ok(refs)
 }
 
+fn collect_localisation_token_audit_issues(root: &Path) -> Result<Vec<LocTokenIssue>, String> {
+    let loc_root = root.join("localisation");
+    if !loc_root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut issues = Vec::new();
+    for file in collect_files(&loc_root)? {
+        if !is_localisation_yml(&file) {
+            continue;
+        }
+        let rel = rel_slash(root, &file);
+        let text = read_utf8_lossy(&file)?;
+        for (line_no, line) in text.lines().enumerate() {
+            let Some((key, value)) = parse_localisation_line(line) else {
+                continue;
+            };
+            let (_, token_issues) = extract_localisation_tokens(&value);
+            if !token_issues.is_empty() {
+                issues.push(LocTokenIssue {
+                    key,
+                    file: rel.clone(),
+                    line: line_no + 1,
+                    issues: token_issues,
+                });
+            }
+        }
+    }
+    Ok(issues)
+}
+
 fn add_loc_audit_ref(refs: &mut BTreeMap<String, BTreeSet<String>>, key: &str, file: &str) {
     refs.entry(key.to_string())
         .or_default()
@@ -380,7 +468,7 @@ fn loc_audit_json(
     max_items: usize,
 ) -> String {
     format!(
-        "{{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"mod_root\": {},\n  \"input\": {},\n  \"input_kind\": {},\n  \"files_total\": {},\n  \"keys_total\": {},\n  \"refs_total\": {},\n  \"missing_count\": {},\n  \"orphan_count\": {},\n  \"duplicate_count\": {},\n  \"changed_files\": {},\n  \"languages\": {},\n  \"missing\": {},\n  \"orphan\": {},\n  \"duplicate\": {}\n}}\n",
+        "{{\n  \"schema\": \"hoi4skill.loc_audit.v1\",\n  \"mod_root\": {},\n  \"input\": {},\n  \"input_kind\": {},\n  \"files_total\": {},\n  \"keys_total\": {},\n  \"refs_total\": {},\n  \"missing_count\": {},\n  \"orphan_count\": {},\n  \"duplicate_count\": {},\n  \"token_issue_count\": {},\n  \"changed_files\": {},\n  \"languages\": {},\n  \"missing\": {},\n  \"orphan\": {},\n  \"duplicate\": {},\n  \"token_issues\": {}\n}}\n",
         json_str(&resolved.root.display().to_string()),
         json_str(&resolved.input.display().to_string()),
         json_str(&resolved.input_kind),
@@ -390,11 +478,13 @@ fn loc_audit_json(
         report.missing.len(),
         report.orphan.len(),
         report.duplicate.len(),
+        report.token_issues.len(),
         json_array(changed_files),
         json_i64_object(&report.languages),
         loc_issues_json(&report.missing, max_items),
         loc_issues_json(&report.orphan, max_items),
-        loc_issues_json(&report.duplicate, max_items)
+        loc_issues_json(&report.duplicate, max_items),
+        loc_token_issues_json(&report.token_issues, max_items)
     )
 }
 
@@ -404,7 +494,7 @@ fn loc_sync_report_json(
     max_items: usize,
 ) -> String {
     format!(
-        "{{\n  \"schema\": \"hoi4skill.loc_sync_report.v1\",\n  \"mod_root\": {},\n  \"input\": {},\n  \"input_kind\": {},\n  \"from\": {},\n  \"to\": {},\n  \"from_files_total\": {},\n  \"to_files_total\": {},\n  \"from_keys_total\": {},\n  \"to_keys_total\": {},\n  \"common_count\": {},\n  \"missing_in_to_count\": {},\n  \"extra_in_to_count\": {},\n  \"duplicate_from_count\": {},\n  \"duplicate_to_count\": {},\n  \"missing_in_to\": {},\n  \"extra_in_to\": {},\n  \"duplicate_from\": {},\n  \"duplicate_to\": {},\n  \"warnings\": {},\n  \"suggested_commands\": {}\n}}\n",
+        "{{\n  \"schema\": \"hoi4skill.loc_sync_report.v1\",\n  \"mod_root\": {},\n  \"input\": {},\n  \"input_kind\": {},\n  \"from\": {},\n  \"to\": {},\n  \"from_files_total\": {},\n  \"to_files_total\": {},\n  \"from_keys_total\": {},\n  \"to_keys_total\": {},\n  \"common_count\": {},\n  \"missing_in_to_count\": {},\n  \"extra_in_to_count\": {},\n  \"duplicate_from_count\": {},\n  \"duplicate_to_count\": {},\n  \"token_mismatch_count\": {},\n  \"missing_in_to\": {},\n  \"extra_in_to\": {},\n  \"duplicate_from\": {},\n  \"duplicate_to\": {},\n  \"token_mismatches\": {},\n  \"warnings\": {},\n  \"suggested_commands\": {}\n}}\n",
         json_str(&resolved.root.display().to_string()),
         json_str(&resolved.input.display().to_string()),
         json_str(&resolved.input_kind),
@@ -419,10 +509,12 @@ fn loc_sync_report_json(
         report.extra_in_to.len(),
         report.duplicate_from.len(),
         report.duplicate_to.len(),
+        report.token_mismatches.len(),
         loc_issues_json(&report.missing_in_to, max_items),
         loc_issues_json(&report.extra_in_to, max_items),
         loc_issues_json(&report.duplicate_from, max_items),
         loc_issues_json(&report.duplicate_to, max_items),
+        loc_token_mismatches_json(&report.token_mismatches, max_items),
         json_array(&report.warnings),
         json_array(&report.suggested_commands)
     )
@@ -446,16 +538,60 @@ fn loc_issues_json(issues: &[LocIssue], max_items: usize) -> String {
     )
 }
 
+fn loc_token_issues_json(issues: &[LocTokenIssue], max_items: usize) -> String {
+    format!(
+        "[{}]",
+        issues
+            .iter()
+            .take(max_items)
+            .map(|issue| {
+                format!(
+                    "{{\"key\": {}, \"file\": {}, \"line\": {}, \"issues\": {}}}",
+                    json_str(&issue.key),
+                    json_str(&issue.file),
+                    issue.line,
+                    localisation_token_issues_json(&issue.issues)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn loc_token_mismatches_json(issues: &[LocTokenMismatch], max_items: usize) -> String {
+    format!(
+        "[{}]",
+        issues
+            .iter()
+            .take(max_items)
+            .map(|issue| {
+                format!(
+                    "{{\"key\": {}, \"source\": {}, \"translated\": {}, \"comparison\": {}}}",
+                    json_str(&issue.key),
+                    localisation_token_entry_json(&issue.source),
+                    localisation_token_entry_json(&issue.translated),
+                    localisation_token_comparison_json(&issue.comparison)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 fn loc_audit_changed_files(root: &Path, map: &ArgMap) -> Result<Vec<String>, String> {
     let mut files = Vec::new();
-    for raw in repeated_values(map, "changed") {
-        let path = PathBuf::from(raw);
-        let rel = if path.is_absolute() {
-            relative_slash_path(root, &path)
-        } else {
-            slash_path(&path)
-        };
-        files.push(rel);
+    for key in ["changed", "changed-file"] {
+        for raw in repeated_values(map, key) {
+            let path = PathBuf::from(raw);
+            let rel = if path.is_absolute() {
+                relative_slash_path(root, &path)
+            } else {
+                slash_path(&path)
+            };
+            if !files.iter().any(|item| item == &rel) {
+                files.push(rel);
+            }
+        }
     }
     Ok(files)
 }
@@ -466,6 +602,12 @@ fn loc_issue_touches_changed(issue: &LocIssue, changed_files: &[String]) -> bool
             .iter()
             .any(|changed| file == changed || file.starts_with(&format!("{changed}:")))
     })
+}
+
+fn loc_token_issue_touches_changed(issue: &LocTokenIssue, changed_files: &[String]) -> bool {
+    changed_files
+        .iter()
+        .any(|changed| issue.file == *changed || issue.file.starts_with(&format!("{changed}:")))
 }
 
 fn loc_language_from_rel(rel: &str) -> Option<String> {

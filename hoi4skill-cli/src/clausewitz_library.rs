@@ -35,9 +35,12 @@ pub(crate) fn cmd_build_clausewitz_library(args: &[String]) -> Result<(), String
         .map(normalize_path)
         .transpose()?
         .unwrap_or(default_clausewitz_library_path()?);
-    let count = build_clausewitz_library(std::slice::from_ref(&game_root), &output)?;
-    println!("Vanilla Clausewitz library: {}", output.display());
-    println!("Vanilla examples: {count}");
+    let count = build_empty_clausewitz_library(std::slice::from_ref(&game_root), &output)?;
+    println!(
+        "Official game code snippet output is disabled; metadata-only library: {}",
+        output.display()
+    );
+    println!("Official examples exported: {count}");
     if !code_mod_roots.is_empty() {
         let overlay = mod_overlay_library_path(&output, &code_mod_roots);
         let count = build_clausewitz_library(&code_mod_roots, &overlay)?;
@@ -99,10 +102,13 @@ pub(crate) fn ensure_clausewitz_libraries(
     if path.join("manifest.json").is_file()
         && path.join("index.tsv").is_file()
         && path.join("snippets.dat").is_file()
-        && read_utf8_lossy(&path.join("manifest.json"))?.contains(&format!(
-            "\"source_fingerprint\": {}",
-            json_str(&fingerprint)
-        ))
+        && {
+            let manifest = read_utf8_lossy(&path.join("manifest.json"))?;
+            manifest.contains(&format!(
+                "\"source_fingerprint\": {}",
+                json_str(&fingerprint)
+            )) && manifest.contains("\"official_code_output_disabled\": true")
+        }
     {
         let mut libraries = Vec::new();
         if !code_mod_roots.is_empty() {
@@ -113,7 +119,7 @@ pub(crate) fn ensure_clausewitz_libraries(
         libraries.push(path);
         return Ok(libraries);
     }
-    build_clausewitz_library(&roots, &path)?;
+    build_empty_clausewitz_library(&roots, &path)?;
     let mut libraries = Vec::new();
     if !code_mod_roots.is_empty() {
         let overlay = mod_overlay_library_path(&path, code_mod_roots);
@@ -236,6 +242,7 @@ pub(crate) fn build_clausewitz_library(roots: &[PathBuf], output: &Path) -> Resu
     });
 
     let snippets_path = output.join("snippets.dat");
+    fs::create_dir_all(output).map_err(|e| format!("create {}: {e}", output.display()))?;
     let mut snippets = fs::File::create(&snippets_path)
         .map_err(|e| format!("create {}: {e}", snippets_path.display()))?;
     let mut offset = 0u64;
@@ -279,6 +286,51 @@ pub(crate) fn build_clausewitz_library(roots: &[PathBuf], output: &Path) -> Resu
     )
     .map_err(|e| format!("write Clausewitz library manifest: {e}"))?;
     Ok(examples.len())
+}
+
+fn build_empty_clausewitz_library(roots: &[PathBuf], output: &Path) -> Result<usize, String> {
+    if output.exists() {
+        let known_library = output.join("manifest.json").is_file()
+            && output.join("index.tsv").is_file()
+            && output.join("snippets.dat").is_file();
+        let empty_directory = output
+            .read_dir()
+            .map_err(|e| format!("read {}: {e}", output.display()))?
+            .next()
+            .is_none();
+        if !known_library && !empty_directory {
+            return Err(format!(
+                "refusing to replace non-library directory {}; choose an empty output directory",
+                output.display()
+            ));
+        }
+        fs::remove_dir_all(output)
+            .map_err(|e| format!("replace Clausewitz library {}: {e}", output.display()))?;
+    }
+    fs::create_dir_all(output).map_err(|e| format!("create {}: {e}", output.display()))?;
+    fs::write(output.join("snippets.dat"), b"")
+        .map_err(|e| format!("write empty Clausewitz snippet store: {e}"))?;
+    fs::write(
+        output.join("index.tsv"),
+        "id\tsystem\tsymbol\tsource\toffset\tlength\tsearch\n",
+    )
+    .map_err(|e| format!("write empty Clausewitz library index: {e}"))?;
+    let roots_json = roots
+        .iter()
+        .map(|root| json_str(&root.display().to_string()))
+        .collect::<Vec<_>>()
+        .join(", ");
+    fs::write(
+        output.join("manifest.json"),
+        format!(
+            "{{\n  \"format_version\": {},\n  \"source_fingerprint\": {},\n  \"example_count\": 0,\n  \"official_code_output_disabled\": true,\n  \"roots\": [{}]\n}}\n",
+            json_str(LIBRARY_VERSION),
+            json_str(&clausewitz_library_fingerprint(roots)),
+            roots_json
+        ),
+    )
+    .map_err(|e| format!("write empty Clausewitz library manifest: {e}"))?;
+    Ok(0)
 }
 
 fn clausewitz_library_fingerprint(roots: &[PathBuf]) -> String {

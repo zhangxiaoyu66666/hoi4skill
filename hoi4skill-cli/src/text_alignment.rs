@@ -75,7 +75,7 @@ pub(crate) fn check_text_alignment_from_validate_args(
 }
 
 pub(crate) fn has_text_alignment_args(map: &ArgMap) -> bool {
-    ["text-source", "source-file", "input"]
+    ["text-source", "source-file"]
         .iter()
         .any(|key| !repeated_values(map, key).is_empty())
         || !repeated_values(map, "expect-title").is_empty()
@@ -182,7 +182,7 @@ pub(crate) fn expected_texts_from_workflow_input(
 
     let feature_text = extract_card_text(text, FEATURE_CARD_HEADERS);
     for card in parse_cards(&feature_text, FEATURE_CARD_HEADERS) {
-        if is_player_visible_card_kind(&card.kind) {
+        if is_player_visible_card_kind(&card.kind) && !is_author_instruction_text(&card.title) {
             add_expected_text(&mut out, &card.title, format!("card:{}", card.kind));
         }
     }
@@ -191,16 +191,68 @@ pub(crate) fn expected_texts_from_workflow_input(
         add_expected_text(&mut out, &card.title, "card:事件".to_string());
         collect_option_text_expectations(&card, &mut out);
     }
+    collect_localisation_text_expectations(text, &mut out);
     collect_field_text_expectations(text, &mut out);
     dedupe_expected_texts(out)
 }
 
 pub(crate) fn collect_option_text_expectations(card: &Card, out: &mut Vec<ExpectedText>) {
     for (key, value) in &card.fields {
-        if key.starts_with("选项") && !key.contains("效果") && !key.contains("ai") {
+        if key.starts_with("选项")
+            && !key.contains("效果")
+            && !key.to_ascii_lowercase().contains("ai")
+            && !is_event_option_non_visible_field_key(key)
+        {
+            add_expected_text(out, value, format!("field:{key}"));
+        } else if is_event_option_tooltip_field_key(key) {
             add_expected_text(out, value, format!("field:{key}"));
         }
     }
+}
+
+pub(crate) fn is_event_option_tooltip_field_key(key: &str) -> bool {
+    let tooltip_tails = ["提示", "效果提示", "自定义提示", "工具提示", "tooltip"];
+    if tooltip_tails.iter().any(|tail| {
+        key.strip_prefix("选项")
+            .and_then(|rest| rest.strip_suffix(tail))
+            .is_some_and(|suffix| !suffix.trim().is_empty())
+    }) {
+        return true;
+    }
+    [
+        "提示",
+        "效果提示",
+        "自定义提示",
+        "工具提示",
+        "选项提示",
+        "tooltip",
+        "custom_effect_tooltip",
+    ]
+    .iter()
+    .any(|prefix| {
+        key.strip_prefix(prefix)
+            .is_some_and(|suffix| !suffix.trim().is_empty())
+    })
+}
+
+pub(crate) fn is_event_option_non_visible_field_key(key: &str) -> bool {
+    [
+        "条件",
+        "触发条件",
+        "可见条件",
+        "显示条件",
+        "可选条件",
+        "后续事件",
+        "后续类型",
+        "后续事件类型",
+        "下一事件",
+        "下一事件类型",
+        "延迟",
+        "延迟天数",
+        "后续延迟",
+    ]
+    .iter()
+    .any(|marker| key.contains(marker))
 }
 
 pub(crate) fn collect_field_text_expectations(text: &str, out: &mut Vec<ExpectedText>) {
@@ -209,10 +261,55 @@ pub(crate) fn collect_field_text_expectations(text: &str, out: &mut Vec<Expected
         let Some((key, value)) = split_field(trimmed) else {
             continue;
         };
-        if is_expected_text_field_key(key) {
+        if is_expected_text_field_key(key) && !is_author_instruction_text(value) {
             add_expected_text(out, value, format!("field:{key}"));
         }
     }
+}
+
+pub(crate) fn collect_localisation_text_expectations(text: &str, out: &mut Vec<ExpectedText>) {
+    for entry in workflow_localisation_entries(text) {
+        if let Some(value) = workflow_localisation_visible_value(&entry) {
+            add_expected_text(out, value, "localisation_entry".to_string());
+        }
+    }
+}
+
+pub(crate) fn workflow_localisation_visible_value(entry: &str) -> Option<&str> {
+    let entry = entry.trim();
+    if entry.is_empty() {
+        return None;
+    }
+    if let Some((key, value)) = entry.split_once('=') {
+        if looks_like_localisation_key(key) {
+            return non_empty_trimmed(value);
+        }
+    }
+    if let Some((key, value)) = split_field(entry) {
+        if looks_like_localisation_key(key) {
+            return non_empty_trimmed(value);
+        }
+    }
+    non_empty_trimmed(entry)
+}
+
+fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let value = value.trim().trim_matches('"').trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+fn looks_like_localisation_key(value: &str) -> bool {
+    let value = value.trim().trim_matches('"').trim();
+    if value.is_empty() || value.chars().any(char::is_whitespace) {
+        return false;
+    }
+    value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '.' | '-'))
 }
 
 pub(crate) fn is_player_visible_card_kind(kind: &str) -> bool {
@@ -220,6 +317,10 @@ pub(crate) fn is_player_visible_card_kind(kind: &str) -> bool {
         feature_card_type(kind),
         Some("decision" | "idea" | "technology" | "gui")
     )
+}
+
+fn is_author_instruction_text(value: &str) -> bool {
+    contains_any(value, &["替换为", "效果为", "增加民族精神", "移除民族精神"])
 }
 
 pub(crate) fn is_expected_text_field_key(key: &str) -> bool {
@@ -387,13 +488,63 @@ pub(crate) fn parse_localisation_line_value(rest: &str) -> String {
 }
 
 pub(crate) fn normalize_text_for_alignment(value: &str) -> String {
-    value
+    normalize_text_alignment_markup(value)
         .trim_start_matches('\u{feff}')
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .trim()
         .to_string()
+}
+
+fn normalize_text_alignment_markup(value: &str) -> String {
+    let mut out = String::new();
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '§' {
+            chars.next();
+            continue;
+        }
+        if ch == '【' {
+            let mut inner = String::new();
+            let mut closed = false;
+            for next in chars.by_ref() {
+                if next == '】' {
+                    closed = true;
+                    break;
+                }
+                inner.push(next);
+            }
+            if closed {
+                if let Some((prefix, text)) = inner.split_once('：') {
+                    if is_alignment_colour_label(prefix) {
+                        out.push_str(text);
+                    } else {
+                        out.push('【');
+                        out.push_str(&inner);
+                        out.push('】');
+                    }
+                } else {
+                    out.push('【');
+                    out.push_str(&inner);
+                    out.push('】');
+                }
+                continue;
+            }
+            out.push('【');
+            out.push_str(&inner);
+            continue;
+        }
+        out.push(ch);
+    }
+    out
+}
+
+fn is_alignment_colour_label(value: &str) -> bool {
+    matches!(
+        value.trim(),
+        "红色" | "黄色" | "绿色" | "蓝色" | "白色" | "灰色" | "橙色" | "紫色" | "黑色"
+    )
 }
 
 pub(crate) fn text_alignment_report_json(report: &TextAlignmentReport) -> String {

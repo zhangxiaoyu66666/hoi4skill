@@ -37,6 +37,7 @@ pub(crate) fn cmd_translate_localisation(args: &[String]) -> Result<(), String> 
     let max_items = parse_usize_option(&map, "max-items", usize::MAX)?;
     let include_existing = map.flags.contains("include-existing");
     let overwrite = map.flags.contains("overwrite");
+    let allow_token_mismatch = map.flags.contains("allow-token-mismatch");
     let translated_inputs = repeated_values(&map, "translated-input")
         .into_iter()
         .chain(repeated_values(&map, "translation"))
@@ -81,6 +82,7 @@ pub(crate) fn cmd_translate_localisation(args: &[String]) -> Result<(), String> 
             &to,
             &translations,
             overwrite,
+            allow_token_mismatch,
         )?;
         return write_or_print(
             &report,
@@ -155,6 +157,7 @@ pub(crate) fn apply_localisation_translations(
     to: &str,
     translations: &BTreeMap<String, String>,
     overwrite: bool,
+    allow_token_mismatch: bool,
 ) -> Result<String, String> {
     let target_dir = mod_root.join("localisation").join(to);
     fs::create_dir_all(&target_dir).map_err(|e| format!("create {}: {e}", target_dir.display()))?;
@@ -170,6 +173,7 @@ pub(crate) fn apply_localisation_translations(
     let mut existing_keys = Vec::new();
     let mut missing_keys = Vec::new();
     let mut suspicious_same_as_source = Vec::new();
+    let mut token_mismatches = Vec::new();
 
     for entry in &source_entries {
         if existing_before.contains(&entry.key) && !overwrite {
@@ -185,12 +189,30 @@ pub(crate) fn apply_localisation_translations(
         if translated_value.trim() == entry.value.trim() && from != to {
             suspicious_same_as_source.push(entry.key.clone());
         }
+        let token_comparison = compare_localisation_tokens(&entry.value, translated_value);
+        if !token_comparison.ok() {
+            token_mismatches.push(format!(
+                "{{\"key\": {}, \"source_file\": {}, \"comparison\": {}}}",
+                json_str(&entry.key),
+                json_str(&entry.source_file),
+                localisation_token_comparison_json(&token_comparison)
+            ));
+            if !allow_token_mismatch {
+                continue;
+            }
+        }
         let target = target_dir.join(target_file_name_for_source(entry, from, to));
         grouped
             .entry(target)
             .or_default()
             .insert(entry.key.clone(), translated_value.clone());
         written_keys.push(entry.key.clone());
+    }
+    if !allow_token_mismatch && !token_mismatches.is_empty() {
+        return Err(format!(
+            "localisation token mismatch blocked translation apply; preserve every `$...$`, `[... ]`, `§...`, `£...`, `\\n`, `%`, and `^` token or rerun with --allow-token-mismatch after manual review:\n[{}]",
+            token_mismatches.join(", ")
+        ));
     }
 
     let mut written_files = Vec::new();
@@ -223,7 +245,7 @@ pub(crate) fn apply_localisation_translations(
             "\"from\": {}, \"to\": {}, \"source_keys_total\": {}, \"translated_keys_total\": {}, ",
             "\"written_files\": {}, \"written_keys\": {}, \"appended_keys\": {}, \"updated_keys\": {}, ",
             "\"existing_keys\": {}, \"missing_keys\": {}, \"missing_after_apply\": {}, ",
-            "\"translated_unused_keys\": {}, \"suspicious_same_as_source\": {}}}\n"
+            "\"translated_unused_keys\": {}, \"suspicious_same_as_source\": {}, \"token_mismatches\": {}}}\n"
         ),
         json_str(from),
         json_str(to),
@@ -237,7 +259,8 @@ pub(crate) fn apply_localisation_translations(
         json_array(&missing_keys),
         json_array(&missing_after_apply),
         json_array(&translated_unused_keys),
-        json_array(&suspicious_same_as_source)
+        json_array(&suspicious_same_as_source),
+        format!("[{}]", token_mismatches.join(", "))
     ))
 }
 

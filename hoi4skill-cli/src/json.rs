@@ -45,6 +45,10 @@ pub(crate) fn json_optional_str(value: Option<&str>) -> String {
     value.map(json_str).unwrap_or_else(|| "null".to_string())
 }
 
+pub(crate) fn json_optional_bool(value: Option<bool>) -> String {
+    value.map(json_bool).unwrap_or("null").to_string()
+}
+
 pub(crate) fn json_optional_i64(value: Option<i64>) -> String {
     value
         .map(|value| value.to_string())
@@ -73,12 +77,34 @@ pub(crate) fn json_i64_object(values: &BTreeMap<String, i64>) -> String {
     )
 }
 
+pub(crate) fn json_i64_entries(values: &BTreeMap<String, i64>) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|(k, v)| format!("{{\"key\": {}, \"value\": {}}}", json_str(k), v))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
 pub(crate) fn json_object(values: &BTreeMap<String, String>) -> String {
     format!(
         "{{{}}}",
         values
             .iter()
             .map(|(k, v)| format!("{}: {}", json_str(k), json_str(v)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+pub(crate) fn json_string_entries(values: &BTreeMap<String, String>) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(|(k, v)| format!("{{\"key\": {}, \"value\": {}}}", json_str(k), json_str(v)))
             .collect::<Vec<_>>()
             .join(", ")
     )

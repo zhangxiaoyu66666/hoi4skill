@@ -12,6 +12,14 @@ sov_nep_demo/
 sov_nep_demo.mod
 TIEBA_POST.md
 TAURI_RUST_FLUENT_DESKTOP_ROADMAP.md
+CLI_CORE_AI_MOD_RESEARCH_PLAN.md
+COMMON_COVERAGE_GAP_RESEARCH.md
+GUI_AUTOMATION_VALIDATION_TARGETS.md
+HOI4_CLI_*_PLAN.md
+MAP_DATA_P_PLAN.md
+NON_VISUAL_LARGE_MOD_P_PLAN.md
+OPENCODE_HOI4_WORKBENCH_RESEARCH.md
+chen_duxiu_ccp_focus_layout.txt
 
 # Local scratch and generated reports
 _scratch/

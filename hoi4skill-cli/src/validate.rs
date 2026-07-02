@@ -12,11 +12,11 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
         .or_else(|| map.values.get("mod-root").cloned())
         .ok_or_else(|| "missing mod root".to_string())?;
     let root = normalize_path(&root)?;
-    let dependency_mods = dependency_mod_roots(&map)?;
-    let game_index = value(&map, "game-root")
-        .map(normalize_path)
-        .transpose()?
-        .map(|path| build_game_index_with_mod_paths(&path, &dependency_mods))
+    let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
+    let dependency_mods = dependency_mod_roots_for_edited_mod(&map, &root, game_root.is_some())?;
+    let game_index = game_root
+        .as_ref()
+        .map(|path| build_game_index_with_mod_paths(path, &dependency_mods))
         .transpose()?;
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during validation".to_string());
@@ -27,7 +27,13 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
         check_request_scope_for_new_mod(&root, request, &mut reporter);
     }
     check_text_alignment_from_validate_args(&root, &map, &mut reporter)?;
-    let report = validation_report_from_args(&root, &map, &reporter)?;
+    let report = validation_report_from_args(
+        &root,
+        &map,
+        &reporter,
+        game_root.as_deref(),
+        &dependency_mods,
+    )?;
     report.effective_reporter.print();
     if let Some(output) = value(&map, "output") {
         write_or_print(&validation_report_json(&report), Some(output))?;
@@ -35,8 +41,221 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
     if report.effective_reporter.errors.is_empty() {
         Ok(())
     } else {
+        if let (Some(game_root), Some(game_index)) = (game_root.as_deref(), game_index.as_ref()) {
+            write_auto_validation_repair_context_artifacts(
+                &root,
+                game_root,
+                &dependency_mods,
+                &report,
+                game_index,
+                &map,
+            )?;
+        }
         Err("validation failed".to_string())
     }
+}
+
+pub(crate) fn cmd_validation_baseline(args: &[String]) -> Result<(), String> {
+    let map = parse_args(args);
+    let root = map
+        .positionals
+        .first()
+        .cloned()
+        .or_else(|| map.values.get("mod-root").cloned())
+        .ok_or_else(|| "missing mod root".to_string())?;
+    let root = normalize_path(&root)?;
+    let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
+    let dependency_mods = dependency_mod_roots_for_edited_mod(&map, &root, game_root.is_some())?;
+    let game_index = game_root
+        .as_ref()
+        .map(|path| build_game_index_with_mod_paths(path, &dependency_mods))
+        .transpose()?;
+    if game_index.is_none() && !dependency_mods.is_empty() {
+        return Err("--mod-path requires --game-root during validation".to_string());
+    }
+    let options = validation_options_from_args(&map);
+    let mut reporter = validate_mod_with_options(&root, game_index.as_ref(), options)?;
+    if let Some(request) = value(&map, "request") {
+        check_request_scope_for_new_mod(&root, request, &mut reporter);
+    }
+    check_text_alignment_from_validate_args(&root, &map, &mut reporter)?;
+    let report = validation_report_from_args(
+        &root,
+        &map,
+        &reporter,
+        game_root.as_deref(),
+        &dependency_mods,
+    )?;
+    let output = value(&map, "output")
+        .or_else(|| value(&map, "baseline-output"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join(".hoi4skill").join("validation_baseline.json"));
+    let output_string = output.display().to_string();
+    write_or_print(&validation_report_json(&report), Some(&output_string))?;
+    println!(
+        "validation baseline written: {} (errors={}, warnings={})",
+        output.display(),
+        report.total_errors,
+        report.total_warnings
+    );
+    Ok(())
+}
+
+pub(crate) fn cmd_validate_repair_context(args: &[String]) -> Result<(), String> {
+    let map = parse_args(args);
+    let root = map
+        .positionals
+        .first()
+        .cloned()
+        .or_else(|| map.values.get("mod-root").cloned())
+        .ok_or_else(|| "missing mod root".to_string())?;
+    let root = normalize_path(&root)?;
+    let game_root = value(&map, "game-root")
+        .map(normalize_path)
+        .transpose()?
+        .ok_or_else(|| "validate-repair-context requires --game-root".to_string())?;
+    let dependency_mods = dependency_mod_roots_for_edited_mod(&map, &root, true)?;
+    let game_index = build_game_index_with_mod_paths(&game_root, &dependency_mods)?;
+    let mut options = validation_options_from_args(&map);
+    options.strict_code_index = true;
+    let mut reporter = validate_mod_with_options(&root, Some(&game_index), options)?;
+    if let Some(request) = value(&map, "request") {
+        check_request_scope_for_new_mod(&root, request, &mut reporter);
+    }
+    check_text_alignment_from_validate_args(&root, &map, &mut reporter)?;
+    let report =
+        validation_report_from_args(&root, &map, &reporter, Some(&game_root), &dependency_mods)?;
+    let max_items = value(&map, "max-items")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20)
+        .max(1);
+    let max_examples = value(&map, "max-examples")
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(3);
+    let library_path = value(&map, "code-library")
+        .map(normalize_path)
+        .transpose()?
+        .unwrap_or_else(|| {
+            root.join(".hoi4skill")
+                .join("validation_clausewitz_library")
+        });
+    let (libraries, retrieval_error) = if map.flags.contains("no-code-examples") {
+        (Vec::new(), None)
+    } else {
+        match ensure_clausewitz_libraries(&game_root, &dependency_mods, Some(&library_path)) {
+            Ok(libraries) => (libraries, None),
+            Err(err) => (Vec::new(), Some(err)),
+        }
+    };
+    let json = validation_repair_context_json(
+        &root,
+        &game_root,
+        &dependency_mods,
+        &report,
+        &game_index,
+        &libraries,
+        retrieval_error.as_deref(),
+        max_items,
+        max_examples,
+    );
+    if let Some(markdown_output) =
+        value(&map, "markdown-output").or_else(|| value(&map, "md-output"))
+    {
+        let markdown = validation_repair_context_markdown(
+            &root,
+            &game_root,
+            &dependency_mods,
+            &report,
+            &game_index,
+            &libraries,
+            retrieval_error.as_deref(),
+            max_items,
+            max_examples,
+        );
+        write_or_print(&markdown, Some(markdown_output))?;
+    }
+    write_or_print(&json, value(&map, "output"))?;
+    Ok(())
+}
+
+fn write_auto_validation_repair_context_artifacts(
+    root: &Path,
+    game_root: &Path,
+    dependency_mods: &[PathBuf],
+    report: &ValidationReport,
+    index: &GameIndex,
+    map: &ArgMap,
+) -> Result<(), String> {
+    if map.flags.contains("no-repair-context") || map.flags.contains("skip-repair-context") {
+        return Ok(());
+    }
+    let max_items = value(map, "repair-context-max-items")
+        .or_else(|| value(map, "max-items"))
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(20)
+        .max(1);
+    let max_examples = value(map, "repair-context-max-examples")
+        .or_else(|| value(map, "max-examples"))
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(3);
+    let library_path = value(map, "code-library")
+        .map(normalize_path)
+        .transpose()?
+        .unwrap_or_else(|| {
+            root.join(".hoi4skill")
+                .join("validation_clausewitz_library")
+        });
+    let (libraries, retrieval_error) = if map.flags.contains("no-code-examples") {
+        (Vec::new(), None)
+    } else {
+        match ensure_clausewitz_libraries(game_root, dependency_mods, Some(&library_path)) {
+            Ok(libraries) => (libraries, None),
+            Err(err) => (Vec::new(), Some(err)),
+        }
+    };
+    let output_dir = root.join(".hoi4skill");
+    fs::create_dir_all(&output_dir).map_err(|e| format!("create {}: {e}", output_dir.display()))?;
+    let json_path = value(map, "repair-context-output")
+        .map(normalize_path)
+        .transpose()?
+        .unwrap_or_else(|| output_dir.join("ai_repair_context.json"));
+    let markdown_path = value(map, "repair-context-markdown-output")
+        .or_else(|| value(map, "repair-context-md-output"))
+        .map(normalize_path)
+        .transpose()?
+        .unwrap_or_else(|| output_dir.join("ai_repair_context.md"));
+    let json = validation_repair_context_json(
+        root,
+        game_root,
+        dependency_mods,
+        report,
+        index,
+        &libraries,
+        retrieval_error.as_deref(),
+        max_items,
+        max_examples,
+    );
+    let markdown = validation_repair_context_markdown(
+        root,
+        game_root,
+        dependency_mods,
+        report,
+        index,
+        &libraries,
+        retrieval_error.as_deref(),
+        max_items,
+        max_examples,
+    );
+    if let Some(parent) = json_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    if let Some(parent) = markdown_path.parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
+    }
+    fs::write(&json_path, json).map_err(|e| format!("write {}: {e}", json_path.display()))?;
+    fs::write(&markdown_path, markdown)
+        .map_err(|e| format!("write {}: {e}", markdown_path.display()))?;
+    Ok(())
 }
 
 pub(crate) fn validation_options_from_args(map: &ArgMap) -> ValidationOptions {
@@ -151,6 +370,23 @@ pub(crate) fn validate_mod_with_options(
     options: ValidationOptions,
 ) -> Result<Reporter, String> {
     let mut reporter = Reporter::default();
+    let mut effective_game_index = None;
+    if let Some(index) = game_index {
+        let mut index = index.clone();
+        if root.is_dir() {
+            let root_key = slash_path(root).to_ascii_lowercase();
+            if !index
+                .indexed_roots
+                .iter()
+                .any(|indexed| slash_path(indexed).to_ascii_lowercase() == root_key)
+            {
+                index.indexed_roots.push(root.to_path_buf());
+            }
+            collect_game_index_root(&mut index, root)?;
+        }
+        effective_game_index = Some(index);
+    }
+    let game_index = effective_game_index.as_ref().or(game_index);
     let mut ids: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut namespaces: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut localisation_keys: BTreeSet<String> = BTreeSet::new();
@@ -158,6 +394,7 @@ pub(crate) fn validate_mod_with_options(
     let mut sprite_names: BTreeSet<String> = BTreeSet::new();
     let mut gfx_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut idea_picture_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
+    let mut event_picture_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut tag_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut focus_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut local_focus_ids: BTreeSet<String> = BTreeSet::new();
@@ -187,11 +424,12 @@ pub(crate) fn validate_mod_with_options(
                 collect_localisation_refs(&file, &text, &mut localisation_refs, &mut reporter);
                 if ext == "gfx" && norm.contains("/interface/") {
                     collect_sprite_names(&text, &mut sprite_names);
-                    check_sprite_textures(root, &file, &text, &mut reporter);
+                    check_sprite_textures(root, &file, &text, game_index, &mut reporter);
                 } else {
                     collect_gfx_refs(&file, &text, &mut gfx_refs);
                 }
                 collect_idea_picture_refs(&file, &text, &mut idea_picture_refs, &mut reporter);
+                collect_event_picture_refs(&file, &text, &mut event_picture_refs);
                 collect_country_tag_refs(&file, &text, &mut tag_refs);
                 collect_focus_refs(&file, &text, &mut focus_refs, &mut local_focus_ids);
                 collect_game_data_refs(&file, &text, &mut game_data_refs);
@@ -207,6 +445,13 @@ pub(crate) fn validate_mod_with_options(
                 let text = read_utf8_lossy(&file)?;
                 if norm.contains("/localisation/") {
                     check_localisation(&file, &mut reporter);
+                    check_indexed_localisation_tokens(
+                        &file,
+                        &text,
+                        game_index,
+                        options,
+                        &mut reporter,
+                    );
                     collect_localisation_keys(&text, &mut localisation_keys);
                 } else {
                     check_yaml_duplicate_keys(&file, &text, &mut reporter);
@@ -260,15 +505,15 @@ pub(crate) fn validate_mod_with_options(
         }
     }
     for (key, paths) in localisation_refs {
-        if !localisation_keys.contains(&key) {
-            reporter.warn(format!(
-                "localisation key {key} is referenced but not defined in this mod: {}",
-                paths
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+        if !is_known_localisation_key(&key, &localisation_keys, game_index) {
+            report_paths(
+                &mut reporter,
+                game_index.is_some() || options.strict_code_index,
+                format!(
+                    "localisation key {key} is referenced but not defined in this mod or indexed roots"
+                ),
+                &paths,
+            );
         }
     }
     for (sprite, paths) in gfx_refs {
@@ -297,6 +542,31 @@ pub(crate) fn validate_mod_with_options(
                 game_index.is_some() || options.strict_code_index,
                 format!(
                     "idea picture {picture} requires a registered GFX_idea_{picture} sprite in this mod or indexed roots"
+                ),
+                &paths,
+            );
+        }
+    }
+    let local_event_pictures = sprite_names
+        .iter()
+        .filter(|sprite| sprite.starts_with("GFX_report_event_"))
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for (picture, paths) in event_picture_refs {
+        let known = local_event_pictures.contains(&picture)
+            || game_index.is_some_and(|index| index.event_pictures.contains(&picture))
+            || (!options.strict_code_index
+                && game_index.is_none()
+                && picture.starts_with("GFX_report_event_"));
+        if !known {
+            let related = game_index
+                .map(|index| related_code_symbols_text(index, &picture, Some("event_picture")))
+                .unwrap_or_default();
+            report_paths(
+                &mut reporter,
+                game_index.is_some() || options.strict_code_index,
+                format!(
+                    "event picture {picture} requires a registered event picture sprite in this mod or indexed roots{related}"
                 ),
                 &paths,
             );
@@ -401,6 +671,39 @@ pub(crate) fn validate_mod_with_options(
             options.strict_code_index,
             Some((index, "modifier")),
         );
+        report_unknown_index_refs_if_indexed(
+            "idea",
+            &game_data_refs.ideas,
+            &index.ideas,
+            &mut reporter,
+            true,
+            options.strict_code_index,
+            Some((index, "idea")),
+        );
+        report_dynamic_modifiers_used_as_ideas(
+            &game_data_refs.ideas,
+            index,
+            &mut reporter,
+            options.strict_code_index,
+        );
+        report_unknown_index_refs_if_indexed(
+            "dynamic modifier",
+            &game_data_refs.dynamic_modifiers,
+            &index.dynamic_modifiers,
+            &mut reporter,
+            true,
+            options.strict_code_index,
+            Some((index, "dynamic_modifier")),
+        );
+        report_unknown_index_refs_if_indexed(
+            "dynamic modifier variable",
+            &game_data_refs.dynamic_modifier_variables,
+            &index.dynamic_modifier_variables,
+            &mut reporter,
+            true,
+            options.strict_code_index,
+            Some((index, "dynamic_modifier_variable")),
+        );
     }
     let mut known_focus_ids = local_focus_ids;
     if let Some(index) = game_index {
@@ -429,6 +732,10 @@ pub(crate) struct Reporter {
 }
 
 struct ValidationReport {
+    mod_root: PathBuf,
+    game_root: Option<PathBuf>,
+    dependency_mods: Vec<PathBuf>,
+    strict_code_index: bool,
     total_errors: usize,
     total_warnings: usize,
     baseline_errors: usize,
@@ -441,6 +748,8 @@ fn validation_report_from_args(
     root: &Path,
     map: &ArgMap,
     reporter: &Reporter,
+    game_root: Option<&Path>,
+    dependency_mods: &[PathBuf],
 ) -> Result<ValidationReport, String> {
     let baseline = value(map, "baseline")
         .map(normalize_path)
@@ -472,6 +781,10 @@ fn validation_report_from_args(
     }
 
     Ok(ValidationReport {
+        mod_root: root.to_path_buf(),
+        game_root: game_root.map(Path::to_path_buf),
+        dependency_mods: dependency_mods.to_vec(),
+        strict_code_index: validation_options_from_args(map).strict_code_index,
         total_errors: reporter.errors.len(),
         total_warnings: reporter.warnings.len(),
         baseline_errors,
@@ -482,8 +795,13 @@ fn validation_report_from_args(
 }
 
 fn validation_report_json(report: &ValidationReport) -> String {
+    let dependency_mods = report
+        .dependency_mods
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
     format!(
-        "{{\n  \"schema\": \"hoi4skill.validation_report.v1\",\n  \"ok\": {},\n  \"status\": {},\n  \"total_errors\": {},\n  \"total_warnings\": {},\n  \"effective_errors\": {},\n  \"effective_warnings\": {},\n  \"baseline_errors_filtered\": {},\n  \"baseline_warnings_filtered\": {},\n  \"changed_files\": {},\n  \"errors\": {},\n  \"warnings\": {}\n}}\n",
+        "{{\n  \"schema\": \"hoi4skill.validation_report.v1\",\n  \"ok\": {},\n  \"status\": {},\n  \"mod_root\": {},\n  \"game_root\": {},\n  \"dependency_mods\": {},\n  \"strict_code_index\": {},\n  \"total_errors\": {},\n  \"total_warnings\": {},\n  \"effective_errors\": {},\n  \"effective_warnings\": {},\n  \"baseline_errors_filtered\": {},\n  \"baseline_warnings_filtered\": {},\n  \"changed_files\": {},\n  \"error_groups\": {},\n  \"warning_groups\": {},\n  \"errors\": {},\n  \"warnings\": {}\n}}\n",
         json_bool(report.effective_reporter.errors.is_empty()),
         if report.effective_reporter.errors.is_empty() {
             if report.effective_reporter.warnings.is_empty() {
@@ -494,6 +812,14 @@ fn validation_report_json(report: &ValidationReport) -> String {
         } else {
             json_str("errors")
         },
+        json_str(&report.mod_root.display().to_string()),
+        report
+            .game_root
+            .as_ref()
+            .map(|path| json_str(&path.display().to_string()))
+            .unwrap_or_else(|| "null".to_string()),
+        json_array(&dependency_mods),
+        json_bool(report.strict_code_index),
         report.total_errors,
         report.total_warnings,
         report.effective_reporter.errors.len(),
@@ -501,9 +827,835 @@ fn validation_report_json(report: &ValidationReport) -> String {
         report.baseline_errors,
         report.baseline_warnings,
         json_array(&report.changed_files),
+        validation_issue_groups_json(&report.effective_reporter.errors, 40),
+        validation_issue_groups_json(&report.effective_reporter.warnings, 40),
         json_array(&report.effective_reporter.errors),
         json_array(&report.effective_reporter.warnings)
     )
+}
+
+fn validation_repair_context_json(
+    root: &Path,
+    game_root: &Path,
+    dependency_mods: &[PathBuf],
+    report: &ValidationReport,
+    index: &GameIndex,
+    libraries: &[PathBuf],
+    retrieval_error: Option<&str>,
+    max_items: usize,
+    max_examples: usize,
+) -> String {
+    let items = report
+        .effective_reporter
+        .errors
+        .iter()
+        .take(max_items)
+        .enumerate()
+        .map(|(idx, message)| {
+            validation_repair_item_json_with_context(
+                idx + 1,
+                message,
+                index,
+                Some(root),
+                Some(game_root),
+                dependency_mods,
+                libraries,
+                max_examples,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",\n");
+    let dependency_strings = dependency_mods
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>();
+    let dependency_args = validation_repair_dependency_args(dependency_mods);
+    let changed_args = validation_repair_changed_args(&report.changed_files);
+    let next_commands = vec![
+        format!(
+            "hoi4skill validate {} --game-root {}{} --strict-code-index{} --output .hoi4skill/validation.json",
+            validation_command_path_arg(root),
+            validation_command_path_arg(game_root),
+            dependency_args,
+            changed_args
+        ),
+        format!(
+            "hoi4skill validate-repair-context {} --game-root {}{}{} --output .hoi4skill/ai_repair_context.json",
+            validation_command_path_arg(root),
+            validation_command_path_arg(game_root),
+            dependency_args,
+            changed_args
+        ),
+    ];
+    let ai_rules = vec![
+        "Treat every repair item as blocking until strict validation passes.".to_string(),
+        "Use only indexed candidates, explicit user-provided symbols, or CLI-generated patch plans.".to_string(),
+        "If candidates are empty or ambiguous, ask the user or run check-code-symbol/query-clausewitz-library before writing code.".to_string(),
+        "Do not delete player-visible user text to hide text-alignment failures.".to_string(),
+        "Do not replace dynamic modifiers with national spirits unless the user explicitly changes the design.".to_string(),
+    ];
+    let retrieval_status = if retrieval_error.is_some() {
+        "unavailable"
+    } else if libraries.is_empty() {
+        "disabled"
+    } else {
+        "ok"
+    };
+    format!(
+        "{{\n  \"schema\": \"hoi4skill.validation_repair_context.v1\",\n  \"ok\": {},\n  \"status\": {},\n  \"mod_root\": {},\n  \"game_root\": {},\n  \"dependency_mods\": {},\n  \"changed_files\": {},\n  \"strict_code_index\": true,\n  \"code_example_retrieval\": {{\"status\": {}, \"library_count\": {}, \"error\": {}}},\n  \"effective_errors\": {},\n  \"effective_warnings\": {},\n  \"included_repair_items\": {},\n  \"repair_items\": [\n{}\n  ],\n  \"ai_rules\": {},\n  \"next_commands\": {},\n  \"anti_hallucination_rule\": {}\n}}\n",
+        json_bool(report.effective_reporter.errors.is_empty()),
+        if report.effective_reporter.errors.is_empty() {
+            json_str("ok")
+        } else {
+            json_str("needs_repair")
+        },
+        json_str(&root.display().to_string()),
+        json_str(&game_root.display().to_string()),
+        json_array(&dependency_strings),
+        json_array(&report.changed_files),
+        json_str(retrieval_status),
+        libraries.len(),
+        json_optional_str(retrieval_error),
+        report.effective_reporter.errors.len(),
+        report.effective_reporter.warnings.len(),
+        report.effective_reporter.errors.len().min(max_items),
+        items,
+        json_array(&ai_rules),
+        json_array(&next_commands),
+        json_str("If a symbol, syntax, scope, picture, idea, or modifier is absent from this context and strict code index, fail or ask instead of inventing Clausewitz code.")
+    )
+}
+
+fn validation_repair_context_markdown(
+    root: &Path,
+    game_root: &Path,
+    dependency_mods: &[PathBuf],
+    report: &ValidationReport,
+    index: &GameIndex,
+    libraries: &[PathBuf],
+    retrieval_error: Option<&str>,
+    max_items: usize,
+    max_examples: usize,
+) -> String {
+    let mut out = String::new();
+    out.push_str("# Validation Repair Context\n\n");
+    out.push_str("- schema: `hoi4skill.validation_repair_context.v1`\n");
+    out.push_str(&format!(
+        "- status: `{}`\n",
+        if report.effective_reporter.errors.is_empty() {
+            "ok"
+        } else {
+            "needs_repair"
+        }
+    ));
+    out.push_str(&format!("- mod_root: `{}`\n", root.display()));
+    out.push_str(&format!("- game_root: `{}`\n", game_root.display()));
+    if !dependency_mods.is_empty() {
+        out.push_str("- dependency_mods:\n");
+        for dependency in dependency_mods {
+            out.push_str(&format!("  - `{}`\n", dependency.display()));
+        }
+    }
+    if !report.changed_files.is_empty() {
+        out.push_str("- changed_files:\n");
+        for changed in &report.changed_files {
+            out.push_str(&format!("  - `{}`\n", changed));
+        }
+    }
+    out.push_str(&format!(
+        "- effective_errors: `{}`\n",
+        report.effective_reporter.errors.len()
+    ));
+    out.push_str(&format!(
+        "- effective_warnings: `{}`\n",
+        report.effective_reporter.warnings.len()
+    ));
+    let retrieval_status = if retrieval_error.is_some() {
+        "unavailable"
+    } else if libraries.is_empty() {
+        "disabled"
+    } else {
+        "ok"
+    };
+    out.push_str(&format!(
+        "- code_example_retrieval: `{}` (libraries: `{}`)\n",
+        retrieval_status,
+        libraries.len()
+    ));
+    if let Some(error) = retrieval_error {
+        out.push_str(&format!(
+            "- retrieval_error: `{}`\n",
+            error.replace('`', "'")
+        ));
+    }
+    out.push_str("\n## AI Rules\n\n");
+    out.push_str("- Treat every repair item as blocking until strict validation passes.\n");
+    out.push_str("- Use only indexed candidates, explicitly authorized dependency/user-mod examples, explicit user-provided symbols, or CLI-generated patch plans.\n");
+    out.push_str("- If candidates are empty or ambiguous, ask the user or run `check-code-symbol` / `code-catalog` before writing code.\n");
+    out.push_str("- Do not delete player-visible user text to hide text-alignment failures.\n");
+    out.push_str("- Do not replace dynamic modifiers with national spirits unless the user explicitly changes the design.\n");
+    out.push_str("\n## Repair Items\n\n");
+    if report.effective_reporter.errors.is_empty() {
+        out.push_str("- No blocking repair items.\n");
+    } else {
+        for (idx, message) in report
+            .effective_reporter
+            .errors
+            .iter()
+            .take(max_items)
+            .enumerate()
+        {
+            out.push_str(&validation_repair_item_markdown(
+                idx + 1,
+                message,
+                index,
+                Some(root),
+                Some(game_root),
+                dependency_mods,
+                libraries,
+                max_examples,
+            ));
+            out.push('\n');
+        }
+    }
+    out.push_str("\n## Required Next Commands\n\n");
+    let dependency_args = validation_repair_dependency_args(dependency_mods);
+    out.push_str(&format!(
+        "- `hoi4skill validate {} --game-root {}{} --strict-code-index{} --output .hoi4skill/validation.json`\n",
+        validation_command_path_arg(root),
+        validation_command_path_arg(game_root),
+        dependency_args,
+        validation_repair_changed_args(&report.changed_files)
+    ));
+    out.push_str(&format!(
+        "- `hoi4skill validate-repair-context {} --game-root {}{}{} --output .hoi4skill/ai_repair_context.json --markdown-output .hoi4skill/ai_repair_context.md`\n",
+        validation_command_path_arg(root),
+        validation_command_path_arg(game_root),
+        dependency_args,
+        validation_repair_changed_args(&report.changed_files)
+    ));
+    out.push_str("\n## Anti Hallucination Rule\n\n");
+    out.push_str("If a symbol, syntax, scope, picture, idea, or modifier is absent from this context and strict code index, fail or ask instead of inventing Clausewitz code.\n");
+    out
+}
+
+fn validation_repair_item_markdown(
+    priority: usize,
+    message: &str,
+    index: &GameIndex,
+    mod_root: Option<&Path>,
+    game_root: Option<&Path>,
+    dependency_mods: &[PathBuf],
+    libraries: &[PathBuf],
+    max_examples: usize,
+) -> String {
+    let file = validation_repair_file(message);
+    let (kind, symbol) = validation_repair_kind_symbol(message);
+    let query = symbol.as_deref().unwrap_or(message);
+    let candidates = related_code_symbol_matches(index, query, kind.as_deref(), 8);
+    let repair_queries = validation_repair_queries(message, symbol.as_deref(), &candidates);
+    let examples = validation_repair_code_examples(libraries, &repair_queries, max_examples);
+    let commands = validation_repair_commands(
+        kind.as_deref(),
+        symbol.as_deref(),
+        mod_root,
+        game_root,
+        dependency_mods,
+    );
+    let do_not_fix_by = validation_repair_do_not_fix_by(message, kind.as_deref());
+    let questions = validation_repair_questions(message, symbol.as_deref());
+    let mut out = String::new();
+    out.push_str(&format!(
+        "### {}. {}\n\n",
+        priority,
+        validation_repair_category(message, kind.as_deref())
+    ));
+    out.push_str("- blocking: `true`\n");
+    if let Some(file) = file {
+        out.push_str(&format!("- file: `{}`\n", file.replace('`', "'")));
+    }
+    if let Some(kind) = kind.as_deref() {
+        out.push_str(&format!("- kind: `{kind}`\n"));
+    }
+    if let Some(symbol) = symbol.as_deref() {
+        out.push_str(&format!("- symbol: `{}`\n", symbol.replace('`', "'")));
+    }
+    out.push_str(&format!("- message: `{}`\n", message.replace('`', "'")));
+    out.push_str(&format!(
+        "- required_action: `{}`\n",
+        validation_repair_required_action(message).replace('`', "'")
+    ));
+    out.push_str("\nRelated indexed code:\n");
+    if candidates.is_empty() {
+        out.push_str("- none; ask the user or run `check-code-symbol` instead of guessing.\n");
+    } else {
+        for candidate in candidates.iter().take(8) {
+            out.push_str(&format!(
+                "- `{}` / `{}`: `{}`\n",
+                candidate.category, candidate.kind, candidate.symbol
+            ));
+        }
+    }
+    out.push_str("\nRepair queries:\n");
+    for query in repair_queries.iter().take(8) {
+        out.push_str(&format!("- `{}`\n", query.replace('`', "'")));
+    }
+    if !examples.is_empty() {
+        out.push_str("\nRetrieved local examples:\n");
+        for example in examples.iter().take(max_examples) {
+            out.push_str(&format!(
+                "- `{}` `{}` from `{}`\n",
+                example.system,
+                example.symbol,
+                example.source.replace('`', "'")
+            ));
+            out.push_str(&markdown_fence(
+                "hoi4",
+                &truncate_chars(&example.code, 4_000),
+            ));
+        }
+    }
+    if !questions.is_empty() {
+        out.push_str("\nQuestions if evidence is missing:\n");
+        for question in questions {
+            out.push_str(&format!("- {question}\n"));
+        }
+    }
+    out.push_str("\nDo not fix by:\n");
+    for rule in do_not_fix_by {
+        out.push_str(&format!("- {rule}\n"));
+    }
+    out.push_str("\nSuggested commands:\n");
+    for command in commands {
+        out.push_str(&format!("- `{command}`\n"));
+    }
+    out
+}
+
+fn validation_repair_dependency_args(dependency_mods: &[PathBuf]) -> String {
+    let mut out = String::new();
+    for dependency in dependency_mods {
+        out.push_str(" --mod-path ");
+        out.push_str(&validation_command_path_arg(dependency));
+    }
+    out
+}
+
+fn validation_repair_changed_args(changed_files: &[String]) -> String {
+    if changed_files.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(" --changed-only");
+    for changed in changed_files {
+        out.push_str(" --changed ");
+        out.push_str(&validation_command_path_arg(Path::new(changed)));
+    }
+    out
+}
+
+fn validation_command_path_arg(path: &Path) -> String {
+    format!("\"{}\"", path.display().to_string().replace('"', "\\\""))
+}
+
+pub(crate) fn validation_repair_item_json(
+    priority: usize,
+    message: &str,
+    index: &GameIndex,
+) -> String {
+    validation_repair_item_json_with_context(priority, message, index, None, None, &[], &[], 0)
+}
+
+fn validation_repair_item_json_with_context(
+    priority: usize,
+    message: &str,
+    index: &GameIndex,
+    mod_root: Option<&Path>,
+    game_root: Option<&Path>,
+    dependency_mods: &[PathBuf],
+    libraries: &[PathBuf],
+    max_examples: usize,
+) -> String {
+    let file = validation_repair_file(message);
+    let (kind, symbol) = validation_repair_kind_symbol(message);
+    let query = symbol.as_deref().unwrap_or(message);
+    let candidates = related_code_symbol_matches(index, query, kind.as_deref(), 8);
+    let repair_queries = validation_repair_queries(message, symbol.as_deref(), &candidates);
+    let examples = validation_repair_code_examples(libraries, &repair_queries, max_examples);
+    let commands = validation_repair_commands(
+        kind.as_deref(),
+        symbol.as_deref(),
+        mod_root,
+        game_root,
+        dependency_mods,
+    );
+    let do_not_fix_by = validation_repair_do_not_fix_by(message, kind.as_deref());
+    let questions = validation_repair_questions(message, symbol.as_deref());
+    format!(
+        "    {{\n      \"priority\": {},\n      \"blocking\": true,\n      \"category\": {},\n      \"file\": {},\n      \"kind\": {},\n      \"symbol\": {},\n      \"message\": {},\n      \"related_indexed_code\": {},\n      \"repair_queries\": {},\n      \"retrieved_code_examples\": {},\n      \"required_action\": {},\n      \"questions\": {},\n      \"do_not_fix_by\": {},\n      \"suggested_commands\": {}\n    }}",
+        priority,
+        json_str(&validation_repair_category(message, kind.as_deref())),
+        file.map(|value| json_str(&value)).unwrap_or_else(|| "null".to_string()),
+        kind.map(|value| json_str(&value)).unwrap_or_else(|| "null".to_string()),
+        symbol.map(|value| json_str(&value)).unwrap_or_else(|| "null".to_string()),
+        json_str(message),
+        validation_code_matches_json(&candidates),
+        json_array(&repair_queries),
+        validation_clausewitz_examples_json(&examples),
+        json_str(&validation_repair_required_action(message)),
+        json_array(&questions),
+        json_array(&do_not_fix_by),
+        json_array(&commands)
+    )
+}
+
+fn validation_repair_file(message: &str) -> Option<String> {
+    let (head, _) = message.split_once(": ")?;
+    if looks_like_windows_path_prefix(message) || message.starts_with('/') {
+        Some(head.to_string())
+    } else {
+        None
+    }
+}
+
+fn validation_repair_kind_symbol(message: &str) -> (Option<String>, Option<String>) {
+    let kind = validation_repair_kind(message);
+    let symbol = validation_repair_symbol(message, kind.as_deref());
+    (kind, symbol)
+}
+
+fn validation_repair_kind(message: &str) -> Option<String> {
+    if let Some(kind) = extract_check_code_symbol_kind(message) {
+        return Some(kind);
+    }
+    if message.contains("dynamic modifier ") && message.contains("national spirit/idea reference") {
+        return Some("dynamic_modifier".to_string());
+    }
+    for (needle, kind) in [
+        ("unknown effect `", "effect"),
+        ("effect-like key `", "effect"),
+        ("unknown trigger `", "trigger"),
+        ("trigger-like key `", "trigger"),
+        ("unknown modifier `", "modifier"),
+        ("modifier-like key `", "modifier"),
+        ("unindexed event picture", "event_picture"),
+        ("event picture ", "event_picture"),
+        ("idea picture ", "resource_id"),
+        ("unindexed idea", "idea"),
+        ("unindexed resource", "resource"),
+        ("unindexed building", "building"),
+        ("uses unindexed icon", "resource_id"),
+        ("uses unindexed country scope", "resource_id"),
+        ("uses non-ASCII scripted localisation scope", "resource_id"),
+        ("has invalid HOI4 token", "localisation_token"),
+        ("unindexed event-chain country tag", "country_tag"),
+    ] {
+        if message.contains(needle) {
+            return Some(kind.to_string());
+        }
+    }
+    None
+}
+
+fn extract_check_code_symbol_kind(message: &str) -> Option<String> {
+    let marker = "check-code-symbol --kind ";
+    let start = message.find(marker)? + marker.len();
+    let mut out = String::new();
+    for ch in message[start..].chars() {
+        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+            out.push(ch);
+        } else {
+            break;
+        }
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out)
+    }
+}
+
+fn validation_repair_symbol(message: &str, kind: Option<&str>) -> Option<String> {
+    if message.contains("dynamic modifier ") && message.contains("national spirit/idea reference") {
+        return extract_word_after(message, "dynamic modifier ");
+    }
+    for marker in [
+        "unknown effect `",
+        "effect-like key `",
+        "unknown trigger `",
+        "trigger-like key `",
+        "unknown modifier `",
+        "modifier-like key `",
+        "unindexed effect `",
+        "unindexed trigger `",
+        "unindexed modifier `",
+        "unindexed idea `",
+        "unindexed resource `",
+        "unindexed building `",
+        "uses unindexed icon `",
+        "uses unindexed country scope `",
+        "uses non-ASCII scripted localisation scope `",
+    ] {
+        if let Some(value) = extract_backticked_after(message, marker) {
+            return Some(strip_localisation_symbol(&strip_author_label(&value)));
+        }
+    }
+    if kind.is_some() {
+        if let Some(value) = last_backticked_before(message, "verify it with") {
+            return Some(strip_author_label(&value));
+        }
+        if let Some(value) = last_backticked_value(message) {
+            return Some(strip_author_label(&value));
+        }
+    }
+    if message.contains("event picture ") {
+        return extract_word_after(message, "event picture ");
+    }
+    if message.contains("idea picture ") {
+        return extract_word_after(message, "idea picture ");
+    }
+    None
+}
+
+fn extract_backticked_after(message: &str, marker: &str) -> Option<String> {
+    let start = message.find(marker)? + marker.len();
+    let rest = &message[start..];
+    let end = rest.find('`')?;
+    Some(rest[..end].to_string())
+}
+
+fn last_backticked_before(message: &str, before: &str) -> Option<String> {
+    let end = message.find(before).unwrap_or(message.len());
+    last_backticked_value(&message[..end])
+}
+
+fn last_backticked_value(message: &str) -> Option<String> {
+    let mut values = Vec::new();
+    let mut rest = message;
+    while let Some(start) = rest.find('`') {
+        let after = &rest[start + 1..];
+        let Some(end) = after.find('`') else {
+            break;
+        };
+        values.push(after[..end].to_string());
+        rest = &after[end + 1..];
+    }
+    values.pop()
+}
+
+fn strip_author_label(value: &str) -> String {
+    value
+        .rsplit(['：', ':'])
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .to_string()
+}
+
+fn strip_localisation_symbol(value: &str) -> String {
+    value
+        .trim()
+        .trim_start_matches('£')
+        .trim_matches(['[', ']'])
+        .split('.')
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .to_string()
+}
+
+fn extract_word_after(message: &str, marker: &str) -> Option<String> {
+    let start = message.find(marker)? + marker.len();
+    let value = message[start..]
+        .split(|ch: char| ch.is_whitespace() || matches!(ch, ';' | ',' | '`'))
+        .next()
+        .unwrap_or("")
+        .trim();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn validation_code_matches_json(matches: &[CodeSymbolMatch]) -> String {
+    format!(
+        "[{}]",
+        matches
+            .iter()
+            .map(|item| {
+                format!(
+                    "{{\"category\": {}, \"kind\": {}, \"symbol\": {}}}",
+                    json_str(item.category),
+                    json_str(item.kind),
+                    json_str(&item.symbol)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn validation_repair_queries(
+    message: &str,
+    symbol: Option<&str>,
+    candidates: &[CodeSymbolMatch],
+) -> Vec<String> {
+    let mut queries = Vec::new();
+    if let Some(symbol) = symbol {
+        push_validation_repair_query(&mut queries, symbol);
+    }
+    for candidate in candidates.iter().take(5) {
+        push_validation_repair_query(&mut queries, &candidate.symbol);
+    }
+    push_validation_repair_query(&mut queries, message);
+    queries
+}
+
+fn push_validation_repair_query(out: &mut Vec<String>, raw: &str) {
+    let query = raw
+        .trim()
+        .trim_matches('`')
+        .replace(['\r', '\n', '\t'], " ");
+    let query = query.split_whitespace().collect::<Vec<_>>().join(" ");
+    if query.len() < 3 {
+        return;
+    }
+    let query = truncate_chars(&query, 220);
+    if !out.iter().any(|existing| existing == &query) {
+        out.push(query);
+    }
+}
+
+fn validation_repair_code_examples(
+    libraries: &[PathBuf],
+    queries: &[String],
+    max_examples: usize,
+) -> Vec<ClausewitzExample> {
+    if libraries.is_empty() || max_examples == 0 {
+        return Vec::new();
+    }
+    let mut examples = Vec::new();
+    for query in queries {
+        if let Ok(found) = query_clausewitz_libraries(libraries, query, None, max_examples) {
+            for example in found {
+                if !examples.iter().any(|existing: &ClausewitzExample| {
+                    existing.system == example.system
+                        && existing.symbol == example.symbol
+                        && existing.source == example.source
+                }) {
+                    examples.push(example);
+                }
+                if examples.len() >= max_examples {
+                    return examples;
+                }
+            }
+        }
+    }
+    examples
+}
+
+fn validation_clausewitz_examples_json(examples: &[ClausewitzExample]) -> String {
+    format!(
+        "[{}]",
+        examples
+            .iter()
+            .map(|example| {
+                format!(
+                    "{{\"system\": {}, \"symbol\": {}, \"source\": {}, \"code\": {}}}",
+                    json_str(&example.system),
+                    json_str(&example.symbol),
+                    json_str(&example.source),
+                    json_str(&truncate_chars(&example.code, 4_000))
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn validation_repair_category(message: &str, kind: Option<&str>) -> String {
+    if message.contains("unresolved generated code marker") || message.contains("TODO") {
+        "unresolved_ai_placeholder".to_string()
+    } else if message.contains("dynamic modifier ")
+        && message.contains("national spirit/idea reference")
+    {
+        "dynamic_modifier_misuse".to_string()
+    } else if message.contains("localisation key")
+        && (message.contains("invalid HOI4 token")
+            || message.contains("uses unindexed icon")
+            || message.contains("uses unindexed country scope")
+            || message.contains("uses non-ASCII scripted localisation scope"))
+    {
+        "localisation_token_mapping".to_string()
+    } else if message.contains("text alignment") {
+        "text_alignment".to_string()
+    } else if message.contains("request-scope violation") {
+        "request_scope_violation".to_string()
+    } else if message.contains("dynamic_modifier") {
+        "dynamic_modifier_code".to_string()
+    } else if kind.is_some() {
+        "unindexed_code_symbol".to_string()
+    } else {
+        "validation_error".to_string()
+    }
+}
+
+fn validation_repair_required_action(message: &str) -> String {
+    if message.contains("unresolved generated code marker") || message.contains("TODO") {
+        "Replace the placeholder with a CLI-compiled intent, an indexed symbol, or an explicit user-approved mapping; rerun strict validation.".to_string()
+    } else if message.contains("dynamic modifier ")
+        && message.contains("national spirit/idea reference")
+    {
+        "Replace the national-spirit reference with dynamic modifier code: use add_dynamic_modifier/remove_dynamic_modifier/has_dynamic_modifier when appropriate, or regenerate the effect through compile-intent/plan-dynamic-modifier-change so it uses the verified dynamic_modifier_scripted_effect_protocol.".to_string()
+    } else if message.contains("uses unindexed icon") {
+        "Resolve the localisation icon through author-placeholder-plan/register-gfx-icons, or ask the user for the existing GFX sprite before writing final localisation.".to_string()
+    } else if message.contains("uses unindexed country scope")
+        || message.contains("uses non-ASCII scripted localisation scope")
+    {
+        "Resolve the country/cosmetic alias to an indexed tag with author-placeholder-plan or ask the user for the exact scripted localisation token.".to_string()
+    } else if message.contains("has invalid HOI4 token") {
+        "Fix or compile the localisation control token, preserving player-visible text, then rerun strict validation.".to_string()
+    } else if message.contains("text alignment") {
+        "Restore or localise the exact user-provided player-visible text, then rerun validate with the same text source.".to_string()
+    } else if message.contains("request-scope violation") {
+        "Remove the unauthorized generated system or ask the user to explicitly authorize that system before generating it.".to_string()
+    } else if message.contains("unknown") || message.contains("unindexed") {
+        "Replace the symbol with an indexed candidate, generate the missing declared asset/system through a dedicated CLI command, or ask the user for an explicit mapping.".to_string()
+    } else {
+        "Fix the reported file without inventing syntax, then rerun strict validation and this repair-context command.".to_string()
+    }
+}
+
+fn validation_repair_do_not_fix_by(message: &str, kind: Option<&str>) -> Vec<String> {
+    let mut rules = vec![
+        "do not invent a Clausewitz key that is absent from the code index".to_string(),
+        "do not silence the error by deleting user-requested player-visible content".to_string(),
+        "do not skip final validation or downgrade strict-code-index".to_string(),
+    ];
+    if message.contains("dynamic_modifier") || kind == Some("dynamic_modifier") {
+        rules.push("do not convert a dynamic modifier into a national spirit unless the user explicitly requests that design change".to_string());
+    }
+    if kind == Some("event_picture") || kind == Some("resource_id") {
+        rules.push("do not substitute a random GFX sprite; use an indexed picture or ask for the intended asset".to_string());
+    }
+    if message.contains("localisation key") {
+        rules.push("do not leave raw author placeholders or non-ASCII scripted localisation scopes in final .yml files".to_string());
+        rules.push(
+            "do not replace missing icons or country scopes by deleting player-visible prose"
+                .to_string(),
+        );
+    }
+    rules
+}
+
+fn validation_repair_commands(
+    kind: Option<&str>,
+    symbol: Option<&str>,
+    mod_root: Option<&Path>,
+    game_root: Option<&Path>,
+    dependency_mods: &[PathBuf],
+) -> Vec<String> {
+    let mut commands = Vec::new();
+    let mod_arg = mod_root
+        .map(validation_command_path_arg)
+        .unwrap_or_else(|| "<mod-root>".to_string());
+    let game_arg = game_root
+        .map(validation_command_path_arg)
+        .unwrap_or_else(|| "<HOI4 root>".to_string());
+    let dependency_args = validation_repair_dependency_args(dependency_mods);
+    if let (Some(kind), Some(symbol)) = (kind, symbol) {
+        if kind != "localisation_token" {
+            commands.push(format!(
+                "hoi4skill check-code-symbol --game-root {game_arg}{dependency_args} --kind {kind} --symbol {symbol}"
+            ));
+            commands.push(format!(
+                "hoi4skill query-clausewitz-library --query {symbol} --system {kind}"
+            ));
+        }
+    }
+    commands.push(format!(
+        "hoi4skill validate {mod_arg} --game-root {game_arg}{dependency_args} --strict-code-index"
+    ));
+    commands
+}
+
+fn validation_repair_questions(message: &str, symbol: Option<&str>) -> Vec<String> {
+    if message.contains("dynamic modifier ") && message.contains("national spirit/idea reference") {
+        let dynamic_modifier = symbol.unwrap_or("<dynamic_modifier>");
+        return vec![format!(
+            "Should `{dynamic_modifier}` be applied as a dynamic modifier, changed through its scripted-effect helper protocol, or replaced by a deliberately new national spirit approved by the user?"
+        )];
+    }
+    if message.contains("uses unindexed icon") {
+        let icon = symbol.unwrap_or("<icon>");
+        return vec![format!(
+            "Does localisation icon `{icon}` already have an existing GFX sprite? If yes, provide the exact sprite name; if not, approve adding/registering the asset before final localisation."
+        )];
+    }
+    if message.contains("uses unindexed country scope") {
+        let tag = symbol.unwrap_or("<TAG>");
+        return vec![format!(
+            "Which indexed country or cosmetic tag should `{tag}` refer to? Provide `[TAG.GetName]`, `[TAG.GetLeader]`, or `[TAG.GetFlag]` explicitly if needed."
+        )];
+    }
+    if message.contains("uses non-ASCII scripted localisation scope") {
+        let scope = symbol.unwrap_or("<scope>");
+        return vec![format!(
+            "The scope `{scope}` is not valid final HOI4 scripted localisation. Which indexed tag/cosmetic alias should this author placeholder compile to?"
+        )];
+    }
+    if message.contains("has invalid HOI4 token") {
+        return vec![
+            "Should this text be compiled from author placeholders with author-placeholder-plan, or should the HOI4 control token be edited directly?".to_string(),
+        ];
+    }
+    Vec::new()
+}
+
+fn validation_issue_groups_json(messages: &[String], max_groups: usize) -> String {
+    let mut groups: BTreeMap<String, (usize, Vec<String>)> = BTreeMap::new();
+    for message in messages {
+        let key = validation_issue_group_key(message);
+        let entry = groups.entry(key).or_insert_with(|| (0, Vec::new()));
+        entry.0 += 1;
+        if entry.1.len() < 5 {
+            entry.1.push(message.clone());
+        }
+    }
+    let mut groups = groups.into_iter().collect::<Vec<_>>();
+    groups.sort_by(|(_, left), (_, right)| right.0.cmp(&left.0));
+    groups.truncate(max_groups);
+    format!(
+        "[{}]",
+        groups
+            .into_iter()
+            .map(|(message, (count, examples))| {
+                format!(
+                    "{{\"count\": {}, \"message\": {}, \"examples\": {}}}",
+                    count,
+                    json_str(&message),
+                    json_array(&examples)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn validation_issue_group_key(message: &str) -> String {
+    let Some((_, rest)) = message.split_once(": ") else {
+        return message.to_string();
+    };
+    if looks_like_windows_path_prefix(message) || message.starts_with('/') {
+        rest.to_string()
+    } else {
+        message.to_string()
+    }
+}
+
+pub(crate) fn looks_like_windows_path_prefix(message: &str) -> bool {
+    let bytes = message.as_bytes();
+    bytes.len() > 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic()
 }
 
 fn read_validation_baseline(path: &Path) -> Result<(BTreeSet<String>, BTreeSet<String>), String> {
@@ -566,17 +1718,74 @@ fn parse_json_string_array(text: &str) -> Vec<String> {
 }
 
 fn validation_changed_files(root: &Path, map: &ArgMap) -> Result<Vec<String>, String> {
-    let mut files = Vec::new();
-    for raw in repeated_values(map, "changed") {
-        let path = PathBuf::from(raw);
-        let rel = if path.is_absolute() {
-            relative_slash_path(root, &path)
-        } else {
-            slash_path(&path)
-        };
-        files.push(rel);
+    let mut files = BTreeSet::new();
+    for key in ["changed", "changed-file"] {
+        for raw in repeated_values(map, key) {
+            files.insert(validation_normalize_changed_path(root, raw));
+        }
     }
-    Ok(files)
+    for raw in repeated_values(map, "changed-list")
+        .into_iter()
+        .chain(repeated_values(map, "changed-files").into_iter())
+    {
+        let path = validation_changed_list_path(root, raw)?;
+        for item in read_changed_paths_file(&path)? {
+            files.insert(validation_normalize_changed_path(root, &item));
+        }
+    }
+    for raw in repeated_values(map, "author-report")
+        .into_iter()
+        .chain(repeated_values(map, "changed-report").into_iter())
+        .chain(repeated_values(map, "author-output").into_iter())
+    {
+        let path = validation_changed_list_path(root, raw)?;
+        for item in production_changed_paths_from_author_report(root, &path)? {
+            files.insert(item);
+        }
+    }
+    if !map.flags.contains("ignore-default-author-report")
+        && !map.flags.contains("no-default-author-report")
+    {
+        let default = root
+            .join(".hoi4skill")
+            .join("author_intent_workflow_author.json");
+        if default.exists() {
+            for item in production_changed_paths_from_author_report(root, &default)? {
+                files.insert(item);
+            }
+        }
+    }
+    if map.flags.contains("from-git")
+        || map.flags.contains("changed-from-git")
+        || map.flags.contains("git")
+    {
+        let git_root = value(map, "git-root")
+            .map(normalize_path)
+            .transpose()?
+            .unwrap_or_else(|| root.to_path_buf());
+        for item in collect_git_changed_paths(&git_root)? {
+            files.insert(validation_normalize_changed_path(root, &item));
+        }
+    }
+    Ok(files.into_iter().collect())
+}
+
+fn validation_normalize_changed_path(root: &Path, raw: &str) -> String {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        relative_slash_path(root, &path)
+    } else {
+        slash_path(&path)
+    }
+}
+
+fn validation_changed_list_path(root: &Path, raw: &str) -> Result<PathBuf, String> {
+    let path = PathBuf::from(raw);
+    if path.is_absolute() {
+        normalize_path(raw)
+    } else {
+        Ok(root.join(path))
+    }
 }
 
 fn validation_message_mentions_changed(root: &Path, msg: &str, changed_files: &[String]) -> bool {
@@ -668,7 +1877,124 @@ pub(crate) fn check_localisation(path: &Path, reporter: &mut Reporter) {
         ));
     }
     check_mod_name_localisation_keys(path, &text, reporter);
+    check_localisation_tokens(path, &text, reporter);
     check_yaml_duplicate_keys(path, &text, reporter);
+}
+
+pub(crate) fn check_localisation_tokens(path: &Path, text: &str, reporter: &mut Reporter) {
+    for (line_idx, line) in text.lines().enumerate() {
+        let line_no = line_idx + 1;
+        let Some((key, value)) = parse_localisation_line(line) else {
+            continue;
+        };
+        let (_, issues) = extract_localisation_tokens(&value);
+        for issue in issues {
+            reporter.error(format!(
+                "{}:{line_no}: localisation key `{key}` has invalid HOI4 token: {}",
+                path.display(),
+                issue.message
+            ));
+        }
+    }
+}
+
+pub(crate) fn check_indexed_localisation_tokens(
+    path: &Path,
+    text: &str,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+    reporter: &mut Reporter,
+) {
+    if !options.strict_code_index {
+        return;
+    }
+    let Some(index) = game_index else {
+        return;
+    };
+    for (line_idx, line) in text.lines().enumerate() {
+        let line_no = line_idx + 1;
+        let Some((key, value)) = parse_localisation_line(line) else {
+            continue;
+        };
+        let (tokens, _) = extract_localisation_tokens(&value);
+        for token in tokens {
+            if token.kind == "icon" {
+                let icon = token.text.trim_start_matches('£');
+                if !indexed_localisation_icon_exists(icon, index) {
+                    reporter.error(format!(
+                        "{}:{line_no}: localisation key `{key}` uses unindexed icon `{}`; register the sprite or ask the user for the correct icon before final localisation",
+                        path.display(),
+                        token.text
+                    ));
+                }
+            } else if token.kind == "scripted_loc" {
+                if let Some(scope) = scripted_localisation_scope(&token.text) {
+                    if scope.chars().any(|ch| !ch.is_ascii()) {
+                        reporter.error(format!(
+                            "{}:{line_no}: localisation key `{key}` uses non-ASCII scripted localisation scope `{scope}` in `{}`; compile author placeholders to `[TAG.GetName]`/`[TAG.GetLeader]`/`[TAG.GetFlag]` before final localisation",
+                            path.display(),
+                            token.text
+                        ));
+                    } else if looks_like_tag(scope)
+                        && !index.country_tags.contains(scope)
+                        && !is_dynamic_tag_ref(scope)
+                    {
+                        reporter.error(format!(
+                            "{}:{line_no}: localisation key `{key}` uses unindexed country scope `{scope}` in `{}`; verify the tag/cosmetic alias before final localisation",
+                            path.display(),
+                            token.text
+                        ));
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn scripted_localisation_scope(token: &str) -> Option<&str> {
+    let inner = token.strip_prefix('[')?.strip_suffix(']')?;
+    if inner.starts_with('?') {
+        return None;
+    }
+    let (scope, method) = inner.split_once('.')?;
+    if !scripted_localisation_country_method(method) {
+        return None;
+    }
+    let scope = scope.trim();
+    if is_builtin_scripted_localisation_scope(scope) {
+        None
+    } else {
+        Some(scope)
+    }
+}
+
+fn scripted_localisation_country_method(method: &str) -> bool {
+    let method = method.split('|').next().unwrap_or(method).trim();
+    matches!(
+        method,
+        "GetName"
+            | "GetNameDef"
+            | "GetNameWithFlag"
+            | "GetAdjective"
+            | "GetLeader"
+            | "GetFlag"
+            | "GetRulingIdeology"
+            | "GetRulingParty"
+            | "GetCommunistParty"
+            | "GetDemocraticParty"
+            | "GetFascistParty"
+            | "GetNeutralParty"
+    )
+}
+
+fn is_builtin_scripted_localisation_scope(scope: &str) -> bool {
+    matches!(
+        scope.to_ascii_uppercase().as_str(),
+        "ROOT" | "FROM" | "PREV" | "THIS"
+    ) || matches!(
+        scope,
+        "owner" | "controller" | "capital_scope" | "overlord" | "faction_leader"
+    )
 }
 
 pub(crate) fn check_mod_name_localisation_keys(path: &Path, text: &str, reporter: &mut Reporter) {
@@ -699,6 +2025,8 @@ pub(crate) fn check_mod_name_localisation_keys(path: &Path, text: &str, reporter
 pub(crate) fn check_yaml_duplicate_keys(path: &Path, text: &str, reporter: &mut Reporter) {
     let mut seen: BTreeMap<String, usize> = BTreeMap::new();
     let mut stack: Vec<(usize, String)> = Vec::new();
+    let mut sequence_counts: BTreeMap<String, usize> = BTreeMap::new();
+    let mut block_scalar_indent: Option<usize> = None;
     for (line_idx, line) in text.lines().enumerate() {
         let line_no = line_idx + 1;
         let line = line.trim_start_matches('\u{feff}');
@@ -707,7 +2035,14 @@ pub(crate) fn check_yaml_duplicate_keys(path: &Path, text: &str, reporter: &mut 
             continue;
         }
         let indent = line.chars().take_while(|c| c.is_whitespace()).count();
+        if let Some(block_indent) = block_scalar_indent {
+            if indent > block_indent {
+                continue;
+            }
+            block_scalar_indent = None;
+        }
         let mut content = line.trim_start();
+        let is_sequence_item = content.starts_with("- ");
         if let Some(rest) = content.strip_prefix("- ") {
             content = rest.trim_start();
         }
@@ -715,11 +2050,23 @@ pub(crate) fn check_yaml_duplicate_keys(path: &Path, text: &str, reporter: &mut 
             continue;
         };
         let key = content[..colon].trim().trim_matches('"').trim_matches('\'');
+        let value_after_colon = content[colon + 1..].trim();
         if key.is_empty() || key.starts_with('#') {
             continue;
         }
         while stack.last().is_some_and(|(level, _)| *level >= indent) {
             stack.pop();
+        }
+        if is_sequence_item {
+            let parent_key = stack
+                .iter()
+                .map(|(_, key)| key.as_str())
+                .collect::<Vec<_>>()
+                .join(".");
+            let sequence_key = format!("{parent_key}@{indent}");
+            let index = sequence_counts.entry(sequence_key).or_insert(0);
+            stack.push((indent, format!("[{}]", *index)));
+            *index += 1;
         }
         let mut full_key = stack
             .iter()
@@ -738,7 +2085,11 @@ pub(crate) fn check_yaml_duplicate_keys(path: &Path, text: &str, reporter: &mut 
                 path.display()
             ));
         }
-        stack.push((indent, key.to_string()));
+        if value_after_colon.starts_with('|') || value_after_colon.starts_with('>') {
+            block_scalar_indent = Some(indent);
+        } else if value_after_colon.is_empty() {
+            stack.push((indent, key.to_string()));
+        }
     }
 }
 
@@ -1088,23 +2439,70 @@ pub(crate) fn is_localisation_key_like(value: &str) -> bool {
 pub(crate) fn event_blocks(text: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     for key in ["country_event", "news_event", "state_event"] {
-        blocks.extend(blocks_named(text, key));
+        blocks.extend(
+            blocks_named(text, key)
+                .into_iter()
+                .filter(|block| is_event_definition_block(block)),
+        );
     }
     blocks
 }
 
-pub(crate) fn check_sprite_textures(root: &Path, path: &Path, text: &str, reporter: &mut Reporter) {
+pub(crate) fn is_event_definition_block(block: &str) -> bool {
+    let event_definition_field_signals = [
+        "title",
+        "desc",
+        "picture",
+        "is_triggered_only",
+        "fire_only_once",
+        "mean_time_to_happen",
+        "immediate",
+        "option",
+        "trigger",
+    ];
+    event_definition_field_signals
+        .iter()
+        .any(|key| block_assignment(block, key).is_some() || !blocks_named(block, key).is_empty())
+        || direct_assignment_keys(block).into_iter().any(|key| {
+            !matches!(key.as_str(), "id" | "days")
+                && closest_critical_field(&key, &event_definition_field_signals).is_some()
+        })
+}
+
+pub(crate) fn check_sprite_textures(
+    root: &Path,
+    path: &Path,
+    text: &str,
+    game_index: Option<&GameIndex>,
+    reporter: &mut Reporter,
+) {
     for block in sprite_type_blocks(text) {
         if let Some(texturefile) = block_assignment(&block, "texturefile") {
-            if resolve_texture(root, &texturefile).is_none() {
+            if resolve_texture_in_indexed_roots(root, &texturefile, game_index).is_none() {
                 reporter.warn(format!(
-                    "{}: sprite texturefile not found in this mod: {}",
+                    "{}: sprite texturefile not found in this mod or indexed roots: {}",
                     path.display(),
                     texturefile
                 ));
             }
         }
     }
+}
+
+pub(crate) fn resolve_texture_in_indexed_roots(
+    root: &Path,
+    texturefile: &str,
+    game_index: Option<&GameIndex>,
+) -> Option<PathBuf> {
+    resolve_texture(root, texturefile).or_else(|| {
+        game_index.and_then(|index| {
+            index
+                .indexed_roots
+                .iter()
+                .filter(|indexed_root| *indexed_root != root)
+                .find_map(|indexed_root| resolve_texture(indexed_root, texturefile))
+        })
+    })
 }
 
 pub(crate) fn collect_sprite_names(text: &str, sprite_names: &mut BTreeSet<String>) {
@@ -1148,6 +2546,27 @@ pub(crate) fn collect_idea_picture_refs(
             ));
             continue;
         }
+        if is_reference_identifier(picture) {
+            refs.entry(picture.to_string())
+                .or_default()
+                .insert(path.to_path_buf());
+        }
+    }
+}
+
+pub(crate) fn collect_event_picture_refs(
+    path: &Path,
+    text: &str,
+    refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+) {
+    if !slash_path(path).contains("/events/") {
+        return;
+    }
+    for block in event_blocks(&strip_comments(text)) {
+        let Some(picture) = block_assignment(&block, "picture") else {
+            continue;
+        };
+        let picture = picture.trim_matches('"');
         if is_reference_identifier(picture) {
             refs.entry(picture.to_string())
                 .or_default()
@@ -1237,6 +2656,9 @@ pub(crate) struct GameDataRefs {
     pub(crate) sub_units: BTreeMap<String, BTreeSet<PathBuf>>,
     pub(crate) wargoal_types: BTreeMap<String, BTreeSet<PathBuf>>,
     pub(crate) modifiers: BTreeMap<String, BTreeSet<PathBuf>>,
+    pub(crate) ideas: BTreeMap<String, BTreeSet<PathBuf>>,
+    pub(crate) dynamic_modifiers: BTreeMap<String, BTreeSet<PathBuf>>,
+    pub(crate) dynamic_modifier_variables: BTreeMap<String, BTreeSet<PathBuf>>,
 }
 
 pub(crate) fn collect_game_data_refs(path: &Path, text: &str, refs: &mut GameDataRefs) {
@@ -1355,6 +2777,116 @@ pub(crate) fn collect_game_data_refs(path: &Path, text: &str, refs: &mut GameDat
             }
         }
     }
+    for key in ["add_ideas", "remove_ideas", "has_idea"] {
+        for idea in assignment_values_in_text(&cleaned, key) {
+            if idea != "{"
+                && !matches!(idea.as_str(), "yes" | "no")
+                && is_reference_identifier(&idea)
+            {
+                add_ref(&mut refs.ideas, &idea, path);
+            }
+        }
+    }
+    for block in blocks_named(&cleaned, "swap_ideas") {
+        for key in ["remove_idea", "add_idea"] {
+            if let Some(idea) = block_assignment(&block, key) {
+                if is_reference_identifier(&idea) {
+                    add_ref(&mut refs.ideas, &idea, path);
+                }
+            }
+        }
+    }
+    for key in [
+        "add_dynamic_modifier",
+        "remove_dynamic_modifier",
+        "has_dynamic_modifier",
+    ] {
+        for block in blocks_named(&cleaned, key) {
+            if let Some(dynamic_modifier) = block_assignment(&block, "modifier") {
+                if is_reference_identifier(&dynamic_modifier) {
+                    add_ref(&mut refs.dynamic_modifiers, &dynamic_modifier, path);
+                }
+            }
+        }
+        for dynamic_modifier in assignment_values_in_text(&cleaned, key) {
+            if dynamic_modifier != "{"
+                && !matches!(dynamic_modifier.as_str(), "yes" | "no")
+                && is_reference_identifier(&dynamic_modifier)
+            {
+                add_ref(&mut refs.dynamic_modifiers, &dynamic_modifier, path);
+            }
+        }
+    }
+    if norm.contains("/common/dynamic_modifiers/") {
+        collect_dynamic_modifier_definition_refs(path, &cleaned, refs);
+    }
+    if norm.contains("/common/scripted_effects/") {
+        collect_dynamic_modifier_change_effect_refs(path, &cleaned, refs);
+    }
+}
+
+pub(crate) fn collect_dynamic_modifier_definition_refs(
+    path: &Path,
+    text: &str,
+    refs: &mut GameDataRefs,
+) {
+    for (name, block) in direct_child_blocks(text) {
+        if name == "dynamic_modifiers" {
+            for (_, nested) in direct_child_blocks(&block) {
+                collect_dynamic_modifier_block_modifier_refs(path, &nested, refs);
+            }
+        } else {
+            collect_dynamic_modifier_block_modifier_refs(path, &block, refs);
+        }
+    }
+}
+
+pub(crate) fn collect_dynamic_modifier_block_modifier_refs(
+    path: &Path,
+    block: &str,
+    refs: &mut GameDataRefs,
+) {
+    for key in direct_assignment_keys(block) {
+        if is_dynamic_modifier_definition_meta_key(&key) {
+            continue;
+        }
+        if is_modifier_ref_candidate(&key) {
+            add_ref(&mut refs.modifiers, &key, path);
+        }
+    }
+}
+
+pub(crate) fn is_dynamic_modifier_definition_meta_key(key: &str) -> bool {
+    matches!(
+        key,
+        "icon" | "enable" | "remove_trigger" | "attacker_modifier"
+    )
+}
+
+pub(crate) fn collect_dynamic_modifier_change_effect_refs(
+    path: &Path,
+    text: &str,
+    refs: &mut GameDataRefs,
+) {
+    for (name, block) in direct_child_blocks(text) {
+        if !name.starts_with("change_") {
+            continue;
+        }
+        for variable_block in blocks_named(&block, "add_to_variable") {
+            for key in direct_assignment_keys(&variable_block) {
+                if is_reference_identifier(&key) {
+                    add_ref(&mut refs.dynamic_modifier_variables, &key, path);
+                }
+            }
+        }
+        for variable_block in blocks_named(&block, "set_variable") {
+            for key in direct_assignment_keys(&variable_block) {
+                if is_reference_identifier(&key) {
+                    add_ref(&mut refs.dynamic_modifier_variables, &key, path);
+                }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1418,6 +2950,29 @@ pub(crate) fn report_unknown_index_refs_if_indexed(
         return;
     }
     report_unknown_index_refs(label, refs, known, reporter, as_error, related_index);
+}
+
+pub(crate) fn report_dynamic_modifiers_used_as_ideas(
+    refs: &BTreeMap<String, BTreeSet<PathBuf>>,
+    index: &GameIndex,
+    reporter: &mut Reporter,
+    strict_code_index: bool,
+) {
+    if !strict_code_index {
+        return;
+    }
+    for (idea, paths) in refs {
+        if index.dynamic_modifiers.contains(idea) {
+            report_paths(
+                reporter,
+                true,
+                format!(
+                    "dynamic modifier {idea} is used as a national spirit/idea reference; dynamic modifiers must use add_dynamic_modifier/remove_dynamic_modifier/has_dynamic_modifier or the dynamic_modifier_scripted_effect_protocol, not add_ideas/remove_ideas/has_idea/swap_ideas"
+                ),
+                paths,
+            );
+        }
+    }
 }
 
 pub(crate) fn report_paths(
@@ -1565,6 +3120,15 @@ pub(crate) fn is_known_sprite_with_options(
         || is_known_vanilla_gfx(sprite)
 }
 
+pub(crate) fn is_known_localisation_key(
+    key: &str,
+    local_keys: &BTreeSet<String>,
+    game_index: Option<&GameIndex>,
+) -> bool {
+    local_keys.contains(key)
+        || game_index.is_some_and(|index| index.localisation_entries.contains_key(key))
+}
+
 pub(crate) fn is_dynamic_tag_ref(tag: &str) -> bool {
     matches!(tag, "TAG" | "ROOT" | "FROM" | "PREV")
 }
@@ -1607,9 +3171,14 @@ pub(crate) fn check_script_semantics_with_options(
     if norm.contains("/events/") {
         check_event_fields(path, &cleaned, reporter);
     }
-    check_effect_contexts(path, &cleaned, game_index, options, reporter);
-    check_trigger_contexts(path, &cleaned, game_index, options, reporter);
+    if !norm.contains("/common/game_rules/") {
+        check_effect_contexts(path, &cleaned, game_index, options, reporter);
+        check_trigger_contexts(path, &cleaned, game_index, options, reporter);
+    }
     check_scripted_helper_contexts(path, &norm, &cleaned, game_index, options, reporter);
+    check_dynamic_modifier_definition_contexts(
+        path, &norm, &cleaned, game_index, options, reporter,
+    );
     check_suspicious_assignments(path, &cleaned, game_index, reporter);
 }
 
@@ -1647,6 +3216,80 @@ pub(crate) fn check_scripted_helper_contexts(
     }
 }
 
+pub(crate) fn check_dynamic_modifier_definition_contexts(
+    path: &Path,
+    norm_path: &str,
+    text: &str,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+    reporter: &mut Reporter,
+) {
+    if !norm_path.contains("/common/dynamic_modifiers/") {
+        return;
+    }
+    let Some(index) = game_index else {
+        return;
+    };
+    for (name, block) in direct_child_blocks(text) {
+        if name == "dynamic_modifiers" {
+            for (nested_name, nested_block) in direct_child_blocks(&block) {
+                check_dynamic_modifier_definition_block(
+                    path,
+                    &nested_name,
+                    &nested_block,
+                    index,
+                    options,
+                    reporter,
+                );
+            }
+        } else {
+            check_dynamic_modifier_definition_block(path, &name, &block, index, options, reporter);
+        }
+    }
+}
+
+pub(crate) fn check_dynamic_modifier_definition_block(
+    path: &Path,
+    name: &str,
+    block: &str,
+    index: &GameIndex,
+    options: ValidationOptions,
+    reporter: &mut Reporter,
+) {
+    for key in direct_assignment_keys(block) {
+        if is_dynamic_modifier_definition_meta_key(&key) {
+            continue;
+        }
+        if index.modifiers.is_empty() {
+            if options.strict_code_index && is_modifier_ref_candidate(&key) {
+                reporter.error(format!(
+                    "{}: dynamic_modifier `{name}` uses modifier-like key `{key}`, but strict code index has no indexed modifiers; rebuild the index from `documentation/modifiers_documentation.md` or load the required game/dependency code before final output",
+                    path.display()
+                ));
+            }
+        } else if is_modifier_ref_candidate(&key) && !index.modifiers.contains(&key) {
+            let related = related_code_symbols_text(index, &key, Some("modifier"));
+            reporter.error(format!(
+                "{}: dynamic_modifier `{name}` uses unknown modifier `{key}`; use a real modifier from `documentation/modifiers_documentation.md` or verified local code{}",
+                path.display(),
+                related
+            ));
+        }
+    }
+    for trigger_name in ["enable", "remove_trigger"] {
+        for trigger_block in blocks_named(block, trigger_name) {
+            check_unknown_trigger_keys_in_block(
+                path,
+                &format!("dynamic_modifier `{name}` {trigger_name}"),
+                &trigger_block,
+                index,
+                options,
+                reporter,
+            );
+        }
+    }
+}
+
 pub(crate) fn check_unresolved_generation_markers(
     path: &Path,
     text: &str,
@@ -1669,6 +3312,7 @@ pub(crate) fn check_unresolved_generation_markers(
 }
 
 pub(crate) fn unresolved_generation_marker(line: &str) -> Option<&'static str> {
+    let trimmed = line.trim_start();
     if line.contains("Needs Codex mapping before final code") {
         Some("Needs Codex mapping before final code")
     } else if line.contains("TODO raw HOI4 block") {
@@ -1687,6 +3331,8 @@ pub(crate) fn unresolved_generation_marker(line: &str) -> Option<&'static str> {
         Some("TODO: add state effects")
     } else if line.contains("TODO: add option effects") {
         Some("TODO: add option effects")
+    } else if trimmed.starts_with("# TODO:") || trimmed.starts_with("# TODO ") {
+        Some("TODO generated code marker")
     } else if line.contains("<idea id for") {
         Some("<idea id for ...>")
     } else if line.contains("<event id for") {
@@ -1857,22 +3503,25 @@ pub(crate) fn check_required_focus_template_fields(
     block: &str,
     reporter: &mut Reporter,
 ) {
+    for key in ["icon", "x", "y", "cost", "completion_reward"] {
+        if direct_assignment_value(block, key).is_none() {
+            reporter.error(format!(
+                "{}: focus {focus_id} is missing required template field `{key}`",
+                path.display()
+            ));
+        }
+    }
     for key in [
-        "icon",
-        "x",
-        "y",
-        "cost",
         "ai_will_do",
         "available",
         "bypass",
         "cancel_if_invalid",
         "continue_if_invalid",
         "available_if_capitulated",
-        "completion_reward",
     ] {
         if direct_assignment_value(block, key).is_none() {
-            reporter.error(format!(
-                "{}: focus {focus_id} is missing required template field `{key}`",
+            reporter.warn(format!(
+                "{}: focus {focus_id} is missing recommended generated-template field `{key}`",
                 path.display()
             ));
         }
@@ -2047,16 +3696,48 @@ pub(crate) fn check_effect_contexts(
     options: ValidationOptions,
     reporter: &mut Reporter,
 ) {
+    let norm = slash_path(path);
     for name in [
         "complete_effect",
         "completion_reward",
         "hidden_effect",
+        "effect_tooltip",
         "effect",
         "effects",
         "option",
         "select_effect",
     ] {
         for block in blocks_named(text, name) {
+            if name == "effects" && norm.contains("/common/scripted_guis/") {
+                let callback_names = direct_child_blocks(&block)
+                    .into_iter()
+                    .map(|(callback, _)| callback)
+                    .collect::<BTreeSet<_>>();
+                if let Some(index) = game_index {
+                    for key in direct_assignment_keys(&block) {
+                        if !callback_names.contains(&key) {
+                            report_unknown_effect_key(
+                                path,
+                                "scripted_gui effects",
+                                &key,
+                                index,
+                                reporter,
+                            );
+                        }
+                    }
+                }
+                for (callback, callback_block) in direct_child_blocks(&block) {
+                    check_unknown_effect_keys(
+                        path,
+                        &format!("scripted_gui effect `{callback}`"),
+                        &callback_block,
+                        game_index,
+                        options,
+                        reporter,
+                    );
+                }
+                continue;
+            }
             for event_block in blocks_named(&block, "news_event") {
                 if block_assignment(&event_block, "title").is_some()
                     || block_assignment(&event_block, "desc").is_some()
@@ -2130,9 +3811,9 @@ pub(crate) fn check_unknown_effect_keys(
     }
     for (scope, scoped_block) in direct_child_blocks(block) {
         if is_effect_scope_key(&scope, index) {
-            for key in direct_assignment_keys(&scoped_block) {
-                report_unknown_effect_key(path, context, &key, index, reporter);
-            }
+            check_unknown_effect_keys(path, context, &scoped_block, game_index, options, reporter);
+        } else if is_effect_control_block(&scope) {
+            check_unknown_effect_keys(path, context, &scoped_block, game_index, options, reporter);
         }
     }
 }
@@ -2153,8 +3834,18 @@ pub(crate) fn report_unverifiable_effect_key(
 }
 
 pub(crate) fn is_effect_scope_key_without_effect_docs(key: &str, index: &GameIndex) -> bool {
-    matches!(key, "ROOT" | "FROM" | "PREV" | "THIS")
-        || index.country_tags.contains(key)
+    matches!(
+        key,
+        "ROOT"
+            | "FROM"
+            | "PREV"
+            | "THIS"
+            | "OVERLORD"
+            | "overlord"
+            | "owner"
+            | "controller"
+            | "capital_scope"
+    ) || index.country_tags.contains(key)
         || looks_like_tag(key)
 }
 
@@ -2183,10 +3874,40 @@ pub(crate) fn report_unknown_effect_key(
 }
 
 pub(crate) fn is_effect_scope_key(key: &str, index: &GameIndex) -> bool {
-    matches!(key, "ROOT" | "FROM" | "PREV" | "THIS")
-        || index.country_tags.contains(key)
+    matches!(
+        key,
+        "ROOT"
+            | "FROM"
+            | "PREV"
+            | "THIS"
+            | "OVERLORD"
+            | "overlord"
+            | "owner"
+            | "controller"
+            | "capital_scope"
+    ) || index.country_tags.contains(key)
         || looks_like_tag(key)
         || parse_plain_i64(key).is_some()
+}
+
+pub(crate) fn is_effect_control_block(key: &str) -> bool {
+    matches!(
+        key,
+        "if" | "else"
+            | "else_if"
+            | "random"
+            | "random_list"
+            | "ordered_country"
+            | "every_country"
+            | "every_other_country"
+            | "every_state"
+            | "every_owned_state"
+            | "every_controlled_state"
+            | "random_state"
+            | "random_owned_state"
+            | "random_controlled_state"
+            | "random_owned_controlled_state"
+    )
 }
 
 pub(crate) fn is_effect_key_candidate(key: &str) -> bool {
@@ -2206,13 +3927,25 @@ pub(crate) fn is_effect_key_candidate(key: &str) -> bool {
             | "base"
             | "modifier"
             | "limit"
+            | "prioritize"
+            | "tooltip"
+            | "count"
+            | "scope"
+            | "array"
+            | "var"
+            | "global"
             | "days"
             | "random"
             | "is_triggered_only"
             | "fire_only_once"
             | "mean_time_to_happen"
             | "immediate"
+            | "hidden_effect"
             | "option"
+            | "if"
+            | "else"
+            | "else_if"
+            | "random_list"
     )
 }
 
@@ -2223,6 +3956,7 @@ pub(crate) fn check_trigger_contexts(
     options: ValidationOptions,
     reporter: &mut Reporter,
 ) {
+    let norm = slash_path(path);
     for name in [
         "trigger",
         "triggers",
@@ -2235,6 +3969,37 @@ pub(crate) fn check_trigger_contexts(
         "state_trigger",
     ] {
         for block in blocks_named(text, name) {
+            if name == "triggers" && norm.contains("/common/scripted_guis/") {
+                let Some(index) = game_index else {
+                    continue;
+                };
+                let callback_names = direct_child_blocks(&block)
+                    .into_iter()
+                    .map(|(callback, _)| callback)
+                    .collect::<BTreeSet<_>>();
+                for key in direct_assignment_keys(&block) {
+                    if !callback_names.contains(&key) {
+                        report_unknown_trigger_key(
+                            path,
+                            "scripted_gui triggers",
+                            &key,
+                            index,
+                            reporter,
+                        );
+                    }
+                }
+                for (callback, callback_block) in direct_child_blocks(&block) {
+                    check_unknown_trigger_keys_in_block(
+                        path,
+                        &format!("scripted_gui trigger `{callback}`"),
+                        &callback_block,
+                        index,
+                        options,
+                        reporter,
+                    );
+                }
+                continue;
+            }
             for effect in [
                 "add_political_power",
                 "add_stability",
@@ -2288,7 +4053,7 @@ pub(crate) fn check_unknown_trigger_keys_in_block(
         }
     }
     for (scope, scoped_block) in direct_child_blocks(block) {
-        if is_trigger_child_context(&scope, index) {
+        if is_trigger_child_context(&scope, index) || is_trigger_control_block(&scope) {
             check_unknown_trigger_keys_in_block(
                 path,
                 context,
@@ -2326,6 +4091,9 @@ pub(crate) fn report_unknown_trigger_key(
     if !is_trigger_key_candidate(key) {
         return;
     }
+    if is_trigger_child_context(key, index) || is_trigger_control_block(key) {
+        return;
+    }
     if index.triggers.contains(key) {
         return;
     }
@@ -2340,13 +4108,32 @@ pub(crate) fn report_unknown_trigger_key(
 pub(crate) fn is_trigger_child_context(key: &str, index: &GameIndex) -> bool {
     matches!(
         key,
-        "NOT" | "OR" | "AND" | "NOR" | "ROOT" | "FROM" | "PREV" | "THIS"
+        "NOT"
+            | "OR"
+            | "AND"
+            | "NOR"
+            | "ROOT"
+            | "FROM"
+            | "PREV"
+            | "THIS"
+            | "OVERLORD"
+            | "owner"
+            | "controller"
+            | "capital_scope"
     ) || index.country_tags.contains(key)
         || looks_like_tag(key)
+        || parse_plain_i64(key).is_some()
+}
+
+pub(crate) fn is_trigger_control_block(key: &str) -> bool {
+    matches!(key, "if" | "else" | "else_if")
 }
 
 pub(crate) fn is_trigger_key_candidate(key: &str) -> bool {
     if !is_identifier_like(key) {
+        return false;
+    }
+    if parse_plain_i64(key).is_some() {
         return false;
     }
     !matches!(
@@ -2366,6 +4153,12 @@ pub(crate) fn is_trigger_key_candidate(key: &str) -> bool {
             | "state_trigger"
             | "custom_trigger_tooltip"
             | "tooltip"
+            | "prioritize"
+            | "count"
+            | "scope"
+            | "array"
+            | "var"
+            | "global"
             | "factor"
             | "base"
             | "modifier"
@@ -2384,6 +4177,12 @@ pub(crate) fn is_trigger_key_candidate(key: &str) -> bool {
             | "FROM"
             | "PREV"
             | "THIS"
+            | "OVERLORD"
+            | "owner"
+            | "controller"
+            | "if"
+            | "else"
+            | "else_if"
     )
 }
 
