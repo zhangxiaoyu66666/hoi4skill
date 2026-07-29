@@ -14,7 +14,11 @@ pub(crate) fn cmd_import_mod_ir(args: &[String]) -> Result<(), String> {
     let input = normalize_path(&input)?;
     let max_items = parse_usize_option(&map, "max-items", 1000)?;
     let resolved = resolve_mod_root(&input)?;
-    let json = import_mod_ir_json(&resolved, max_items)?;
+    let json = if map.flags.contains("skip-localisation") {
+        import_mod_ir_json_with_options(&resolved, max_items, false)?
+    } else {
+        import_mod_ir_json(&resolved, max_items)?
+    };
     write_or_print(&json, value(&map, "output"))
 }
 
@@ -89,6 +93,14 @@ pub(crate) fn import_mod_ir_json(
     resolved: &ModRootResolution,
     max_items: usize,
 ) -> Result<String, String> {
+    import_mod_ir_json_with_options(resolved, max_items, true)
+}
+
+fn import_mod_ir_json_with_options(
+    resolved: &ModRootResolution,
+    max_items: usize,
+    include_localisation: bool,
+) -> Result<String, String> {
     let root = &resolved.root;
     if !root.exists() {
         return Err(format!("{}: mod root does not exist", root.display()));
@@ -97,7 +109,11 @@ pub(crate) fn import_mod_ir_json(
         return Err(format!("{}: mod root is not a directory", root.display()));
     }
 
-    let localisation = collect_focus_localisation_map(root)?;
+    let localisation = if include_localisation {
+        collect_focus_localisation_map(root)?
+    } else {
+        BTreeMap::new()
+    };
     let mut focuses = import_focuses(root, &localisation)?;
     let mut events = import_events(root, &localisation)?;
     let mut ideas = import_ideas(root, &localisation)?;
@@ -155,7 +171,8 @@ pub(crate) fn import_mod_ir_json(
         imported_decisions_json(&decisions)
     ));
     out.push_str(&format!(
-        "  \"localisation\": {{\"language\": \"simp_chinese\", \"keys_total\": {}, \"keys_returned\": {}, \"entries\": {}}},\n",
+        "  \"localisation\": {{\"included\": {}, \"language\": \"simp_chinese\", \"keys_total\": {}, \"keys_returned\": {}, \"entries\": {}}},\n",
+        json_bool(include_localisation),
         localisation_total,
         localisation_entries.len(),
         json_object(&localisation_entries)
@@ -594,4 +611,46 @@ pub(crate) fn imported_decisions_json(values: &[ImportedDecision]) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     )
+}
+
+#[cfg(test)]
+mod import_ir_option_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn skip_localisation_avoids_loading_and_returning_localisation() {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("hoi4skill-import-skip-loc-{stamp}"));
+        let output = root.join("report.json");
+        fs::create_dir_all(root.join("common/national_focus")).unwrap();
+        fs::create_dir_all(root.join("localisation/simp_chinese")).unwrap();
+        fs::write(
+            root.join("common/national_focus/test.txt"),
+            "focus_tree = { id = test focus = { id = TEST_focus } }",
+        )
+        .unwrap();
+        fs::write(
+            root.join("localisation/simp_chinese/test_l_simp_chinese.yml"),
+            "l_simp_chinese:\n TEST_focus:0 \"测试国策\"\n",
+        )
+        .unwrap();
+
+        cmd_import_mod_ir(&[
+            root.to_string_lossy().to_string(),
+            "--skip-localisation".to_string(),
+            "--output".to_string(),
+            output.to_string_lossy().to_string(),
+        ])
+        .unwrap();
+        let report = read_utf8_lossy(&output).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert!(report.contains("\"included\": false"));
+        assert!(report.contains("\"localisation_keys_total\": 0"));
+        assert!(report.contains("\"title\": null"));
+    }
 }

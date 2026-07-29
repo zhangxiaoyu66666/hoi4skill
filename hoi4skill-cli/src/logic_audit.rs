@@ -27,6 +27,8 @@ pub(crate) fn cmd_logic_audit(args: &[String]) -> Result<(), String> {
 
 #[derive(Default)]
 struct LogicAuditReport {
+    source_files_scanned: usize,
+    source_bytes_read: u64,
     focus_total: usize,
     focus_trees_total: usize,
     focus_roots_total: usize,
@@ -137,10 +139,11 @@ fn audit_logic(root: &Path) -> Result<LogicAuditReport, String> {
     if !root.is_dir() {
         return Err(format!("{}: mod root is not a directory", root.display()));
     }
-    let nodes = collect_focus_logic_nodes(root)?;
-    let event_nodes = collect_event_logic_nodes(root)?;
-    let event_refs = collect_event_logic_refs(root)?;
-    let flag_refs = collect_event_flag_refs(root)?;
+    let sources = collect_logic_source_facts(root)?;
+    let nodes = sources.focus_nodes;
+    let event_nodes = sources.event_nodes;
+    let event_refs = sources.event_refs;
+    let flag_refs = sources.flag_refs;
     let mut by_id = BTreeMap::<String, Vec<FocusLogicNode>>::new();
     let mut tree_ids = BTreeSet::new();
     for node in &nodes {
@@ -151,6 +154,8 @@ fn audit_logic(root: &Path) -> Result<LogicAuditReport, String> {
     }
 
     let mut report = LogicAuditReport {
+        source_files_scanned: sources.files_scanned,
+        source_bytes_read: sources.bytes_read,
         focus_total: nodes.len(),
         focus_trees_total: tree_ids.len(),
         event_total: event_nodes.len(),
@@ -402,39 +407,103 @@ fn audit_event_logic(
     audit_event_flag_lifecycle(flag_refs, report);
 }
 
-fn collect_focus_logic_nodes(root: &Path) -> Result<Vec<FocusLogicNode>, String> {
-    let mut nodes = Vec::new();
-    for file in txt_files(root, "common/national_focus")? {
-        let text = strip_comments(&read_utf8_lossy(&file)?);
-        let rel = rel_slash(root, &file);
-        let trees = direct_blocks_named(&text, "focus_tree");
-        if trees.is_empty() {
-            collect_focus_logic_blocks(
-                &mut nodes,
-                &rel,
-                "",
-                "",
-                &direct_blocks_named(&text, "focus"),
-            );
+#[derive(Default)]
+struct LogicSourceFacts {
+    files_scanned: usize,
+    bytes_read: u64,
+    focus_nodes: Vec<FocusLogicNode>,
+    event_nodes: Vec<EventLogicNode>,
+    event_refs: Vec<EventLogicRef>,
+    flag_refs: Vec<EventFlagRef>,
+}
+
+fn collect_logic_source_facts(root: &Path) -> Result<LogicSourceFacts, String> {
+    let mut facts = LogicSourceFacts::default();
+    for relative_root in HOI4_PROFILE.script_roots {
+        let directory = root.join(relative_root);
+        if !directory.exists() {
             continue;
         }
-        for tree in trees {
-            let tree_id = block_assignment(&tree, "id").unwrap_or_default();
-            let country_tag = direct_blocks_named(&tree, "country")
-                .first()
-                .and_then(|block| block_assignment(block, "tag"))
-                .unwrap_or_default();
-            collect_focus_logic_blocks(
-                &mut nodes,
-                &rel,
-                &tree_id,
-                &country_tag,
-                &direct_blocks_named(&tree, "focus"),
-            );
+        for file in collect_files(&directory)? {
+            if file.extension().and_then(OsStr::to_str).unwrap_or("") != "txt" {
+                continue;
+            }
+            let raw = read_utf8_lossy(&file)?;
+            facts.files_scanned += 1;
+            facts.bytes_read = facts.bytes_read.saturating_add(raw.len() as u64);
+            let text = strip_comments(&raw);
+            let rel = rel_slash(root, &file);
+
+            if rel.starts_with("common/national_focus/") {
+                collect_focus_logic_nodes_from_text(&mut facts.focus_nodes, &rel, &text);
+            }
+            if rel.starts_with("events/") {
+                collect_event_logic_nodes_from_text(&mut facts.event_nodes, &rel, &text);
+                collect_event_logic_refs_from_event_file(&mut facts.event_refs, &rel, &text);
+                collect_event_flag_refs_from_event_file(&mut facts.flag_refs, &rel, &text);
+            } else {
+                collect_external_event_logic_refs_from_text(&mut facts.event_refs, &rel, &text);
+            }
+            collect_event_flag_refs_from_text(&mut facts.flag_refs, &rel, None, "project", &text);
         }
     }
-    nodes.sort_by(|a, b| a.tree_id.cmp(&b.tree_id).then(a.id.cmp(&b.id)));
-    Ok(nodes)
+
+    facts
+        .focus_nodes
+        .sort_by(|a, b| a.tree_id.cmp(&b.tree_id).then(a.id.cmp(&b.id)));
+    facts
+        .event_nodes
+        .sort_by(|a, b| a.file.cmp(&b.file).then(a.id.cmp(&b.id)));
+    facts.event_refs.sort_by(|a, b| {
+        a.file
+            .cmp(&b.file)
+            .then(a.source_event_id.cmp(&b.source_event_id))
+            .then(a.context.cmp(&b.context))
+            .then(a.id.cmp(&b.id))
+    });
+    facts.event_refs.dedup_by(|a, b| {
+        a.id == b.id
+            && a.file == b.file
+            && a.event_type == b.event_type
+            && a.source_event_id == b.source_event_id
+            && a.context == b.context
+    });
+    facts.flag_refs.sort_by(|a, b| {
+        a.flag
+            .cmp(&b.flag)
+            .then(a.action.cmp(&b.action))
+            .then(a.file.cmp(&b.file))
+            .then(a.source_event_id.cmp(&b.source_event_id))
+    });
+    facts.flag_refs.dedup_by(|a, b| {
+        a.flag == b.flag
+            && a.file == b.file
+            && a.source_event_id == b.source_event_id
+            && a.action == b.action
+    });
+    Ok(facts)
+}
+
+fn collect_focus_logic_nodes_from_text(nodes: &mut Vec<FocusLogicNode>, rel: &str, text: &str) {
+    let trees = direct_blocks_named(text, "focus_tree");
+    if trees.is_empty() {
+        collect_focus_logic_blocks(nodes, rel, "", "", &direct_blocks_named(text, "focus"));
+        return;
+    }
+    for tree in trees {
+        let tree_id = block_assignment(&tree, "id").unwrap_or_default();
+        let country_tag = direct_blocks_named(&tree, "country")
+            .first()
+            .and_then(|block| block_assignment(block, "tag"))
+            .unwrap_or_default();
+        collect_focus_logic_blocks(
+            nodes,
+            rel,
+            &tree_id,
+            &country_tag,
+            &direct_blocks_named(&tree, "focus"),
+        );
+    }
 }
 
 fn collect_focus_logic_blocks(
@@ -459,29 +528,22 @@ fn collect_focus_logic_blocks(
     }
 }
 
-fn collect_event_logic_nodes(root: &Path) -> Result<Vec<EventLogicNode>, String> {
-    let mut nodes = Vec::new();
-    for file in txt_files(root, "events")? {
-        let text = strip_comments(&read_utf8_lossy(&file)?);
-        let rel = rel_slash(root, &file);
-        for event_type in ["country_event", "news_event", "state_event"] {
-            for block in direct_blocks_named(&text, event_type) {
-                let Some(id) = block_assignment(&block, "id") else {
-                    continue;
-                };
-                nodes.push(EventLogicNode {
-                    id,
-                    file: rel.clone(),
-                    event_type: event_type.to_string(),
-                    is_triggered_only: block_assignment(&block, "is_triggered_only")
-                        .is_some_and(|value| value.eq_ignore_ascii_case("yes")),
-                    empty_option_indexes: empty_event_option_indexes(&block),
-                });
-            }
+fn collect_event_logic_nodes_from_text(nodes: &mut Vec<EventLogicNode>, rel: &str, text: &str) {
+    for event_type in ["country_event", "news_event", "state_event"] {
+        for block in direct_blocks_named(text, event_type) {
+            let Some(id) = block_assignment(&block, "id") else {
+                continue;
+            };
+            nodes.push(EventLogicNode {
+                id,
+                file: rel.to_string(),
+                event_type: event_type.to_string(),
+                is_triggered_only: block_assignment(&block, "is_triggered_only")
+                    .is_some_and(|value| value.eq_ignore_ascii_case("yes")),
+                empty_option_indexes: empty_event_option_indexes(&block),
+            });
         }
     }
-    nodes.sort_by(|a, b| a.file.cmp(&b.file).then(a.id.cmp(&b.id)));
-    Ok(nodes)
 }
 
 fn empty_event_option_indexes(event_block: &str) -> Vec<usize> {
@@ -589,80 +651,28 @@ fn direct_assignment_keys(block: &str) -> Vec<String> {
     keys
 }
 
-fn collect_event_logic_refs(root: &Path) -> Result<Vec<EventLogicRef>, String> {
-    let mut refs = Vec::new();
-    for file in collect_files(root)? {
-        if file.extension().and_then(OsStr::to_str).unwrap_or("") != "txt" {
-            continue;
-        }
-        let text = strip_comments(&read_utf8_lossy(&file)?);
-        let rel = rel_slash(root, &file);
-        if rel.starts_with("events/") {
-            collect_event_logic_refs_from_event_file(&mut refs, &rel, &text);
-            continue;
-        }
-        for event_type in ["country_event", "news_event", "state_event"] {
-            for block in blocks_named(&text, event_type) {
-                let Some(id) = block_assignment(&block, "id") else {
-                    continue;
-                };
-                if looks_like_event_definition_block(&block) {
-                    continue;
-                }
-                refs.push(EventLogicRef {
-                    id,
-                    file: rel.clone(),
-                    event_type: event_type.to_string(),
-                    source_event_id: None,
-                    context: "external".to_string(),
-                });
+fn collect_external_event_logic_refs_from_text(
+    refs: &mut Vec<EventLogicRef>,
+    rel: &str,
+    text: &str,
+) {
+    for event_type in ["country_event", "news_event", "state_event"] {
+        for block in blocks_named(text, event_type) {
+            let Some(id) = block_assignment(&block, "id") else {
+                continue;
+            };
+            if looks_like_event_definition_block(&block) {
+                continue;
             }
+            refs.push(EventLogicRef {
+                id,
+                file: rel.to_string(),
+                event_type: event_type.to_string(),
+                source_event_id: None,
+                context: "external".to_string(),
+            });
         }
     }
-    refs.sort_by(|a, b| {
-        a.file
-            .cmp(&b.file)
-            .then(a.source_event_id.cmp(&b.source_event_id))
-            .then(a.context.cmp(&b.context))
-            .then(a.id.cmp(&b.id))
-    });
-    refs.dedup_by(|a, b| {
-        a.id == b.id
-            && a.file == b.file
-            && a.event_type == b.event_type
-            && a.source_event_id == b.source_event_id
-            && a.context == b.context
-    });
-    Ok(refs)
-}
-
-fn collect_event_flag_refs(root: &Path) -> Result<Vec<EventFlagRef>, String> {
-    let mut refs = Vec::new();
-    for file in collect_files(root)? {
-        if file.extension().and_then(OsStr::to_str).unwrap_or("") != "txt" {
-            continue;
-        }
-        let text = strip_comments(&read_utf8_lossy(&file)?);
-        let rel = rel_slash(root, &file);
-        if rel.starts_with("events/") {
-            collect_event_flag_refs_from_event_file(&mut refs, &rel, &text);
-        }
-        collect_event_flag_refs_from_text(&mut refs, &rel, None, "project", &text);
-    }
-    refs.sort_by(|a, b| {
-        a.flag
-            .cmp(&b.flag)
-            .then(a.action.cmp(&b.action))
-            .then(a.file.cmp(&b.file))
-            .then(a.source_event_id.cmp(&b.source_event_id))
-    });
-    refs.dedup_by(|a, b| {
-        a.flag == b.flag
-            && a.file == b.file
-            && a.source_event_id == b.source_event_id
-            && a.action == b.action
-    });
-    Ok(refs)
 }
 
 fn collect_event_flag_refs_from_event_file(refs: &mut Vec<EventFlagRef>, file: &str, text: &str) {
@@ -1003,11 +1013,13 @@ fn logic_audit_json(
         + report.event_flag_sets_without_readers.len()
         + report.event_flag_reads_without_local_sets.len();
     format!(
-        "{{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"mod_root\": {},\n  \"input\": {},\n  \"input_kind\": {},\n  \"ok\": {},\n  \"focus_total\": {},\n  \"focus_trees_total\": {},\n  \"focus_roots_total\": {},\n  \"event_total\": {},\n  \"event_refs_total\": {},\n  \"event_chain_edge_count\": {},\n  \"event_chain_entry_count\": {},\n  \"event_chain_terminal_count\": {},\n  \"event_chain_isolated_count\": {},\n  \"event_chain_cycle_count\": {},\n  \"issue_count\": {},\n  \"changed_files\": {},\n  \"broken_focus_refs_count\": {},\n  \"cross_tree_focus_refs_count\": {},\n  \"asymmetric_mutual_exclusions_count\": {},\n  \"unreachable_focuses_count\": {},\n  \"empty_focus_trees_count\": {},\n  \"broken_event_refs_count\": {},\n  \"event_type_mismatches_count\": {},\n  \"potential_orphan_events_count\": {},\n  \"empty_event_options_count\": {},\n  \"event_cycle_issues_count\": {},\n  \"event_flag_sets_without_readers_count\": {},\n  \"event_flag_reads_without_local_sets_count\": {},\n  \"broken_focus_refs\": {},\n  \"cross_tree_focus_refs\": {},\n  \"asymmetric_mutual_exclusions\": {},\n  \"unreachable_focuses\": {},\n  \"empty_focus_trees\": {},\n  \"broken_event_refs\": {},\n  \"event_type_mismatches\": {},\n  \"potential_orphan_events\": {},\n  \"empty_event_options\": {},\n  \"event_cycle_issues\": {},\n  \"event_flag_sets_without_readers\": {},\n  \"event_flag_reads_without_local_sets\": {},\n  \"event_chain_edges\": {},\n  \"event_chain_entry_events\": {},\n  \"event_chain_terminal_events\": {},\n  \"event_chain_isolated_events\": {},\n  \"event_chain_cycles\": {},\n  \"suggested_commands\": {}\n}}\n",
+        "{{\n  \"schema\": \"hoi4skill.logic_audit.v1\",\n  \"mod_root\": {},\n  \"input\": {},\n  \"input_kind\": {},\n  \"ok\": {},\n  \"source_files_scanned\": {},\n  \"source_bytes_read\": {},\n  \"focus_total\": {},\n  \"focus_trees_total\": {},\n  \"focus_roots_total\": {},\n  \"event_total\": {},\n  \"event_refs_total\": {},\n  \"event_chain_edge_count\": {},\n  \"event_chain_entry_count\": {},\n  \"event_chain_terminal_count\": {},\n  \"event_chain_isolated_count\": {},\n  \"event_chain_cycle_count\": {},\n  \"issue_count\": {},\n  \"changed_files\": {},\n  \"broken_focus_refs_count\": {},\n  \"cross_tree_focus_refs_count\": {},\n  \"asymmetric_mutual_exclusions_count\": {},\n  \"unreachable_focuses_count\": {},\n  \"empty_focus_trees_count\": {},\n  \"broken_event_refs_count\": {},\n  \"event_type_mismatches_count\": {},\n  \"potential_orphan_events_count\": {},\n  \"empty_event_options_count\": {},\n  \"event_cycle_issues_count\": {},\n  \"event_flag_sets_without_readers_count\": {},\n  \"event_flag_reads_without_local_sets_count\": {},\n  \"broken_focus_refs\": {},\n  \"cross_tree_focus_refs\": {},\n  \"asymmetric_mutual_exclusions\": {},\n  \"unreachable_focuses\": {},\n  \"empty_focus_trees\": {},\n  \"broken_event_refs\": {},\n  \"event_type_mismatches\": {},\n  \"potential_orphan_events\": {},\n  \"empty_event_options\": {},\n  \"event_cycle_issues\": {},\n  \"event_flag_sets_without_readers\": {},\n  \"event_flag_reads_without_local_sets\": {},\n  \"event_chain_edges\": {},\n  \"event_chain_entry_events\": {},\n  \"event_chain_terminal_events\": {},\n  \"event_chain_isolated_events\": {},\n  \"event_chain_cycles\": {},\n  \"suggested_commands\": {}\n}}\n",
         json_str(&resolved.root.display().to_string()),
         json_str(&resolved.input.display().to_string()),
         json_str(&resolved.input_kind),
         json_bool(issue_count == 0),
+        report.source_files_scanned,
+        report.source_bytes_read,
         report.focus_total,
         report.focus_trees_total,
         report.focus_roots_total,
@@ -1147,4 +1159,60 @@ fn logic_issue_touches_changed(issue: &LogicIssue, changed_files: &[String]) -> 
 
 fn logic_file_touches_changed(file: &str, changed: &str) -> bool {
     file == changed || file.starts_with(changed) || changed.starts_with(file)
+}
+
+#[cfg(test)]
+mod logic_source_tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("hoi4skill-{name}-{stamp}"))
+    }
+
+    #[test]
+    fn logic_source_scan_reads_only_profile_script_roots_once() {
+        let root = temp_root("logic-source-roots");
+        fs::create_dir_all(root.join("common/national_focus")).unwrap();
+        fs::create_dir_all(root.join("events")).unwrap();
+        fs::create_dir_all(root.join("history/countries")).unwrap();
+        fs::create_dir_all(root.join("gfx/cache")).unwrap();
+        fs::write(
+            root.join("common/national_focus/test.txt"),
+            "focus_tree = { id = test focus = { id = TEST_focus } }",
+        )
+        .unwrap();
+        fs::write(
+            root.join("events/test.txt"),
+            "country_event = { id = test.1 option = { country_event = { id = test.2 } } }",
+        )
+        .unwrap();
+        fs::write(
+            root.join("history/countries/TEST.txt"),
+            "1936.1.1 = { country_event = { id = test.1 } }",
+        )
+        .unwrap();
+        fs::write(
+            root.join("gfx/cache/not_gameplay.txt"),
+            "country_event = { id = should.not_be_scanned }",
+        )
+        .unwrap();
+
+        let facts = collect_logic_source_facts(&root).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+
+        assert_eq!(facts.files_scanned, 3);
+        assert_eq!(facts.focus_nodes.len(), 1);
+        assert_eq!(facts.event_nodes.len(), 1);
+        assert!(facts.event_refs.iter().any(|item| item.id == "test.1"));
+        assert!(facts.event_refs.iter().any(|item| item.id == "test.2"));
+        assert!(!facts
+            .event_refs
+            .iter()
+            .any(|item| item.id == "should.not_be_scanned"));
+    }
 }

@@ -3393,7 +3393,7 @@ fn supply_route_text_plan_json(plan: &SupplyRouteTextPlan) -> String {
         "[{{\"endpoint_count\": {}, \"requested_fortification\": {}, \"endpoints\": {}, \"suggested_supply_operations\": {}, \"blockers\": {}, \"questions\": {}}}]",
         plan.endpoints.len(),
         json_bool(plan.requested_fortification),
-        format!(
+        format_args!(
             "[{}]",
             plan.endpoints
                 .iter()

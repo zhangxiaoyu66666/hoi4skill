@@ -12,6 +12,13 @@ pub struct ClausewitzGameProfile {
     pub display_name: &'static str,
     /// Event id limit when the game uses namespace-number event ids.
     pub event_id_max: Option<i64>,
+    /// Top-level directories whose `.txt` files participate in executable
+    /// Clausewitz gameplay logic.
+    ///
+    /// Keeping this in the game profile avoids teaching every audit its own
+    /// directory list and, importantly, prevents script-only audits from
+    /// traversing large asset trees such as `gfx`.
+    pub script_roots: &'static [&'static str],
 }
 
 pub const HOI4_EVENT_ID_MAX: i64 = 200_000;
@@ -20,6 +27,7 @@ pub const HOI4_PROFILE: ClausewitzGameProfile = ClausewitzGameProfile {
     id: "hoi4",
     display_name: "Hearts of Iron IV",
     event_id_max: Some(HOI4_EVENT_ID_MAX),
+    script_roots: &["common", "events", "history"],
 };
 
 pub(crate) const EVENT_ID_MAX: i64 = HOI4_EVENT_ID_MAX;
