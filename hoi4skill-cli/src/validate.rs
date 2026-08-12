@@ -16,7 +16,9 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
     let dependency_mods = dependency_mod_roots_for_edited_mod(&map, &root, game_root.is_some())?;
     let game_index = game_root
         .as_ref()
-        .map(|path| build_game_index_with_mod_paths(path, &dependency_mods))
+        .map(|path| {
+            build_game_index_with_profile(path, &dependency_mods, GameIndexProfile::Validation)
+        })
         .transpose()?;
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during validation".to_string());
@@ -68,7 +70,9 @@ pub(crate) fn cmd_validation_baseline(args: &[String]) -> Result<(), String> {
     let dependency_mods = dependency_mod_roots_for_edited_mod(&map, &root, game_root.is_some())?;
     let game_index = game_root
         .as_ref()
-        .map(|path| build_game_index_with_mod_paths(path, &dependency_mods))
+        .map(|path| {
+            build_game_index_with_profile(path, &dependency_mods, GameIndexProfile::Validation)
+        })
         .transpose()?;
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during validation".to_string());
@@ -115,7 +119,8 @@ pub(crate) fn cmd_validate_repair_context(args: &[String]) -> Result<(), String>
         .transpose()?
         .ok_or_else(|| "validate-repair-context requires --game-root".to_string())?;
     let dependency_mods = dependency_mod_roots_for_edited_mod(&map, &root, true)?;
-    let game_index = build_game_index_with_mod_paths(&game_root, &dependency_mods)?;
+    let game_index =
+        build_game_index_with_profile(&game_root, &dependency_mods, GameIndexProfile::Validation)?;
     let mut options = validation_options_from_args(&map);
     options.strict_code_index = true;
     let mut reporter = validate_mod_with_options(&root, Some(&game_index), options)?;
@@ -370,9 +375,10 @@ pub(crate) fn validate_mod_with_options(
     options: ValidationOptions,
 ) -> Result<Reporter, String> {
     let mut reporter = Reporter::default();
+    let base_game_index = game_index;
     let mut effective_game_index = None;
-    if let Some(index) = game_index {
-        let mut index = index.clone();
+    if let Some(index) = base_game_index {
+        let mut index = clone_game_index_for_validation(index);
         if root.is_dir() {
             let root_key = slash_path(root).to_ascii_lowercase();
             if !index
@@ -382,16 +388,17 @@ pub(crate) fn validate_mod_with_options(
             {
                 index.indexed_roots.push(root.to_path_buf());
             }
-            collect_game_index_root(&mut index, root)?;
+            collect_game_index_root_with_profile(&mut index, root, GameIndexProfile::Validation)?;
         }
         effective_game_index = Some(index);
     }
-    let game_index = effective_game_index.as_ref().or(game_index);
+    let game_index = effective_game_index.as_ref().or(base_game_index);
     let mut ids: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut namespaces: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut localisation_keys: BTreeSet<String> = BTreeSet::new();
     let mut localisation_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut sprite_names: BTreeSet<String> = BTreeSet::new();
+    let mut raw_gfx_names: BTreeSet<String> = BTreeSet::new();
     let mut gfx_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut idea_picture_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
     let mut event_picture_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
@@ -419,27 +426,28 @@ pub(crate) fn validate_mod_with_options(
             }
             if matches!(ext.as_str(), "txt" | "mod" | "gfx" | "gui" | "asset") {
                 let text = read_utf8_lossy(&file)?;
-                check_braces(&file, &text, &mut reporter);
+                let cleaned = strip_comments(&text);
+                check_braces_cleaned(&file, &cleaned, &mut reporter);
                 collect_ids_and_namespaces(&file, &text, &mut ids, &mut namespaces, &mut reporter);
                 collect_localisation_refs(&file, &text, &mut localisation_refs, &mut reporter);
                 if ext == "gfx" && norm.contains("/interface/") {
                     collect_sprite_names(&text, &mut sprite_names);
+                    raw_gfx_names.extend(raw_gfx_name_assignments(&text));
                     check_sprite_textures(root, &file, &text, game_index, &mut reporter);
                 } else {
-                    collect_gfx_refs(&file, &text, &mut gfx_refs);
+                    collect_gfx_refs_cleaned(&file, &cleaned, &mut gfx_refs);
                 }
-                collect_idea_picture_refs(&file, &text, &mut idea_picture_refs, &mut reporter);
-                collect_event_picture_refs(&file, &text, &mut event_picture_refs);
-                collect_country_tag_refs(&file, &text, &mut tag_refs);
-                collect_focus_refs(&file, &text, &mut focus_refs, &mut local_focus_ids);
-                collect_game_data_refs(&file, &text, &mut game_data_refs);
-                check_script_semantics_with_options(
+                collect_idea_picture_refs_cleaned(
                     &file,
-                    &text,
-                    game_index,
-                    options,
+                    &cleaned,
+                    &mut idea_picture_refs,
                     &mut reporter,
                 );
+                collect_event_picture_refs_cleaned(&file, &cleaned, &mut event_picture_refs);
+                collect_country_tag_refs_cleaned(&file, &cleaned, &mut tag_refs);
+                collect_focus_refs_cleaned(&file, &cleaned, &mut focus_refs, &mut local_focus_ids);
+                collect_game_data_refs_cleaned(&file, &cleaned, &mut game_data_refs);
+                check_script_semantics_cleaned(&file, &cleaned, game_index, options, &mut reporter);
                 check_unresolved_generation_markers(&file, &text, options, &mut reporter);
             } else if matches!(ext.as_str(), "yml" | "yaml") {
                 let text = read_utf8_lossy(&file)?;
@@ -505,7 +513,9 @@ pub(crate) fn validate_mod_with_options(
         }
     }
     for (key, paths) in localisation_refs {
-        if !is_known_localisation_key(&key, &localisation_keys, game_index) {
+        if !is_known_localisation_key(&key, &localisation_keys, game_index)
+            && !is_known_localisation_key(&key, &localisation_keys, base_game_index)
+        {
             report_paths(
                 &mut reporter,
                 game_index.is_some() || options.strict_code_index,
@@ -518,11 +528,18 @@ pub(crate) fn validate_mod_with_options(
     }
     for (sprite, paths) in gfx_refs {
         if !is_known_sprite_with_options(&sprite, &sprite_names, game_index, options) {
+            let classification = if raw_gfx_names.contains(&sprite)
+                || game_index.is_some_and(|index| index.raw_gfx_names.contains(&sprite))
+            {
+                "parser_gap"
+            } else {
+                "confirmed_missing"
+            };
             report_paths(
                 &mut reporter,
                 game_index.is_some() || options.strict_code_index,
                 format!(
-                    "GFX key {sprite} is referenced but not defined in this mod or indexed roots"
+                    "[{classification}] GFX key {sprite} is referenced but not defined in this mod or indexed roots"
                 ),
                 &paths,
             );
@@ -723,6 +740,38 @@ pub(crate) fn validate_mod_with_options(
     }
 
     Ok(reporter)
+}
+
+pub(crate) fn clone_game_index_for_validation(index: &GameIndex) -> GameIndex {
+    GameIndex {
+        game_root: index.game_root.clone(),
+        indexed_roots: index.indexed_roots.clone(),
+        country_tags: index.country_tags.clone(),
+        focus_ids: index.focus_ids.clone(),
+        state_ids: index.state_ids.clone(),
+        province_ids: index.province_ids.clone(),
+        sprites: index.sprites.clone(),
+        raw_gfx_names: index.raw_gfx_names.clone(),
+        idea_pictures: index.idea_pictures.clone(),
+        event_pictures: index.event_pictures.clone(),
+        buildings: index.buildings.clone(),
+        building_max_levels: index.building_max_levels.clone(),
+        resources: index.resources.clone(),
+        ideologies: index.ideologies.clone(),
+        traits: index.traits.clone(),
+        equipment_types: index.equipment_types.clone(),
+        technologies: index.technologies.clone(),
+        technology_categories: index.technology_categories.clone(),
+        sub_units: index.sub_units.clone(),
+        wargoal_types: index.wargoal_types.clone(),
+        effects: index.effects.clone(),
+        triggers: index.triggers.clone(),
+        modifiers: index.modifiers.clone(),
+        ideas: index.ideas.clone(),
+        dynamic_modifiers: index.dynamic_modifiers.clone(),
+        dynamic_modifier_variables: index.dynamic_modifier_variables.clone(),
+        ..Default::default()
+    }
 }
 
 #[derive(Default)]
@@ -2186,6 +2235,10 @@ pub(crate) fn jsonl_top_level_keys(line: &str) -> Vec<String> {
 
 pub(crate) fn check_braces(path: &Path, text: &str, reporter: &mut Reporter) {
     let cleaned = strip_comments(text);
+    check_braces_cleaned(path, &cleaned, reporter);
+}
+
+fn check_braces_cleaned(path: &Path, cleaned: &str, reporter: &mut Reporter) {
     let mut depth: i32 = 0;
     let mut in_quote = false;
     let mut escape = false;
@@ -2476,8 +2529,8 @@ pub(crate) fn check_sprite_textures(
     game_index: Option<&GameIndex>,
     reporter: &mut Reporter,
 ) {
-    for block in sprite_type_blocks(text) {
-        if let Some(texturefile) = block_assignment(&block, "texturefile") {
+    for block in textured_gfx_type_blocks(text) {
+        if let Some(texturefile) = gfx_texturefile_assignment(&block) {
             if resolve_texture_in_indexed_roots(root, &texturefile, game_index).is_none() {
                 reporter.warn(format!(
                     "{}: sprite texturefile not found in this mod or indexed roots: {}",
@@ -2506,7 +2559,7 @@ pub(crate) fn resolve_texture_in_indexed_roots(
 }
 
 pub(crate) fn collect_sprite_names(text: &str, sprite_names: &mut BTreeSet<String>) {
-    for block in sprite_type_blocks(text) {
+    for block in named_gfx_type_blocks(text) {
         if let Some(name) = block_assignment(&block, "name") {
             sprite_names.insert(name);
         }
@@ -2518,7 +2571,22 @@ pub(crate) fn collect_gfx_refs(
     text: &str,
     refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
 ) {
-    for token in token_candidates(&strip_comments(text)) {
+    if !text.contains("GFX_") {
+        return;
+    }
+    let cleaned = strip_comments(text);
+    collect_gfx_refs_cleaned(path, &cleaned, refs);
+}
+
+fn collect_gfx_refs_cleaned(
+    path: &Path,
+    cleaned: &str,
+    refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+) {
+    if !cleaned.contains("GFX_") {
+        return;
+    }
+    for token in token_candidates(cleaned) {
         if token.starts_with("GFX_") {
             refs.entry(token.to_string())
                 .or_default()
@@ -2527,16 +2595,27 @@ pub(crate) fn collect_gfx_refs(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn collect_idea_picture_refs(
     path: &Path,
     text: &str,
     refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
     reporter: &mut Reporter,
 ) {
+    let cleaned = strip_comments(text);
+    collect_idea_picture_refs_cleaned(path, &cleaned, refs, reporter);
+}
+
+fn collect_idea_picture_refs_cleaned(
+    path: &Path,
+    cleaned: &str,
+    refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+    reporter: &mut Reporter,
+) {
     if !slash_path(path).contains("/common/ideas/") {
         return;
     }
-    for picture in assignment_values_in_text(&strip_comments(text), "picture") {
+    for picture in assignment_values_in_text(cleaned, "picture") {
         let picture = picture.trim_matches('"');
         if picture.starts_with("GFX_idea_") {
             reporter.error(format!(
@@ -2554,15 +2633,25 @@ pub(crate) fn collect_idea_picture_refs(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn collect_event_picture_refs(
     path: &Path,
     text: &str,
     refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
 ) {
+    let cleaned = strip_comments(text);
+    collect_event_picture_refs_cleaned(path, &cleaned, refs);
+}
+
+fn collect_event_picture_refs_cleaned(
+    path: &Path,
+    cleaned: &str,
+    refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+) {
     if !slash_path(path).contains("/events/") {
         return;
     }
-    for block in event_blocks(&strip_comments(text)) {
+    for block in event_blocks(cleaned) {
         let Some(picture) = block_assignment(&block, "picture") else {
             continue;
         };
@@ -2575,9 +2664,19 @@ pub(crate) fn collect_event_picture_refs(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn collect_country_tag_refs(
     path: &Path,
     text: &str,
+    refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+) {
+    let cleaned = strip_comments(text);
+    collect_country_tag_refs_cleaned(path, &cleaned, refs);
+}
+
+fn collect_country_tag_refs_cleaned(
+    path: &Path,
+    cleaned: &str,
     refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
 ) {
     let norm = slash_path(path);
@@ -2589,7 +2688,6 @@ pub(crate) fn collect_country_tag_refs(
     {
         return;
     }
-    let cleaned = strip_comments(text);
     for key in [
         "tag",
         "original_tag",
@@ -2598,7 +2696,7 @@ pub(crate) fn collect_country_tag_refs(
         "add_core_of",
         "set_cosmetic_tag",
     ] {
-        for value in assignment_values_in_text(&cleaned, key) {
+        for value in assignment_values_in_text(cleaned, key) {
             if looks_like_tag(&value) {
                 refs.entry(value).or_default().insert(path.to_path_buf());
             }
@@ -2606,9 +2704,20 @@ pub(crate) fn collect_country_tag_refs(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn collect_focus_refs(
     path: &Path,
     text: &str,
+    refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+    local_ids: &mut BTreeSet<String>,
+) {
+    let cleaned = strip_comments(text);
+    collect_focus_refs_cleaned(path, &cleaned, refs, local_ids);
+}
+
+fn collect_focus_refs_cleaned(
+    path: &Path,
+    cleaned: &str,
     refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
     local_ids: &mut BTreeSet<String>,
 ) {
@@ -2616,8 +2725,7 @@ pub(crate) fn collect_focus_refs(
     if !norm.contains("/common/national_focus/") {
         return;
     }
-    let cleaned = strip_comments(text);
-    for block in blocks_named(&cleaned, "focus") {
+    for block in blocks_named(cleaned, "focus") {
         if let Some(id) = block_assignment(&block, "id") {
             local_ids.insert(id.clone());
         }
@@ -2661,7 +2769,13 @@ pub(crate) struct GameDataRefs {
     pub(crate) dynamic_modifier_variables: BTreeMap<String, BTreeSet<PathBuf>>,
 }
 
+#[allow(dead_code)]
 pub(crate) fn collect_game_data_refs(path: &Path, text: &str, refs: &mut GameDataRefs) {
+    let cleaned = strip_comments(text);
+    collect_game_data_refs_cleaned(path, &cleaned, refs);
+}
+
+fn collect_game_data_refs_cleaned(path: &Path, cleaned: &str, refs: &mut GameDataRefs) {
     let norm = slash_path(path);
     if !(norm.contains("/common/")
         || norm.contains("/events/")
@@ -2670,8 +2784,7 @@ pub(crate) fn collect_game_data_refs(path: &Path, text: &str, refs: &mut GameDat
     {
         return;
     }
-    let cleaned = strip_comments(text);
-    for block in blocks_named(&cleaned, "add_building_construction") {
+    for block in blocks_named(cleaned, "add_building_construction") {
         if let Some(building) = block_assignment(&block, "type") {
             add_ref(&mut refs.buildings, &building, path);
             if let Some(level) = block_assignment(&block, "level").and_then(|s| s.parse().ok()) {
@@ -2683,19 +2796,19 @@ pub(crate) fn collect_game_data_refs(path: &Path, text: &str, refs: &mut GameDat
             }
         }
     }
-    for block in blocks_named(&cleaned, "add_resource") {
+    for block in blocks_named(cleaned, "add_resource") {
         if let Some(resource) = block_assignment(&block, "type") {
             add_ref(&mut refs.resources, &resource, path);
         }
     }
     for key in ["ruling_party", "ideology"] {
-        for ideology in assignment_values_in_text(&cleaned, key) {
+        for ideology in assignment_values_in_text(cleaned, key) {
             if is_identifier_like(&ideology) {
                 add_ref(&mut refs.ideologies, &ideology, path);
             }
         }
     }
-    for block in blocks_named(&cleaned, "traits") {
+    for block in blocks_named(cleaned, "traits") {
         for token in token_candidates(&block) {
             if is_reference_identifier(token) {
                 add_ref(&mut refs.traits, token, path);
@@ -2740,7 +2853,7 @@ pub(crate) fn collect_game_data_refs(path: &Path, text: &str, refs: &mut GameDat
     }
     for block in blocks_named(&cleaned, "set_technology") {
         for key in direct_block_keys(&block) {
-            if is_reference_identifier(&key) {
+            if !is_set_technology_metadata_key(&key) && is_reference_identifier(&key) {
                 add_ref(&mut refs.technologies, &key, path);
             }
         }
@@ -2823,6 +2936,10 @@ pub(crate) fn collect_game_data_refs(path: &Path, text: &str, refs: &mut GameDat
     if norm.contains("/common/scripted_effects/") {
         collect_dynamic_modifier_change_effect_refs(path, &cleaned, refs);
     }
+}
+
+pub(crate) fn is_set_technology_metadata_key(key: &str) -> bool {
+    matches!(key, "popup")
 }
 
 pub(crate) fn collect_dynamic_modifier_definition_refs(
@@ -3156,6 +3273,17 @@ pub(crate) fn check_script_semantics_with_options(
     options: ValidationOptions,
     reporter: &mut Reporter,
 ) {
+    let cleaned = strip_comments(text);
+    check_script_semantics_cleaned(path, &cleaned, game_index, options, reporter);
+}
+
+fn check_script_semantics_cleaned(
+    path: &Path,
+    cleaned: &str,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+    reporter: &mut Reporter,
+) {
     let norm = slash_path(path);
     if !(norm.contains("/common/")
         || norm.contains("/events/")
@@ -3164,22 +3292,19 @@ pub(crate) fn check_script_semantics_with_options(
     {
         return;
     }
-    let cleaned = strip_comments(text);
     if norm.contains("/common/national_focus/") {
-        check_national_focus_fields(path, &cleaned, reporter);
+        check_national_focus_fields(path, cleaned, reporter);
     }
     if norm.contains("/events/") {
-        check_event_fields(path, &cleaned, reporter);
+        check_event_fields(path, cleaned, reporter);
     }
     if !norm.contains("/common/game_rules/") {
-        check_effect_contexts(path, &cleaned, game_index, options, reporter);
-        check_trigger_contexts(path, &cleaned, game_index, options, reporter);
+        check_effect_contexts(path, cleaned, game_index, options, reporter);
+        check_trigger_contexts(path, cleaned, game_index, options, reporter);
     }
-    check_scripted_helper_contexts(path, &norm, &cleaned, game_index, options, reporter);
-    check_dynamic_modifier_definition_contexts(
-        path, &norm, &cleaned, game_index, options, reporter,
-    );
-    check_suspicious_assignments(path, &cleaned, game_index, reporter);
+    check_scripted_helper_contexts(path, &norm, cleaned, game_index, options, reporter);
+    check_dynamic_modifier_definition_contexts(path, &norm, cleaned, game_index, options, reporter);
+    check_suspicious_assignments(path, cleaned, game_index, reporter);
 }
 
 pub(crate) fn check_scripted_helper_contexts(

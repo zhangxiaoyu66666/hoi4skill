@@ -9,7 +9,13 @@ pub(crate) fn cmd_clausewitz_reference(args: &[String]) -> Result<(), String> {
     let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
     let index = game_root
         .as_ref()
-        .map(|path| build_game_index_with_mod_paths(path, &dependency_roots))
+        .map(|path| {
+            build_game_index_with_profile(
+                path,
+                &dependency_roots,
+                GameIndexProfile::ClausewitzReference,
+            )
+        })
         .transpose()?;
     let markdown = render_clausewitz_reference_table(index.as_ref());
     write_or_print(&markdown, value(&map, "output"))

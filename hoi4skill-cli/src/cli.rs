@@ -308,6 +308,7 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
         "gui-output-audit" | "large-mod-gui-output-audit" | "audit-gui-output" => {
             super::cmd_gui_output_audit(&args)
         }
+        "gui-layout-audit" | "audit-gui-layout" => super::cmd_gui_layout_audit(&args),
         "gui-error-regression" | "large-mod-gui-error-regression" | "gui-error-log-gate" => {
             super::cmd_gui_error_regression(&args)
         }
@@ -442,6 +443,9 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
         "build-game-index" => super::cmd_build_game_index(&args),
         "code-catalog" | "hoi4-code-catalog" | "build-code-catalog" => {
             super::cmd_code_catalog(&args)
+        }
+        "documentation-catalog" | "documentation-query" | "search-documentation" => {
+            super::cmd_documentation_catalog(&args)
         }
         "check-code-symbol" | "check-hoi4-code" | "classify-code-symbol" => {
             super::cmd_check_code_symbol(&args)

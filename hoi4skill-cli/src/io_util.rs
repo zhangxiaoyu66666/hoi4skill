@@ -62,9 +62,12 @@ fn collect_files_inner(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), String
     for entry in fs::read_dir(root).map_err(|e| format!("read dir {}: {e}", root.display()))? {
         let entry = entry.map_err(|e| e.to_string())?;
         let path = entry.path();
-        if path.is_dir() {
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if metadata.is_dir() {
             collect_files_inner(&path, out)?;
-        } else if path.is_file() {
+        } else if metadata.is_file() {
             out.push(path);
         }
     }
@@ -73,9 +76,14 @@ fn collect_files_inner(root: &Path, out: &mut Vec<PathBuf>) -> Result<(), String
 
 pub(crate) fn read_utf8_lossy(path: &Path) -> Result<String, String> {
     let bytes = fs::read(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    Ok(String::from_utf8_lossy(&bytes)
-        .trim_start_matches('\u{feff}')
-        .to_string())
+    let mut text = match String::from_utf8(bytes) {
+        Ok(text) => text,
+        Err(error) => String::from_utf8_lossy(error.as_bytes()).into_owned(),
+    };
+    while text.starts_with('\u{feff}') {
+        text.drain(..'\u{feff}'.len_utf8());
+    }
+    Ok(text)
 }
 
 pub(crate) fn read_text_document(path: &Path) -> Result<String, String> {

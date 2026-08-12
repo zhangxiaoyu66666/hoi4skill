@@ -523,10 +523,12 @@ pub(crate) fn focus_layout_from_excel_cells(
         used.insert(id.clone());
         focuses.push(FocusNode {
             title: cell.title.clone(),
+            description: None,
             id,
             icon: cell.icon.clone(),
             x: ((cell.column - min_col) as i32) * 2,
             y: (cell.row - min_row) as i32,
+            cost: None,
             relative_position_id: None,
             relative_x: None,
             relative_y: None,
@@ -534,6 +536,13 @@ pub(crate) fn focus_layout_from_excel_cells(
             column: cell.column - min_col,
             prerequisite: Vec::new(),
             mutually_exclusive: Vec::new(),
+            available: Vec::new(),
+            bypass: Vec::new(),
+            allow_branch: Vec::new(),
+            cancel_if_invalid: None,
+            continue_if_invalid: None,
+            available_if_capitulated: None,
+            select_effect: Vec::new(),
             completion_reward: cell.completion_reward.clone(),
         });
         if index > 10_000 {

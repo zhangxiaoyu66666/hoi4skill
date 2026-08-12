@@ -67,10 +67,12 @@ pub(crate) fn parse_focus_layout_json(text: &str, tag: &str, prefix: &str) -> St
 #[derive(Clone)]
 pub(crate) struct FocusNode {
     pub(crate) title: String,
+    pub(crate) description: Option<String>,
     pub(crate) id: String,
     pub(crate) icon: Option<String>,
     pub(crate) x: i32,
     pub(crate) y: i32,
+    pub(crate) cost: Option<String>,
     pub(crate) relative_position_id: Option<String>,
     pub(crate) relative_x: Option<i32>,
     pub(crate) relative_y: Option<i32>,
@@ -78,6 +80,13 @@ pub(crate) struct FocusNode {
     pub(crate) column: usize,
     pub(crate) prerequisite: Vec<String>,
     pub(crate) mutually_exclusive: Vec<String>,
+    pub(crate) available: Vec<String>,
+    pub(crate) bypass: Vec<String>,
+    pub(crate) allow_branch: Vec<String>,
+    pub(crate) cancel_if_invalid: Option<String>,
+    pub(crate) continue_if_invalid: Option<String>,
+    pub(crate) available_if_capitulated: Option<String>,
+    pub(crate) select_effect: Vec<String>,
     pub(crate) completion_reward: Vec<String>,
 }
 
@@ -144,10 +153,12 @@ pub(crate) fn parse_focus_layout(text: &str, tag: &str, prefix: &str) -> FocusLa
             let y = attrs.y.unwrap_or(row_index as i32);
             focuses.push(FocusNode {
                 title: attrs.title,
+                description: attrs.description,
                 id: id.clone(),
                 icon: attrs.icon,
                 x,
                 y,
+                cost: attrs.cost,
                 relative_position_id: None,
                 relative_x: None,
                 relative_y: None,
@@ -155,6 +166,13 @@ pub(crate) fn parse_focus_layout(text: &str, tag: &str, prefix: &str) -> FocusLa
                 column: col,
                 prerequisite: attrs.prerequisite,
                 mutually_exclusive: Vec::new(),
+                available: attrs.available,
+                bypass: attrs.bypass,
+                allow_branch: attrs.allow_branch,
+                cancel_if_invalid: attrs.cancel_if_invalid,
+                continue_if_invalid: attrs.continue_if_invalid,
+                available_if_capitulated: attrs.available_if_capitulated,
+                select_effect: attrs.select_effect,
                 completion_reward: attrs.completion_reward,
             });
             row_focus_ids.push(id);
@@ -574,7 +592,12 @@ pub(crate) fn apply_focus_layout_to_mod_with_index(
                 (focus.id.clone(), focus.title.clone()),
                 (
                     format!("{}_desc", focus.id),
-                    fallback_focus_description(focus),
+                    focus
+                        .description
+                        .as_deref()
+                        .filter(|value| !value.trim().is_empty())
+                        .map(str::to_string)
+                        .unwrap_or_else(|| fallback_focus_description(focus)),
                 ),
             ]
         })
@@ -1050,13 +1073,28 @@ pub(crate) fn render_focus_block(focus: &FocusNode) -> String {
     if let Some(relative_id) = &focus.relative_position_id {
         out.push_str(&format!("\t\trelative_position_id = {relative_id}\n"));
     }
-    out.push_str("\t\tcost = 10\n");
+    out.push_str(&format!(
+        "\t\tcost = {}\n",
+        focus.cost.as_deref().unwrap_or("10")
+    ));
     out.push_str("\t\tai_will_do = {\n\t\t\tfactor = 100\n\t\t}\n\n");
-    out.push_str("\t\tavailable = {\n\t\t}\n\n");
-    out.push_str("\t\tbypass = {\n\t\t}\n");
-    out.push_str("\t\tcancel_if_invalid = yes\n");
-    out.push_str("\t\tcontinue_if_invalid = no\n");
-    out.push_str("\t\tavailable_if_capitulated = no\n\n");
+    render_focus_script_block(&mut out, "allow_branch", &focus.allow_branch, false);
+    render_focus_script_block(&mut out, "available", &focus.available, true);
+    out.push('\n');
+    render_focus_script_block(&mut out, "bypass", &focus.bypass, true);
+    out.push_str(&format!(
+        "\t\tcancel_if_invalid = {}\n",
+        focus.cancel_if_invalid.as_deref().unwrap_or("yes")
+    ));
+    out.push_str(&format!(
+        "\t\tcontinue_if_invalid = {}\n",
+        focus.continue_if_invalid.as_deref().unwrap_or("no")
+    ));
+    out.push_str(&format!(
+        "\t\tavailable_if_capitulated = {}\n\n",
+        focus.available_if_capitulated.as_deref().unwrap_or("no")
+    ));
+    render_focus_script_block(&mut out, "select_effect", &focus.select_effect, false);
     out.push_str("\t\tcompletion_reward = {\n");
     if !focus.completion_reward.is_empty() {
         for line in &focus.completion_reward {
@@ -1066,6 +1104,17 @@ pub(crate) fn render_focus_block(focus: &FocusNode) -> String {
     out.push_str("\t\t}\n");
     out.push_str("\t}\n");
     out
+}
+
+fn render_focus_script_block(out: &mut String, name: &str, lines: &[String], include_empty: bool) {
+    if lines.is_empty() && !include_empty {
+        return;
+    }
+    out.push_str(&format!("\t\t{name} = {{\n"));
+    for line in lines {
+        out.push_str(&indent_lines(line, "\t\t\t"));
+    }
+    out.push_str("\t\t}\n");
 }
 
 pub(crate) fn choose_focus_icon_from_catalog(
@@ -1541,11 +1590,20 @@ pub(crate) fn parse_focus_token(token: &str) -> (String, Option<String>) {
 
 pub(crate) struct FocusTokenAttributes {
     pub(crate) title: String,
+    pub(crate) description: Option<String>,
     pub(crate) id_hint: Option<String>,
     pub(crate) icon: Option<String>,
     pub(crate) x: Option<i32>,
     pub(crate) y: Option<i32>,
+    pub(crate) cost: Option<String>,
     pub(crate) prerequisite: Vec<String>,
+    pub(crate) available: Vec<String>,
+    pub(crate) bypass: Vec<String>,
+    pub(crate) allow_branch: Vec<String>,
+    pub(crate) cancel_if_invalid: Option<String>,
+    pub(crate) continue_if_invalid: Option<String>,
+    pub(crate) available_if_capitulated: Option<String>,
+    pub(crate) select_effect: Vec<String>,
     pub(crate) completion_reward: Vec<String>,
 }
 
@@ -1563,11 +1621,20 @@ pub(crate) fn parse_focus_token_attributes(token: &str) -> FocusTokenAttributes 
         let (title, id_hint) = parse_focus_token(token);
         return FocusTokenAttributes {
             title,
+            description: None,
             id_hint,
             icon: None,
             x: None,
             y: None,
+            cost: None,
             prerequisite: Vec::new(),
+            available: Vec::new(),
+            bypass: Vec::new(),
+            allow_branch: Vec::new(),
+            cancel_if_invalid: None,
+            continue_if_invalid: None,
+            available_if_capitulated: None,
+            select_effect: Vec::new(),
             completion_reward: Vec::new(),
         };
     }
@@ -1576,11 +1643,20 @@ pub(crate) fn parse_focus_token_attributes(token: &str) -> FocusTokenAttributes 
     let (title, mut id_hint) = parse_focus_token(first);
     let mut attrs = FocusTokenAttributes {
         title,
+        description: None,
         id_hint: id_hint.take(),
         icon: None,
         x: None,
         y: None,
+        cost: None,
         prerequisite: Vec::new(),
+        available: Vec::new(),
+        bypass: Vec::new(),
+        allow_branch: Vec::new(),
+        cancel_if_invalid: None,
+        continue_if_invalid: None,
+        available_if_capitulated: None,
+        select_effect: Vec::new(),
         completion_reward: Vec::new(),
     };
     for part in parts {
@@ -1601,8 +1677,25 @@ pub(crate) fn parse_focus_token_attributes(token: &str) -> FocusTokenAttributes 
                     attrs.icon = Some(icon.to_string());
                 }
             }
+            "desc" | "description" => {
+                let desc = value.trim();
+                if !desc.is_empty() {
+                    attrs.description = Some(desc.to_string());
+                }
+            }
             "x" => attrs.x = value.trim().parse::<i32>().ok(),
             "y" => attrs.y = value.trim().parse::<i32>().ok(),
+            "cost" => {
+                let cost = value.trim();
+                if !cost.is_empty() {
+                    attrs.cost = Some(cost.to_string());
+                }
+            }
+            "days" | "duration" => {
+                if let Ok(days) = value.trim().parse::<f64>() {
+                    attrs.cost = Some(format_focus_cost(days / 7.0));
+                }
+            }
             "prerequisite" | "prereq" | "parent" => {
                 attrs.prerequisite.extend(
                     split_cn_list(value)
@@ -1612,6 +1705,17 @@ pub(crate) fn parse_focus_token_attributes(token: &str) -> FocusTokenAttributes 
                         .map(str::to_string),
                 );
             }
+            "available" => attrs.available = focus_script_lines_from_attribute(value),
+            "bypass" => attrs.bypass = focus_script_lines_from_attribute(value),
+            "allow_branch" | "allowbranch" => {
+                attrs.allow_branch = focus_script_lines_from_attribute(value);
+            }
+            "cancel_if_invalid" => attrs.cancel_if_invalid = normalize_focus_bool(value),
+            "continue_if_invalid" => attrs.continue_if_invalid = normalize_focus_bool(value),
+            "available_if_capitulated" => {
+                attrs.available_if_capitulated = normalize_focus_bool(value)
+            }
+            "select_effect" => attrs.select_effect = focus_script_lines_from_attribute(value),
             "reward" | "completion_reward" => {
                 attrs.completion_reward = focus_reward_lines_from_effects(value);
             }
@@ -1630,6 +1734,22 @@ pub(crate) fn parse_focus_token_attributes(token: &str) -> FocusTokenAttributes 
                         .map(str::to_string),
                 );
             }
+            _ if key == "描述" => {
+                let desc = value.trim();
+                if !desc.is_empty() {
+                    attrs.description = Some(desc.to_string());
+                }
+            }
+            _ if key == "可用条件" => {
+                attrs.available = focus_script_lines_from_attribute(value)
+            }
+            _ if key == "跳过条件" => attrs.bypass = focus_script_lines_from_attribute(value),
+            _ if key == "显示条件" || key == "按条件显示" => {
+                attrs.allow_branch = focus_script_lines_from_attribute(value);
+            }
+            _ if key == "开始效果" || key == "开始时效果" => {
+                attrs.select_effect = focus_script_lines_from_attribute(value);
+            }
             _ if key == "奖励" || key == "国策效果" => {
                 attrs.completion_reward = focus_reward_lines_from_effects(value);
             }
@@ -1637,6 +1757,50 @@ pub(crate) fn parse_focus_token_attributes(token: &str) -> FocusTokenAttributes 
         }
     }
     attrs
+}
+
+fn focus_script_lines_from_attribute(value: &str) -> Vec<String> {
+    value
+        .replace('\r', "\n")
+        .split(['\n', ';'])
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn normalize_focus_bool(value: &str) -> Option<String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return None;
+    }
+    let lower = value.to_ascii_lowercase();
+    if matches!(lower.as_str(), "yes" | "true" | "1") {
+        Some("yes".to_string())
+    } else if matches!(lower.as_str(), "no" | "false" | "0") {
+        Some("no".to_string())
+    } else {
+        Some(value.to_string())
+    }
+}
+
+fn format_focus_cost(value: f64) -> String {
+    if !value.is_finite() {
+        return "10".to_string();
+    }
+    let rounded = (value * 1000.0).round() / 1000.0;
+    if rounded.fract().abs() < f64::EPSILON {
+        format!("{}", rounded as i64)
+    } else {
+        let mut out = format!("{rounded:.3}");
+        while out.contains('.') && out.ends_with('0') {
+            out.pop();
+        }
+        if out.ends_with('.') {
+            out.pop();
+        }
+        out
+    }
 }
 
 pub(crate) fn split_focus_attribute(part: &str) -> Option<(&str, &str)> {

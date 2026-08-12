@@ -3,7 +3,7 @@
 #[allow(unused_imports)]
 use crate::*;
 
-#[derive(Default, Clone)]
+#[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GameIndex {
     pub(crate) game_root: PathBuf,
     pub(crate) indexed_roots: Vec<PathBuf>,
@@ -15,6 +15,7 @@ pub(crate) struct GameIndex {
     pub(crate) state_names: BTreeMap<String, i64>,
     pub(crate) province_ids: BTreeSet<i64>,
     pub(crate) sprites: BTreeSet<String>,
+    pub(crate) raw_gfx_names: BTreeSet<String>,
     pub(crate) focus_goal_sprites: BTreeSet<String>,
     pub(crate) idea_pictures: BTreeSet<String>,
     pub(crate) event_pictures: BTreeSet<String>,
@@ -45,6 +46,14 @@ pub(crate) struct GameIndex {
     pub(crate) localisation_entry_aliases: BTreeMap<String, BTreeSet<String>>,
 }
 
+#[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) enum GameIndexProfile {
+    Full,
+    CodeCatalog,
+    ClausewitzReference,
+    Validation,
+}
+
 pub(crate) fn cmd_build_game_index(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let game_root = normalize_path(&require_value(&map, "game-root")?)?;
@@ -64,7 +73,8 @@ pub(crate) fn cmd_code_catalog(args: &[String]) -> Result<(), String> {
     let mod_root = value(&map, "mod-root").map(normalize_path).transpose()?;
     let mod_paths = dependency_mod_roots_for_optional_edited_mod(&map, mod_root.as_deref(), true)?;
     let max_items = parse_usize_option(&map, "max-items", 200)?;
-    let index = build_game_index_with_mod_paths(&game_root, &mod_paths)?;
+    let index =
+        build_game_index_with_profile(&game_root, &mod_paths, GameIndexProfile::CodeCatalog)?;
     let json = code_catalog_json(&index, max_items);
     write_or_print(&json, value(&map, "output"))
 }
@@ -76,7 +86,8 @@ pub(crate) fn cmd_check_code_symbol(args: &[String]) -> Result<(), String> {
     let mod_paths = dependency_mod_roots_for_optional_edited_mod(&map, mod_root.as_deref(), true)?;
     let symbol = require_value(&map, "symbol")?;
     let requested_kind = value(&map, "kind");
-    let index = build_game_index_with_mod_paths(&game_root, &mod_paths)?;
+    let index =
+        build_game_index_with_profile(&game_root, &mod_paths, GameIndexProfile::CodeCatalog)?;
     let (json, ok) = check_code_symbol_json(&index, &symbol, requested_kind);
     write_or_print(&json, value(&map, "output"))?;
     if ok {
@@ -213,9 +224,7 @@ fn collect_gui_request_index_root(
             &root.join("localisation"),
             &["yml", "yaml"],
             |_, text| {
-                collect_localisation_entries_for_index(index, text);
-                collect_country_localisation_names(text, &mut index.country_name_tags);
-                collect_localisation_icon_names(text, &mut index.localisation_icon_names);
+                collect_localisation_index_data(index, text);
             },
         )?;
     }
@@ -265,6 +274,7 @@ fn collect_gui_request_index_root(
     )?;
     collect_gui_request_files(root, &root.join("interface"), &["gfx"], |file, text| {
         collect_sprite_names(text, &mut index.sprites);
+        index.raw_gfx_names.extend(raw_gfx_name_assignments(text));
         collect_focus_goal_icons_from_gfx_file(file, text, &mut index.focus_goal_sprites);
         collect_idea_pictures(text, &mut index.idea_pictures);
         collect_event_pictures(text, &mut index.event_pictures);
@@ -364,6 +374,14 @@ pub(crate) fn build_game_index_with_mod_paths(
     game_root: &Path,
     mod_paths: &[PathBuf],
 ) -> Result<GameIndex, String> {
+    build_game_index_with_profile(game_root, mod_paths, GameIndexProfile::Full)
+}
+
+pub(crate) fn build_game_index_with_profile(
+    game_root: &Path,
+    mod_paths: &[PathBuf],
+    profile: GameIndexProfile,
+) -> Result<GameIndex, String> {
     if !game_root.exists() {
         return Err(format!("{}: game root does not exist", game_root.display()));
     }
@@ -391,137 +409,259 @@ pub(crate) fn build_game_index_with_mod_paths(
                 root.display()
             ));
         }
-        collect_game_index_root(&mut index, &root)?;
+        collect_cached_game_index_root(&mut index, &root, profile)?;
     }
     finalize_ideology_derived_modifiers(&mut index);
-    finalize_localisation_icon_names(&mut index);
-    finalize_dynamic_modifier_localisation(&mut index);
+    if profile == GameIndexProfile::Full {
+        finalize_localisation_icon_names(&mut index);
+        finalize_dynamic_modifier_localisation(&mut index);
+    }
     Ok(index)
 }
 
-pub(crate) fn collect_game_index_root(index: &mut GameIndex, root: &Path) -> Result<(), String> {
-    for file in collect_files(root)? {
-        let ext = file
-            .extension()
-            .and_then(OsStr::to_str)
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let norm = slash_path(&file);
-        if ext == "txt" && norm.contains("/common/country_tags/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_country_tags(&text, &mut index.country_tags);
-        } else if matches!(ext.as_str(), "yml" | "yaml") && norm.contains("/localisation/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_localisation_entries_for_index(index, &text);
-            collect_country_localisation_names(&text, &mut index.country_name_tags);
-            collect_localisation_icon_names(&text, &mut index.localisation_icon_names);
-        } else if ext == "txt" && norm.contains("/common/national_focus/") {
-            let text = read_utf8_lossy(&file)?;
-            index.focus_ids.extend(focus_tree_existing_ids(&text));
-        } else if ext == "txt" && norm.contains("/history/states/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_state_data(
-                &text,
-                &mut index.state_ids,
-                &mut index.state_names,
-                &mut index.province_ids,
-            );
-        } else if ext == "csv" && norm.ends_with("/map/definition.csv") {
-            let text = read_utf8_lossy(&file)?;
-            collect_province_ids_from_definition(&text, &mut index.province_ids);
-        } else if ext == "txt" && norm.contains("/common/buildings/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_buildings(&text, &mut index.buildings, &mut index.building_max_levels);
-        } else if ext == "txt" && norm.contains("/common/resources/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_named_entries(&text, &mut index.resources, &["resources"]);
-        } else if ext == "txt" && norm.contains("/common/ideologies/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_ideology_ids(&text, &mut index.ideologies);
-        } else if ext == "txt" && is_trait_definition_path(&norm) {
-            let text = read_utf8_lossy(&file)?;
-            collect_direct_entries_in_wrappers(
-                &text,
-                &mut index.traits,
-                &[
-                    "leader_traits",
-                    "country_leader_traits",
-                    "unit_leader_traits",
-                    "traits",
-                ],
-            );
-        } else if ext == "txt" && norm.contains("/common/units/equipment/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_direct_entries_in_wrappers(
-                &text,
-                &mut index.equipment_types,
-                &["equipments", "equipment"],
-            );
-        } else if ext == "txt" && norm.contains("/common/technologies/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_direct_entries_in_wrappers(&text, &mut index.technologies, &["technologies"]);
-            collect_technology_categories(&text, &mut index.technology_categories);
-        } else if ext == "txt"
-            && norm.contains("/common/units/")
-            && !norm.contains("/common/units/equipment/")
-        {
-            let text = read_utf8_lossy(&file)?;
-            collect_direct_entries_in_wrappers(&text, &mut index.sub_units, &["sub_units"]);
-        } else if ext == "txt" && norm.contains("/common/wargoals/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_direct_entries_in_wrappers(&text, &mut index.wargoal_types, &["wargoal_types"]);
-        } else if ext == "txt" && norm.contains("/common/decisions/categories/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_direct_child_entries(&text, &mut index.decision_categories);
-        } else if ext == "txt" && norm.contains("/common/scripted_effects/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_direct_child_entries(&text, &mut index.effects);
-        } else if ext == "txt" && norm.contains("/common/scripted_triggers/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_direct_child_entries(&text, &mut index.triggers);
-        } else if ext == "txt" && norm.contains("/common/ideas/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_idea_ids(&text, &mut index.ideas);
-        } else if ext == "txt" && norm.contains("/common/dynamic_modifiers/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_dynamic_modifier_definition_ids(&text, &mut index.dynamic_modifiers);
-            collect_direct_entries_in_wrappers(
-                &text,
-                &mut index.dynamic_modifiers,
-                &["dynamic_modifiers"],
-            );
-            collect_dynamic_modifier_variables(&text, &mut index.dynamic_modifier_variables);
-        } else if ext == "txt" && norm.contains("/common/modifier_definitions/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_modifier_definition_ids(&text, &mut index.modifiers);
-        } else if ext == "txt" && is_modifier_definition_path(&norm) {
-            let text = read_utf8_lossy(&file)?;
-            collect_direct_entries_in_wrappers(
-                &text,
-                &mut index.modifiers,
-                &["modifiers", "static_modifiers", "dynamic_modifiers"],
-            );
-        } else if ext == "md" && norm.ends_with("/documentation/modifiers_documentation.md") {
-            let text = read_utf8_lossy(&file)?;
-            collect_markdown_heading_identifiers(&text, &mut index.modifiers);
-        } else if ext == "md" && norm.ends_with("/documentation/effects_documentation.md") {
-            let text = read_utf8_lossy(&file)?;
-            collect_markdown_heading_identifiers(&text, &mut index.effects);
-        } else if ext == "md" && norm.ends_with("/documentation/triggers_documentation.md") {
-            let text = read_utf8_lossy(&file)?;
-            collect_markdown_heading_identifiers(&text, &mut index.triggers);
-        } else if ext == "gfx" && norm.contains("/interface/") {
-            let text = read_utf8_lossy(&file)?;
-            collect_sprite_names(&text, &mut index.sprites);
-            collect_focus_goal_icons_from_gfx_file(&file, &text, &mut index.focus_goal_sprites);
-            collect_idea_pictures(&text, &mut index.idea_pictures);
-            collect_event_pictures(&text, &mut index.event_pictures);
-            collect_decision_icons(&text, &mut index.decision_icons);
-            collect_decision_category_pictures(&text, &mut index.decision_category_pictures);
-            collect_leader_portraits(&text, &mut index.leader_portraits);
-        }
+pub(crate) fn collect_game_index_root_with_profile(
+    index: &mut GameIndex,
+    root: &Path,
+    profile: GameIndexProfile,
+) -> Result<(), String> {
+    for file in collect_game_index_files(root, profile)? {
+        collect_game_index_file(index, root, &file, profile)?;
     }
     Ok(())
+}
+
+pub(crate) fn collect_game_index_file(
+    index: &mut GameIndex,
+    root: &Path,
+    file: &Path,
+    profile: GameIndexProfile,
+) -> Result<(), String> {
+    let ext = file
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let norm = format!("/{}", relative_slash_path(root, file));
+    if ext == "txt" && norm.contains("/common/country_tags/") {
+        let text = read_utf8_lossy(file)?;
+        collect_country_tags(&text, &mut index.country_tags);
+    } else if matches!(ext.as_str(), "yml" | "yaml") && norm.contains("/localisation/") {
+        let text = read_utf8_lossy(file)?;
+        if profile == GameIndexProfile::Validation {
+            collect_localisation_keys_for_index(index, &text);
+        } else {
+            collect_localisation_index_data(index, &text);
+        }
+    } else if ext == "txt" && norm.contains("/common/national_focus/") {
+        let text = read_utf8_lossy(file)?;
+        index.focus_ids.extend(focus_tree_existing_ids(&text));
+    } else if ext == "txt" && norm.contains("/history/states/") {
+        let text = read_utf8_lossy(file)?;
+        collect_state_data(
+            &text,
+            &mut index.state_ids,
+            &mut index.state_names,
+            &mut index.province_ids,
+        );
+    } else if ext == "csv" && norm.ends_with("/map/definition.csv") {
+        let text = read_utf8_lossy(file)?;
+        collect_province_ids_from_definition(&text, &mut index.province_ids);
+    } else if ext == "txt" && norm.contains("/common/buildings/") {
+        let text = read_utf8_lossy(file)?;
+        collect_buildings(&text, &mut index.buildings, &mut index.building_max_levels);
+    } else if ext == "txt" && norm.contains("/common/resources/") {
+        let text = read_utf8_lossy(file)?;
+        collect_named_entries(&text, &mut index.resources, &["resources"]);
+    } else if ext == "txt" && norm.contains("/common/ideologies/") {
+        let text = read_utf8_lossy(file)?;
+        collect_ideology_ids(&text, &mut index.ideologies);
+    } else if ext == "txt" && is_trait_definition_path(&norm) {
+        let text = read_utf8_lossy(file)?;
+        collect_direct_entries_in_wrappers(
+            &text,
+            &mut index.traits,
+            &[
+                "leader_traits",
+                "country_leader_traits",
+                "unit_leader_traits",
+                "traits",
+            ],
+        );
+    } else if ext == "txt" && norm.contains("/common/units/equipment/") {
+        let text = read_utf8_lossy(file)?;
+        collect_direct_entries_in_wrappers(
+            &text,
+            &mut index.equipment_types,
+            &["equipments", "equipment"],
+        );
+    } else if ext == "txt" && norm.contains("/common/technologies/") {
+        let text = read_utf8_lossy(file)?;
+        collect_direct_entries_in_wrappers(&text, &mut index.technologies, &["technologies"]);
+        collect_technology_categories(&text, &mut index.technology_categories);
+    } else if ext == "txt"
+        && norm.contains("/common/units/")
+        && !norm.contains("/common/units/equipment/")
+    {
+        let text = read_utf8_lossy(file)?;
+        collect_direct_entries_in_wrappers(&text, &mut index.sub_units, &["sub_units"]);
+    } else if ext == "txt" && norm.contains("/common/wargoals/") {
+        let text = read_utf8_lossy(file)?;
+        collect_direct_entries_in_wrappers(&text, &mut index.wargoal_types, &["wargoal_types"]);
+    } else if ext == "txt" && norm.contains("/common/decisions/categories/") {
+        let text = read_utf8_lossy(file)?;
+        collect_direct_child_entries(&text, &mut index.decision_categories);
+    } else if ext == "txt" && norm.contains("/common/scripted_effects/") {
+        let text = read_utf8_lossy(file)?;
+        collect_direct_child_entries(&text, &mut index.effects);
+    } else if ext == "txt" && norm.contains("/common/scripted_triggers/") {
+        let text = read_utf8_lossy(file)?;
+        collect_direct_child_entries(&text, &mut index.triggers);
+    } else if ext == "txt" && norm.contains("/common/ideas/") {
+        let text = read_utf8_lossy(file)?;
+        collect_idea_ids(&text, &mut index.ideas);
+    } else if ext == "txt" && norm.contains("/common/dynamic_modifiers/") {
+        let text = read_utf8_lossy(file)?;
+        collect_dynamic_modifier_definition_ids(&text, &mut index.dynamic_modifiers);
+        collect_direct_entries_in_wrappers(
+            &text,
+            &mut index.dynamic_modifiers,
+            &["dynamic_modifiers"],
+        );
+        collect_dynamic_modifier_variables(&text, &mut index.dynamic_modifier_variables);
+    } else if ext == "txt" && norm.contains("/common/modifier_definitions/") {
+        let text = read_utf8_lossy(file)?;
+        collect_modifier_definition_ids(&text, &mut index.modifiers);
+    } else if ext == "txt" && is_modifier_definition_path(&norm) {
+        let text = read_utf8_lossy(file)?;
+        collect_direct_entries_in_wrappers(
+            &text,
+            &mut index.modifiers,
+            &["modifiers", "static_modifiers", "dynamic_modifiers"],
+        );
+    } else if ext == "md" && norm.ends_with("/documentation/modifiers_documentation.md") {
+        let text = read_utf8_lossy(file)?;
+        collect_markdown_heading_identifiers(&text, &mut index.modifiers);
+    } else if ext == "md" && norm.ends_with("/documentation/effects_documentation.md") {
+        let text = read_utf8_lossy(file)?;
+        collect_markdown_heading_identifiers(&text, &mut index.effects);
+    } else if ext == "md" && norm.ends_with("/documentation/triggers_documentation.md") {
+        let text = read_utf8_lossy(file)?;
+        collect_markdown_heading_identifiers(&text, &mut index.triggers);
+    } else if ext == "gfx" && norm.contains("/interface/") {
+        let text = read_utf8_lossy(file)?;
+        collect_sprite_names(&text, &mut index.sprites);
+        index.raw_gfx_names.extend(raw_gfx_name_assignments(&text));
+        collect_focus_goal_icons_from_gfx_file(file, &text, &mut index.focus_goal_sprites);
+        collect_idea_pictures(&text, &mut index.idea_pictures);
+        collect_event_pictures(&text, &mut index.event_pictures);
+        collect_decision_icons(&text, &mut index.decision_icons);
+        collect_decision_category_pictures(&text, &mut index.decision_category_pictures);
+        collect_leader_portraits(&text, &mut index.leader_portraits);
+    }
+    Ok(())
+}
+
+pub(crate) fn collect_game_index_files(
+    root: &Path,
+    profile: GameIndexProfile,
+) -> Result<Vec<PathBuf>, String> {
+    const FULL_DIRECTORIES: &[&str] = &[
+        "common/country_tags",
+        "common/national_focus",
+        "common/buildings",
+        "common/resources",
+        "common/ideologies",
+        "common/country_leader",
+        "common/unit_leader",
+        "common/traits",
+        "common/units",
+        "common/technologies",
+        "common/wargoals",
+        "common/decisions/categories",
+        "common/scripted_effects",
+        "common/scripted_triggers",
+        "common/ideas",
+        "common/dynamic_modifiers",
+        "common/modifier_definitions",
+        "common/modifiers",
+        "history/states",
+        "interface",
+        "localisation",
+        "documentation",
+    ];
+    const CODE_CATALOG_DIRECTORIES: &[&str] = &[
+        "common/country_tags",
+        "common/national_focus",
+        "common/buildings",
+        "common/resources",
+        "common/ideologies",
+        "common/country_leader",
+        "common/unit_leader",
+        "common/traits",
+        "common/units",
+        "common/technologies",
+        "common/wargoals",
+        "common/decisions/categories",
+        "common/scripted_effects",
+        "common/scripted_triggers",
+        "common/ideas",
+        "common/dynamic_modifiers",
+        "common/modifier_definitions",
+        "common/modifiers",
+        "history/states",
+        "interface",
+        "documentation",
+    ];
+    const REFERENCE_DIRECTORIES: &[&str] = &[
+        "common/scripted_effects",
+        "common/scripted_triggers",
+        "common/modifier_definitions",
+        "common/modifiers",
+        "interface",
+        "documentation",
+    ];
+    let indexed_directories = match profile {
+        GameIndexProfile::Full | GameIndexProfile::Validation => FULL_DIRECTORIES,
+        GameIndexProfile::CodeCatalog => CODE_CATALOG_DIRECTORIES,
+        GameIndexProfile::ClausewitzReference => REFERENCE_DIRECTORIES,
+    };
+
+    let mut files = Vec::new();
+    for relative in indexed_directories {
+        let directory = root.join(relative);
+        if directory.is_dir() {
+            files.extend(collect_files(&directory)?);
+        }
+    }
+    for container in ["dlc", "integrated_dlc"] {
+        let container = root.join(container);
+        if !container.is_dir() {
+            continue;
+        }
+        for entry in fs::read_dir(&container)
+            .map_err(|error| format!("read dir {}: {error}", container.display()))?
+        {
+            let entry = entry.map_err(|error| error.to_string())?;
+            if !entry
+                .file_type()
+                .map_err(|error| format!("read type {}: {error}", entry.path().display()))?
+                .is_dir()
+            {
+                continue;
+            }
+            let interface = entry.path().join("interface");
+            if interface.is_dir() {
+                files.extend(collect_files(&interface)?);
+            }
+        }
+    }
+    if profile != GameIndexProfile::ClausewitzReference {
+        let definition = root.join("map").join("definition.csv");
+        if definition.is_file() {
+            files.push(definition);
+        }
+    }
+    Ok(files)
 }
 
 pub(crate) fn dependency_mod_roots(map: &ArgMap) -> Result<Vec<PathBuf>, String> {
@@ -847,15 +987,41 @@ pub(crate) fn collect_country_tags(text: &str, tags: &mut BTreeSet<String>) {
     }
 }
 
-pub(crate) fn collect_localisation_entries_for_index(index: &mut GameIndex, text: &str) {
+pub(crate) fn collect_localisation_index_data(index: &mut GameIndex, text: &str) {
     for line in text.lines() {
-        if let Some((key, value)) = parse_localisation_line(line) {
+        let Some((key, value)) = parse_localisation_line(line) else {
+            continue;
+        };
+        if let Some(tag) = country_tag_from_localisation_key(&key) {
+            let name = value.trim();
+            if !name.is_empty() && !contains_localisation_control_token(name) {
+                index
+                    .country_name_tags
+                    .entry(name.to_string())
+                    .or_default()
+                    .insert(tag);
+            }
+        }
+        for (icon, label) in localisation_icon_label_pairs(&value) {
             index
-                .localisation_entry_aliases
-                .entry(key.clone())
+                .localisation_icon_names
+                .entry(label)
                 .or_default()
-                .insert(value.clone());
-            index.localisation_entries.insert(key, value);
+                .insert(icon);
+        }
+        index
+            .localisation_entry_aliases
+            .entry(key.clone())
+            .or_default()
+            .insert(value.clone());
+        index.localisation_entries.insert(key, value);
+    }
+}
+
+pub(crate) fn collect_localisation_keys_for_index(index: &mut GameIndex, text: &str) {
+    for line in text.lines() {
+        if let Some((key, _)) = parse_localisation_line(line) {
+            index.localisation_entries.entry(key).or_default();
         }
     }
 }
@@ -993,25 +1159,6 @@ pub(crate) fn clean_dynamic_modifier_label(value: &str) -> String {
     out.trim().to_string()
 }
 
-pub(crate) fn collect_country_localisation_names(
-    text: &str,
-    names: &mut BTreeMap<String, BTreeSet<String>>,
-) {
-    for line in text.lines() {
-        let Some((key, value)) = parse_localisation_line(line) else {
-            continue;
-        };
-        let Some(tag) = country_tag_from_localisation_key(&key) else {
-            continue;
-        };
-        let name = value.trim();
-        if name.is_empty() || contains_localisation_control_token(name) {
-            continue;
-        }
-        names.entry(name.to_string()).or_default().insert(tag);
-    }
-}
-
 pub(crate) fn contains_localisation_control_token(value: &str) -> bool {
     value.contains('£') || value.contains('§') || value.contains('[') || value.contains('$')
 }
@@ -1032,21 +1179,10 @@ pub(crate) fn country_tag_from_localisation_key(key: &str) -> Option<String> {
     looks_like_tag(base).then(|| base.to_string())
 }
 
-pub(crate) fn collect_localisation_icon_names(
-    text: &str,
-    names: &mut BTreeMap<String, BTreeSet<String>>,
-) {
-    for line in text.lines() {
-        let Some((_, value)) = parse_localisation_line(line) else {
-            continue;
-        };
-        for (icon, label) in localisation_icon_label_pairs(&value) {
-            names.entry(label).or_default().insert(icon);
-        }
-    }
-}
-
 pub(crate) fn localisation_icon_label_pairs(value: &str) -> Vec<(String, String)> {
+    if !value.contains('£') {
+        return Vec::new();
+    }
     let chars = value.char_indices().collect::<Vec<_>>();
     let mut pairs = Vec::new();
     let mut i = 0usize;
@@ -1716,6 +1852,13 @@ pub(crate) fn code_catalog_json(index: &GameIndex, max_items: usize) -> String {
             max_items,
         ),
         code_catalog_category(
+            "sprites",
+            "resource_id",
+            "All named GFX *Type resource IDs, including tiled, animated, progress, shield, text, and ordinary sprite blocks.",
+            &index.sprites,
+            max_items,
+        ),
+        code_catalog_category(
             "focus_goal_sprites",
             "resource_id",
             "Registered focus goal sprite IDs.",
@@ -1814,6 +1957,7 @@ pub(crate) fn code_catalog_json(index: &GameIndex, max_items: usize) -> String {
             + index.wargoal_types.len(),
         index.country_tags.len()
             + index.focus_ids.len()
+            + index.sprites.len()
             + index.focus_goal_sprites.len()
             + index.idea_pictures.len()
             + index.event_pictures.len()
@@ -2675,6 +2819,8 @@ fn code_symbol_kind_allowed(requested_kind: Option<&str>, category: &str, kind: 
             | ("resource_id", _, "resource_id")
             | ("event_picture", "event_pictures", "resource_id")
             | ("event_picture", "sprites", "resource_id")
+            | ("sprite", "sprites", "resource_id")
+            | ("gfx", "sprites", "resource_id")
             | ("map", _, "map_id")
             | ("map_id", _, "map_id")
     )

@@ -40601,6 +40601,10 @@ spriteTypes = {
     name = "GFX_goal_orphan"
     texturefile = "gfx/interface/goals/used.dds"
   }
+  corneredTileSpriteType = {
+    name = "GFX_goal_cornered"
+    textureFile = "gfx/interface/goals/used.dds"
+  }
 }
 "#,
     )
@@ -40617,6 +40621,10 @@ focus_tree = {
   focus = {
     id = TST_missing
     icon = GFX_goal_missing_ref
+  }
+  focus = {
+    id = TST_cornered
+    icon = GFX_goal_cornered
   }
 }
 "#,
@@ -40636,6 +40644,8 @@ focus_tree = {
     assert!(json.contains("\"id\": \"GFX_goal_missing_texture\""));
     assert!(json.contains("\"missing_sprites_count\": 1"));
     assert!(json.contains("\"id\": \"GFX_goal_missing_ref\""));
+    assert!(json.contains("\"classification\": \"confirmed_missing\""));
+    assert!(!json.contains("\"id\": \"GFX_goal_cornered\""));
     assert!(json.contains("\"orphan_sprites_count\": 2"));
     assert!(json.contains("\"id\": \"GFX_goal_orphan\""));
     assert!(json.contains("\"unregistered_images_count\": 1"));
@@ -40655,6 +40665,87 @@ focus_tree = {
     assert!(changed_json.contains("\"missing_sprites_count\": 1"));
     assert!(changed_json.contains("\"missing_textures_count\": 0"));
     assert!(changed_json.contains("\"orphan_sprites_count\": 0"));
+
+    fs::write(
+        root.join("common/national_focus/tst.txt"),
+        "focus_tree = { focus = { id = TST_new icon = GFX_goal_new_missing } }\n",
+    )
+    .unwrap();
+    cmd_gfx_audit(&[
+        root.to_string_lossy().to_string(),
+        "--changed-only".to_string(),
+        "--changed".to_string(),
+        "common/national_focus/tst.txt".to_string(),
+        "--output".to_string(),
+        changed_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let refreshed_json = read_utf8_lossy(&changed_output).unwrap();
+    assert!(refreshed_json.contains("GFX_goal_new_missing"));
+    assert!(!refreshed_json.contains("GFX_goal_missing_ref"));
+
+    fs::remove_file(root.join("common/national_focus/tst.txt")).unwrap();
+    cmd_gfx_audit(&[
+        root.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let deleted_json = read_utf8_lossy(&output).unwrap();
+    assert!(!deleted_json.contains("GFX_goal_new_missing"));
+}
+
+#[test]
+fn gui_layout_audit_reports_static_bounds_building_order_and_runtime_clipping() {
+    let root = unique_temp_dir("gui-layout-audit");
+    fs::create_dir_all(root.join("common/buildings")).unwrap();
+    fs::create_dir_all(root.join("interface")).unwrap();
+    fs::write(
+        root.join("common/buildings/00_buildings.txt"),
+        "buildings = { arms_factory = { shares_slots = no } industrial_complex = { shares_slots = yes } }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("interface/countryconstructionsview.gui"),
+        r#"guiTypes = {
+  containerWindowType = {
+    name = "building_construction_speeds"
+    position = { x = 0 y = 0 }
+    size = { width = 200 height = 100 }
+    instantTextBoxType = { name = "arms_factory_speed" position = { x = 0 y = 0 } maxWidth = 50 maxHeight = 20 text = "speed" }
+    instantTextBoxType = { name = "industrial_complex_speed" position = { x = 55 y = 0 } maxWidth = 50 maxHeight = 20 text = "speed" }
+    buttonType = { name = "outside" position = { x = 180 y = 90 } size = { width = 40 height = 20 } }
+  }
+  containerWindowType = { name = "possible_constructions" position = { x = 0 y = 0 } size = { width = 250 height = 916 } }
+}
+"#,
+    )
+    .unwrap();
+    let runtime_log = root.join("error.log");
+    fs::write(
+        &runtime_log,
+        "[gui.cpp:1]: objects outside \"possible_constructions\" clipped\n",
+    )
+    .unwrap();
+    let output = root.join("layout.json");
+
+    cmd_gui_layout_audit(&[
+        root.to_string_lossy().to_string(),
+        "--runtime-log".to_string(),
+        runtime_log.to_string_lossy().to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let json = read_utf8_lossy(&output).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(json.contains("\"schema\": \"hoi4skill.gui_layout_audit.v1\""));
+    assert!(json.contains("static_child_out_of_bounds"));
+    assert!(json.contains("building_order_fixed_overlay"));
+    assert!(json.contains("runtime_object_clipped"));
+    assert!(json.contains("\"classification\": \"confirmed_missing\""));
+    assert!(json.contains("\"classification\": \"runtime_layout_required\""));
 }
 
 #[test]
@@ -45657,9 +45748,9 @@ fn block_scanner_handles_multibyte_text_before_closing_brace() {
 }
 
 #[test]
-fn sprite_type_blocks_accept_uppercase_and_lowercase_forms() {
-    let text = "spriteType = { name = \"GFX_lower\" texturefile = \"gfx/interface/lower.png\" }\nSpriteType = { name = \"GFX_upper\" texturefile = \"gfx/interface/upper.png\" }\n";
-    let blocks = sprite_type_blocks(text);
+fn named_gfx_type_blocks_cover_all_named_resource_types() {
+    let text = "spriteTypes = {\n spriteType = { name = \"GFX_lower\" texturefile = \"gfx/interface/lower.png\" }\n SpriteType = { name = \"GFX_upper\" texturefile = \"gfx/interface/upper.png\" }\n corneredTileSpriteType = { name = \"GFX_corner\" textureFile = \"gfx/interface/corner.dds\" }\n frameAnimatedSpriteType = { name = \"GFX_frame\" texturefile = \"gfx/interface/frame.dds\" }\n progressBarType = { name = \"GFX_progress\" }\n progressbartype = { name = \"GFX_legacy_progress\" textureFile1 = \"gfx/interface/progress.dds\" }\n circularProgressBarType = { name = \"GFX_circular\" }\n maskedShieldType = { name = \"GFX_shield\" }\n textSpriteType = { name = \"GFX_text\" texturefile = \"gfx/interface/text.dds\" }\n}\n";
+    let blocks = named_gfx_type_blocks(text);
     let mut names = blocks
         .iter()
         .filter_map(|block| block_assignment(block, "name"))
@@ -45668,8 +45759,76 @@ fn sprite_type_blocks_accept_uppercase_and_lowercase_forms() {
 
     assert_eq!(
         names,
-        vec!["GFX_lower".to_string(), "GFX_upper".to_string()]
+        vec![
+            "GFX_circular".to_string(),
+            "GFX_corner".to_string(),
+            "GFX_frame".to_string(),
+            "GFX_legacy_progress".to_string(),
+            "GFX_lower".to_string(),
+            "GFX_progress".to_string(),
+            "GFX_shield".to_string(),
+            "GFX_text".to_string(),
+            "GFX_upper".to_string(),
+        ]
     );
+    let textured = textured_gfx_type_blocks(text);
+    assert_eq!(textured.len(), 5);
+    assert!(textured
+        .iter()
+        .any(|block| gfx_texturefile_assignment(block).as_deref()
+            == Some("gfx/interface/corner.dds")));
+}
+
+#[test]
+fn set_technology_popup_metadata_is_not_indexed_as_a_technology() {
+    let path = Path::new("M:\\mod\\events\\test.txt");
+    let mut refs = GameDataRefs::default();
+    collect_game_data_refs(
+        path,
+        "set_technology = { infantry_weapons = 1 popup = no mystery_tech = 1 }",
+        &mut refs,
+    );
+
+    assert!(refs.technologies.contains_key("infantry_weapons"));
+    assert!(refs.technologies.contains_key("mystery_tech"));
+    assert!(!refs.technologies.contains_key("popup"));
+}
+
+#[test]
+fn validator_ignores_set_technology_popup_but_keeps_unknown_technology_errors() {
+    let root = unique_temp_dir("validate-set-technology-popup");
+    fs::create_dir_all(root.join("events")).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Test\"\nsupported_version=\"1.16.*\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("events/test.txt"),
+        "add_namespace = tst\ncountry_event = { id = tst.1 is_triggered_only = yes immediate = { set_technology = { infantry_weapons = 1 popup = no mystery_tech = 1 } } }\n",
+    )
+    .unwrap();
+    let mut index = GameIndex::default();
+    index.technologies.insert("infantry_weapons".to_string());
+
+    let reporter = validate_mod_with_options(
+        &root,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(!reporter
+        .errors
+        .iter()
+        .any(|error| error.contains("technology popup")));
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|error| error.contains("technology mystery_tech")));
 }
 
 #[test]
@@ -48758,10 +48917,12 @@ fn strict_focus_layout_gate_blocks_unindexed_reward_effect_before_write() {
         mutuals: Vec::new(),
         focuses: vec![FocusNode {
             title: "工业复兴".to_string(),
+            description: None,
             id: "KOR_industrial_revival".to_string(),
             icon: Some("GFX_goal_industry".to_string()),
             x: 0,
             y: 0,
+            cost: None,
             relative_position_id: None,
             relative_x: None,
             relative_y: None,
@@ -48769,6 +48930,13 @@ fn strict_focus_layout_gate_blocks_unindexed_reward_effect_before_write() {
             column: 0,
             prerequisite: Vec::new(),
             mutually_exclusive: Vec::new(),
+            available: Vec::new(),
+            bypass: Vec::new(),
+            allow_branch: Vec::new(),
+            cancel_if_invalid: None,
+            continue_if_invalid: None,
+            available_if_capitulated: None,
+            select_effect: Vec::new(),
             completion_reward: vec!["add_political_power = 50".to_string()],
         }],
     };
@@ -48805,10 +48973,12 @@ fn strict_focus_layout_gate_blocks_missing_effect_index_category_before_write() 
         mutuals: Vec::new(),
         focuses: vec![FocusNode {
             title: "工业复兴".to_string(),
+            description: None,
             id: "KOR_industrial_revival".to_string(),
             icon: Some("GFX_goal_industry".to_string()),
             x: 0,
             y: 0,
+            cost: None,
             relative_position_id: None,
             relative_x: None,
             relative_y: None,
@@ -48816,6 +48986,13 @@ fn strict_focus_layout_gate_blocks_missing_effect_index_category_before_write() 
             column: 0,
             prerequisite: Vec::new(),
             mutually_exclusive: Vec::new(),
+            available: Vec::new(),
+            bypass: Vec::new(),
+            allow_branch: Vec::new(),
+            cancel_if_invalid: None,
+            continue_if_invalid: None,
+            available_if_capitulated: None,
+            select_effect: Vec::new(),
             completion_reward: vec!["add_political_power = 50".to_string()],
         }],
     };
@@ -49599,10 +49776,12 @@ fn focus_excel_json_marks_unresolved_rewards_as_blocked() {
         mutuals: Vec::new(),
         focuses: vec![FocusNode {
             title: "整训舰队".to_string(),
+            description: None,
             id: "SOV_fleet_drill".to_string(),
             icon: None,
             x: 0,
             y: 0,
+            cost: None,
             relative_position_id: None,
             relative_x: None,
             relative_y: None,
@@ -49610,6 +49789,13 @@ fn focus_excel_json_marks_unresolved_rewards_as_blocked() {
             column: 0,
             prerequisite: Vec::new(),
             mutually_exclusive: Vec::new(),
+            available: Vec::new(),
+            bypass: Vec::new(),
+            allow_branch: Vec::new(),
+            cancel_if_invalid: None,
+            continue_if_invalid: None,
+            available_if_capitulated: None,
+            select_effect: Vec::new(),
             completion_reward: vec![
                 "# 获得民族精神 舰队整训 -> add_ideas = <idea id for 舰队整训> ()".to_string(),
             ],
@@ -49914,6 +50100,211 @@ fn validator_detects_unknown_custom_gfx_refs() {
 }
 
 #[test]
+fn read_utf8_lossy_reuses_valid_utf8_and_preserves_bom_lossy_semantics() {
+    let root = unique_temp_dir("read-utf8-lossy");
+    let path = root.join("input.txt");
+    fs::create_dir_all(&root).unwrap();
+    fs::write(
+        &path,
+        [
+            0xef, 0xbb, 0xbf, 0xef, 0xbb, 0xbf, b'v', b'a', b'l', b'i', b'd', b' ', 0xff,
+        ],
+    )
+    .unwrap();
+
+    let text = read_utf8_lossy(&path).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(text, "valid �");
+}
+
+#[test]
+fn validation_overlay_skips_heavy_maps_and_retains_base_localisation_lookups() {
+    let root = unique_temp_dir("validation-index-overlay");
+    let focus_dir = root.join("common").join("national_focus");
+    fs::create_dir_all(&focus_dir).unwrap();
+    fs::write(
+        focus_dir.join("test.txt"),
+        "focus_tree = { id = test_tree focus = { id = TST_base_focus } }\n",
+    )
+    .unwrap();
+    let mut index = GameIndex::default();
+    index.sprites.insert("GFX_test".to_string());
+    index
+        .country_name_tags
+        .entry("测试国".to_string())
+        .or_default()
+        .insert("TST".to_string());
+    index
+        .localisation_entries
+        .insert("TST_base_focus".to_string(), "基础国策".to_string());
+    index.localisation_entries.insert(
+        "TST_base_focus_desc".to_string(),
+        "基础国策描述".to_string(),
+    );
+
+    let overlay = clone_game_index_for_validation(&index);
+    assert!(overlay.sprites.contains("GFX_test"));
+    assert!(overlay.country_name_tags.is_empty());
+    assert!(overlay.localisation_entries.is_empty());
+
+    let report = validate_mod_with_options(&root, Some(&index), ValidationOptions::default())
+        .expect("validation should use the base index for localisation fallback");
+    fs::remove_dir_all(&root).unwrap();
+    assert!(!report
+        .errors
+        .iter()
+        .any(|error| error.contains("localisation key TST_base_focus")));
+}
+
+#[test]
+fn game_index_ignores_nested_shadow_resource_trees_outside_root_load_paths() {
+    let root = unique_temp_dir("game-index-pruned-root");
+    let shadow = root.join("unrelated").join("common").join("country_tags");
+    let dlc_interface = root.join("dlc").join("dlc999_test").join("interface");
+    fs::create_dir_all(&shadow).unwrap();
+    fs::create_dir_all(&dlc_interface).unwrap();
+    fs::write(
+        shadow.join("shadow_tags.txt"),
+        "ZZZ = \"countries/Shadow.txt\"\n",
+    )
+    .unwrap();
+    fs::write(
+        dlc_interface.join("test.gfx"),
+        "spriteType = { name = GFX_test_dlc_sprite texturefile = \"gfx/test.dds\" }\n",
+    )
+    .unwrap();
+
+    let index = build_game_index(&root).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(!index.country_tags.contains("ZZZ"));
+    assert!(index.sprites.contains("GFX_test_dlc_sprite"));
+}
+
+#[test]
+fn validation_game_index_keeps_localisation_keys_without_heavy_values_or_aliases() {
+    let root = unique_temp_dir("validation-index-profile");
+    fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("simp_chinese")
+            .join("test_l_simp_chinese.yml"),
+        "l_simp_chinese:\n TST_name:0 \"测试国\"\n TST_focus:0 \"测试国策\"\n",
+    )
+    .unwrap();
+
+    let index = build_game_index_with_profile(&root, &[], GameIndexProfile::Validation).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(index.localisation_entries.contains_key("TST_name"));
+    assert!(index.localisation_entries.contains_key("TST_focus"));
+    assert!(index.localisation_entries.values().all(String::is_empty));
+    assert!(index.localisation_entry_aliases.is_empty());
+    assert!(index.country_name_tags.is_empty());
+    assert!(index.localisation_icon_names.is_empty());
+}
+
+#[test]
+fn reference_game_index_scans_only_reference_symbols_and_resource_rules() {
+    let root = unique_temp_dir("reference-index-profile");
+    fs::create_dir_all(root.join("documentation")).unwrap();
+    fs::create_dir_all(root.join("common").join("buildings")).unwrap();
+    fs::create_dir_all(root.join("interface")).unwrap();
+    fs::write(
+        root.join("documentation").join("effects_documentation.md"),
+        "## add_political_power\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("common").join("buildings").join("test.txt"),
+        "buildings = { test_factory = { max_level = 1 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("interface").join("test_goals.gfx"),
+        "spriteTypes = { spriteType = { name = GFX_goal_test texturefile = \"gfx/interface/goals/test.dds\" } }\n",
+    )
+    .unwrap();
+
+    let index =
+        build_game_index_with_profile(&root, &[], GameIndexProfile::ClausewitzReference).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(index.effects.contains("add_political_power"));
+    assert!(index.focus_goal_sprites.contains("GFX_goal_test"));
+    assert!(!index.buildings.contains("test_factory"));
+}
+
+#[test]
+fn documentation_catalog_indexes_all_markdown_families_without_polluting_code_index() {
+    let game = unique_temp_dir("documentation-catalog");
+    let docs = game.join("documentation");
+    fs::create_dir_all(&docs).unwrap();
+    fs::write(
+        docs.join("effects_documentation.md"),
+        "# Effects\n## add_political_power\nAdds political power.\n",
+    )
+    .unwrap();
+    fs::write(
+        docs.join("script_math_functions.md"),
+        "# Script Math Functions\n## clamp\nClamps a dynamic value.\n",
+    )
+    .unwrap();
+    let output = game.join("documentation.json");
+
+    cmd_documentation_catalog(&[
+        "--game-root".to_string(),
+        game.to_string_lossy().to_string(),
+        "--query".to_string(),
+        "clamp".to_string(),
+        "--output".to_string(),
+        output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    let json = read_utf8_lossy(&output).unwrap();
+    let index = build_game_index_with_profile(&game, &[], GameIndexProfile::CodeCatalog).unwrap();
+    fs::remove_dir_all(&game).unwrap();
+
+    assert!(json.contains("\"schema\": \"hoi4skill.documentation_catalog.v1\""));
+    assert!(json.contains("\"documents_total\": 2"));
+    assert!(json.contains("script_math_functions.md"));
+    assert!(json.contains("\"heading\": \"clamp\""));
+    assert!(!index.effects.contains("clamp"));
+}
+
+#[test]
+fn game_index_cache_invalidates_changed_and_deleted_files() {
+    let root = unique_temp_dir("game-index-cache-invalidation");
+    let effects = root.join("common").join("scripted_effects");
+    fs::create_dir_all(&effects).unwrap();
+    let file = effects.join("test.txt");
+    fs::write(&file, "cached_old_effect = { add_political_power = 1 }\n").unwrap();
+
+    let first = build_game_index_with_profile(&root, &[], GameIndexProfile::CodeCatalog).unwrap();
+    assert!(first.effects.contains("cached_old_effect"));
+
+    fs::write(
+        &file,
+        "cached_new_effect_with_longer_name = { add_political_power = 2 }\n",
+    )
+    .unwrap();
+    let second = build_game_index_with_profile(&root, &[], GameIndexProfile::CodeCatalog).unwrap();
+    assert!(!second.effects.contains("cached_old_effect"));
+    assert!(second
+        .effects
+        .contains("cached_new_effect_with_longer_name"));
+
+    fs::remove_file(&file).unwrap();
+    let third = build_game_index_with_profile(&root, &[], GameIndexProfile::CodeCatalog).unwrap();
+    assert!(!third.effects.contains("cached_new_effect_with_longer_name"));
+
+    let cache = game_index_cache_path(&root, GameIndexProfile::CodeCatalog).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+    let _ = fs::remove_file(cache);
+}
+
+#[test]
 fn game_index_collects_tags_states_and_sprites() {
     let root = unique_temp_dir("game-index");
     fs::create_dir_all(root.join("common").join("country_tags")).unwrap();
@@ -50042,7 +50433,10 @@ spriteType = { name = "GFX_focus_generic_workers" texturefile = "gfx/interface/g
     .unwrap();
     fs::write(
         root.join("interface").join("ideas.gfx"),
-        r#"spriteType = { name = "GFX_idea_workers_council" texturefile = "gfx/interface/ideas/workers.dds" }"#,
+        r#"spriteTypes = {
+ spriteType = { name = "GFX_idea_workers_council" texturefile = "gfx/interface/ideas/workers.dds" }
+ corneredTileSpriteType = { name = "GFX_tiled_workers_panel" textureFile = "gfx/interface/panel.dds" }
+}"#,
     )
     .unwrap();
     fs::write(
@@ -50351,12 +50745,16 @@ fn check_code_symbol_classifies_known_hoi4_code_and_rejects_wrong_kind() {
     .unwrap();
     fs::write(
         root.join("interface").join("ideas.gfx"),
-        r#"spriteType = { name = "GFX_idea_workers_council" texturefile = "gfx/interface/ideas/workers.dds" }"#,
+        r#"spriteTypes = {
+ spriteType = { name = "GFX_idea_workers_council" texturefile = "gfx/interface/ideas/workers.dds" }
+ corneredTileSpriteType = { name = "GFX_tiled_workers_panel" textureFile = "gfx/interface/panel.dds" }
+}"#,
     )
     .unwrap();
     let effect_output = root.join("effect.json");
     let wrong_kind_output = root.join("wrong_kind.json");
     let idea_output = root.join("idea.json");
+    let sprite_output = root.join("sprite.json");
 
     cmd_check_code_symbol(&[
         "--game-root".to_string(),
@@ -50367,6 +50765,17 @@ fn check_code_symbol_classifies_known_hoi4_code_and_rejects_wrong_kind() {
         "effect".to_string(),
         "--output".to_string(),
         effect_output.to_string_lossy().to_string(),
+    ])
+    .unwrap();
+    cmd_check_code_symbol(&[
+        "--game-root".to_string(),
+        root.to_string_lossy().to_string(),
+        "--symbol".to_string(),
+        "GFX_tiled_workers_panel".to_string(),
+        "--kind".to_string(),
+        "sprite".to_string(),
+        "--output".to_string(),
+        sprite_output.to_string_lossy().to_string(),
     ])
     .unwrap();
     let err = cmd_check_code_symbol(&[
@@ -50395,6 +50804,7 @@ fn check_code_symbol_classifies_known_hoi4_code_and_rejects_wrong_kind() {
     let effect_json = read_utf8_lossy(&effect_output).unwrap();
     let wrong_kind_json = read_utf8_lossy(&wrong_kind_output).unwrap();
     let idea_json = read_utf8_lossy(&idea_output).unwrap();
+    let sprite_json = read_utf8_lossy(&sprite_output).unwrap();
     fs::remove_dir_all(&root).unwrap();
 
     assert!(effect_json.contains("\"schema\": \"hoi4skill.code_symbol_check.v1\""));
@@ -50410,6 +50820,9 @@ fn check_code_symbol_classifies_known_hoi4_code_and_rejects_wrong_kind() {
     assert!(idea_json.contains(
         "\"normalized_candidates\": [\"GFX_idea_workers_council\", \"workers_council\"]"
     ));
+    assert!(sprite_json.contains("\"ok\": true"));
+    assert!(sprite_json.contains("\"category\": \"sprites\""));
+    assert!(sprite_json.contains("\"symbol\": \"GFX_tiled_workers_panel\""));
 }
 
 #[test]

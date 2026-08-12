@@ -1811,9 +1811,9 @@ pub(crate) fn scan_interface_sprites(root: &Path) -> Result<Vec<Sprite>, String>
         for file in collect_files(&interface)? {
             if file.extension().and_then(OsStr::to_str).unwrap_or("") == "gfx" {
                 let text = read_utf8_lossy(&file)?;
-                for block in sprite_type_blocks(&text) {
+                for block in named_gfx_type_blocks(&text) {
                     let name = block_assignment(&block, "name").unwrap_or_default();
-                    let texturefile = block_assignment(&block, "texturefile").unwrap_or_default();
+                    let texturefile = gfx_texturefile_assignment(&block).unwrap_or_default();
                     if !name.is_empty() || !texturefile.is_empty() {
                         sprites.push(Sprite { name, texturefile });
                     }
@@ -1824,8 +1824,46 @@ pub(crate) fn scan_interface_sprites(root: &Path) -> Result<Vec<Sprite>, String>
     Ok(sprites)
 }
 
-pub(crate) fn sprite_type_blocks(text: &str) -> Vec<String> {
-    let mut blocks = blocks_named(text, "spriteType");
-    blocks.extend(blocks_named(text, "SpriteType"));
+/// Returns every named Clausewitz GFX `*Type` block, regardless of whether the
+/// block owns a texture.  Existence checks must use this broader index: GUI
+/// resources such as progress bars and tiled sprites are not always
+/// `spriteType`/`SpriteType` blocks.
+pub(crate) fn named_gfx_type_blocks(text: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut pending = vec![strip_comments(text)];
+    while let Some(parent) = pending.pop() {
+        for (kind, block) in direct_child_blocks(&parent) {
+            if kind.to_ascii_lowercase().ends_with("type")
+                && block_assignment(&block, "name").is_some_and(|name| !name.is_empty())
+            {
+                blocks.push(block.clone());
+            }
+            pending.push(block);
+        }
+    }
     blocks
+}
+
+/// Returns only named GFX blocks that directly own a texture.  Texture-file
+/// validation uses this function and therefore stays independent from the
+/// broader named-resource index.
+pub(crate) fn textured_gfx_type_blocks(text: &str) -> Vec<String> {
+    named_gfx_type_blocks(text)
+        .into_iter()
+        .filter(|block| gfx_texturefile_assignment(block).is_some())
+        .collect()
+}
+
+pub(crate) fn gfx_texturefile_assignment(block: &str) -> Option<String> {
+    block_assignment(block, "texturefile").or_else(|| block_assignment(block, "textureFile"))
+}
+
+/// Raw fallback evidence used to distinguish an actual missing resource from
+/// a parser coverage gap.  This deliberately does not claim that every
+/// `name = GFX_*` assignment is a valid resource definition.
+pub(crate) fn raw_gfx_name_assignments(text: &str) -> BTreeSet<String> {
+    assignment_values_in_text(&strip_comments(text), "name")
+        .into_iter()
+        .filter(|name| name.starts_with("GFX_"))
+        .collect()
 }
