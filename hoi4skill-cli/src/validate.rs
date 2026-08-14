@@ -14,10 +14,17 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
     let root = normalize_path(&root)?;
     let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
     let dependency_mods = dependency_mod_roots_for_edited_mod(&map, &root, game_root.is_some())?;
+    let scan_options = layered_scan_options_from_args(&map)?;
     let game_index = game_root
         .as_ref()
         .map(|path| {
-            build_game_index_with_profile(path, &dependency_mods, GameIndexProfile::Validation)
+            build_game_index_with_profile_for_target(
+                path,
+                &dependency_mods,
+                &root,
+                GameIndexProfile::Validation,
+                scan_options,
+            )
         })
         .transpose()?;
     if game_index.is_none() && !dependency_mods.is_empty() {
@@ -35,6 +42,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
         &reporter,
         game_root.as_deref(),
         &dependency_mods,
+        game_index.as_ref(),
     )?;
     report.effective_reporter.print();
     if let Some(output) = value(&map, "output") {
@@ -68,10 +76,17 @@ pub(crate) fn cmd_validation_baseline(args: &[String]) -> Result<(), String> {
     let root = normalize_path(&root)?;
     let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
     let dependency_mods = dependency_mod_roots_for_edited_mod(&map, &root, game_root.is_some())?;
+    let scan_options = layered_scan_options_from_args(&map)?;
     let game_index = game_root
         .as_ref()
         .map(|path| {
-            build_game_index_with_profile(path, &dependency_mods, GameIndexProfile::Validation)
+            build_game_index_with_profile_for_target(
+                path,
+                &dependency_mods,
+                &root,
+                GameIndexProfile::Validation,
+                scan_options,
+            )
         })
         .transpose()?;
     if game_index.is_none() && !dependency_mods.is_empty() {
@@ -89,6 +104,7 @@ pub(crate) fn cmd_validation_baseline(args: &[String]) -> Result<(), String> {
         &reporter,
         game_root.as_deref(),
         &dependency_mods,
+        game_index.as_ref(),
     )?;
     let output = value(&map, "output")
         .or_else(|| value(&map, "baseline-output"))
@@ -119,8 +135,13 @@ pub(crate) fn cmd_validate_repair_context(args: &[String]) -> Result<(), String>
         .transpose()?
         .ok_or_else(|| "validate-repair-context requires --game-root".to_string())?;
     let dependency_mods = dependency_mod_roots_for_edited_mod(&map, &root, true)?;
-    let game_index =
-        build_game_index_with_profile(&game_root, &dependency_mods, GameIndexProfile::Validation)?;
+    let game_index = build_game_index_with_profile_for_target(
+        &game_root,
+        &dependency_mods,
+        &root,
+        GameIndexProfile::Validation,
+        layered_scan_options_from_args(&map)?,
+    )?;
     let mut options = validation_options_from_args(&map);
     options.strict_code_index = true;
     let mut reporter = validate_mod_with_options(&root, Some(&game_index), options)?;
@@ -128,8 +149,14 @@ pub(crate) fn cmd_validate_repair_context(args: &[String]) -> Result<(), String>
         check_request_scope_for_new_mod(&root, request, &mut reporter);
     }
     check_text_alignment_from_validate_args(&root, &map, &mut reporter)?;
-    let report =
-        validation_report_from_args(&root, &map, &reporter, Some(&game_root), &dependency_mods)?;
+    let report = validation_report_from_args(
+        &root,
+        &map,
+        &reporter,
+        Some(&game_root),
+        &dependency_mods,
+        Some(&game_index),
+    )?;
     let max_items = value(&map, "max-items")
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(20)
@@ -378,9 +405,41 @@ pub(crate) fn validate_mod_with_options(
     let base_game_index = game_index;
     let mut effective_game_index = None;
     if let Some(index) = base_game_index {
-        let mut index = clone_game_index_for_validation(index);
+        let root_key = slash_path(root).to_ascii_lowercase();
+        let already_indexed = index
+            .indexed_roots
+            .iter()
+            .any(|indexed| slash_path(indexed).to_ascii_lowercase() == root_key);
+        let fallback_roots = index
+            .indexed_roots
+            .iter()
+            .cloned()
+            .chain((!already_indexed).then(|| root.to_path_buf()))
+            .collect::<Vec<_>>();
+        let fallback_plan = LayeredSourcePlan::from_roots(&fallback_roots)?;
+        let target_declares_replace = fallback_plan
+            .layer_index(root)
+            .is_some_and(|layer| fallback_plan.layer_declares_replace_paths(layer));
+        let mut index = if !already_indexed && target_declares_replace {
+            let dependencies = index
+                .indexed_roots
+                .iter()
+                .filter(|indexed| {
+                    !slash_path(indexed).eq_ignore_ascii_case(&slash_path(&index.game_root))
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            build_game_index_with_profile_for_target(
+                &index.game_root,
+                &dependencies,
+                root,
+                GameIndexProfile::Validation,
+                LayeredScanOptions::effective(),
+            )?
+        } else {
+            clone_game_index_for_validation(index)
+        };
         if root.is_dir() {
-            let root_key = slash_path(root).to_ascii_lowercase();
             if !index
                 .indexed_roots
                 .iter()
@@ -388,7 +447,13 @@ pub(crate) fn validate_mod_with_options(
             {
                 index.indexed_roots.push(root.to_path_buf());
             }
-            collect_game_index_root_with_profile(&mut index, root, GameIndexProfile::Validation)?;
+            if !already_indexed && !target_declares_replace {
+                collect_game_index_root_with_profile(
+                    &mut index,
+                    root,
+                    GameIndexProfile::Validation,
+                )?;
+            }
         }
         effective_game_index = Some(index);
     }
@@ -770,6 +835,7 @@ pub(crate) fn clone_game_index_for_validation(index: &GameIndex) -> GameIndex {
         ideas: index.ideas.clone(),
         dynamic_modifiers: index.dynamic_modifiers.clone(),
         dynamic_modifier_variables: index.dynamic_modifier_variables.clone(),
+        layered_scan: index.layered_scan.clone(),
         ..Default::default()
     }
 }
@@ -790,6 +856,7 @@ struct ValidationReport {
     baseline_errors: usize,
     baseline_warnings: usize,
     changed_files: Vec<String>,
+    layered_scan: Option<LayeredScanReport>,
     effective_reporter: Reporter,
 }
 
@@ -799,6 +866,7 @@ fn validation_report_from_args(
     reporter: &Reporter,
     game_root: Option<&Path>,
     dependency_mods: &[PathBuf],
+    game_index: Option<&GameIndex>,
 ) -> Result<ValidationReport, String> {
     let baseline = value(map, "baseline")
         .map(normalize_path)
@@ -839,6 +907,7 @@ fn validation_report_from_args(
         baseline_errors,
         baseline_warnings,
         changed_files,
+        layered_scan: game_index.map(|index| index.layered_scan.clone()),
         effective_reporter: Reporter { errors, warnings },
     })
 }
@@ -850,7 +919,7 @@ fn validation_report_json(report: &ValidationReport) -> String {
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>();
     format!(
-        "{{\n  \"schema\": \"hoi4skill.validation_report.v1\",\n  \"ok\": {},\n  \"status\": {},\n  \"mod_root\": {},\n  \"game_root\": {},\n  \"dependency_mods\": {},\n  \"strict_code_index\": {},\n  \"total_errors\": {},\n  \"total_warnings\": {},\n  \"effective_errors\": {},\n  \"effective_warnings\": {},\n  \"baseline_errors_filtered\": {},\n  \"baseline_warnings_filtered\": {},\n  \"changed_files\": {},\n  \"error_groups\": {},\n  \"warning_groups\": {},\n  \"errors\": {},\n  \"warnings\": {}\n}}\n",
+        "{{\n  \"schema\": \"hoi4skill.validation_report.v1\",\n  \"ok\": {},\n  \"status\": {},\n  \"mod_root\": {},\n  \"game_root\": {},\n  \"dependency_mods\": {},\n  \"strict_code_index\": {},\n  \"layered_scan\": {},\n  \"total_errors\": {},\n  \"total_warnings\": {},\n  \"effective_errors\": {},\n  \"effective_warnings\": {},\n  \"baseline_errors_filtered\": {},\n  \"baseline_warnings_filtered\": {},\n  \"changed_files\": {},\n  \"error_groups\": {},\n  \"warning_groups\": {},\n  \"errors\": {},\n  \"warnings\": {}\n}}\n",
         json_bool(report.effective_reporter.errors.is_empty()),
         if report.effective_reporter.errors.is_empty() {
             if report.effective_reporter.warnings.is_empty() {
@@ -869,6 +938,11 @@ fn validation_report_json(report: &ValidationReport) -> String {
             .unwrap_or_else(|| "null".to_string()),
         json_array(&dependency_mods),
         json_bool(report.strict_code_index),
+        report
+            .layered_scan
+            .as_ref()
+            .map(layered_scan_report_json)
+            .unwrap_or_else(|| "null".to_string()),
         report.total_errors,
         report.total_warnings,
         report.effective_reporter.errors.len(),
@@ -2547,14 +2621,18 @@ pub(crate) fn resolve_texture_in_indexed_roots(
     texturefile: &str,
     game_index: Option<&GameIndex>,
 ) -> Option<PathBuf> {
-    resolve_texture(root, texturefile).or_else(|| {
-        game_index.and_then(|index| {
-            index
-                .indexed_roots
-                .iter()
-                .filter(|indexed_root| *indexed_root != root)
-                .find_map(|indexed_root| resolve_texture(indexed_root, texturefile))
-        })
+    let mut roots = game_index
+        .map(|index| index.indexed_roots.clone())
+        .unwrap_or_default();
+    roots.retain(|indexed| !slash_path(indexed).eq_ignore_ascii_case(&slash_path(root)));
+    roots.push(root.to_path_buf());
+    let plan = LayeredSourcePlan::from_roots(&roots).ok()?;
+    let relative = normalize_replace_path(texturefile);
+    (0..plan.layers().len()).rev().find_map(|layer_index| {
+        if !plan.is_visible(layer_index, &relative) {
+            return None;
+        }
+        resolve_texture(&plan.layers()[layer_index].root, texturefile)
     })
 }
 

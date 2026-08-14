@@ -5,29 +5,21 @@
 
 #[allow(unused_imports)]
 use crate::*;
+use std::sync::Arc;
 
 pub(crate) fn cmd_map_data_audit(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let mod_root = normalize_path(&require_value(&map, "mod-root")?)?;
     let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
-    let mut roots = Vec::new();
-    if let Some(game_root) = game_root {
-        roots.push(MapDataRoot {
-            layer: "game".to_string(),
-            path: game_root,
-        });
-    }
-    for root in dependency_mod_roots_for_optional_edited_mod(&map, Some(&mod_root), false)? {
-        roots.push(MapDataRoot {
-            layer: "parent".to_string(),
-            path: root,
-        });
-    }
-    roots.push(MapDataRoot {
-        layer: "target".to_string(),
-        path: mod_root,
-    });
-    let report = map_data_audit_json(&roots)?;
+    let dependency_roots =
+        dependency_mod_roots_for_optional_edited_mod(&map, Some(&mod_root), false)?;
+    let (roots, layered_scan) = map_data_roots(
+        &mod_root,
+        game_root.as_deref(),
+        &dependency_roots,
+        layered_scan_options_from_args(&map)?,
+    )?;
+    let report = map_data_audit_json(&roots, &layered_scan)?;
     write_or_print(&report, value(&map, "output"))?;
     if map.flags.contains("require-passed")
         && (report.contains("\"status\": \"blocked\"") || report.contains("\"blocking_count\": 1"))
@@ -578,9 +570,121 @@ pub(crate) fn cmd_map_transaction_gate(args: &[String]) -> Result<(), String> {
     Ok(())
 }
 
-struct MapDataRoot {
-    layer: String,
+pub(crate) struct MapDataRoot {
+    pub(crate) layer: String,
     path: PathBuf,
+    source_index: usize,
+    source_plan: Arc<LayeredSourcePlan>,
+}
+
+impl MapDataRoot {
+    fn is_visible(&self, relative: &str) -> bool {
+        self.source_plan.is_visible(self.source_index, relative)
+    }
+
+    fn exists(&self, relative: &str) -> bool {
+        self.is_visible(relative) && self.path.join(relative.replace('/', "\\")).exists()
+    }
+
+    fn visible_file(&self, relative: &str) -> Option<PathBuf> {
+        self.source_plan.visible_file(self.source_index, relative)
+    }
+
+    fn collect_files(&self, relative: &str) -> Result<Vec<PathBuf>, String> {
+        self.source_plan.collect_files(self.source_index, relative)
+    }
+}
+
+pub(crate) fn map_data_roots(
+    mod_root: &Path,
+    game_root: Option<&Path>,
+    dependency_roots: &[PathBuf],
+    options: LayeredScanOptions,
+) -> Result<(Vec<MapDataRoot>, LayeredScanReport), String> {
+    let mut source_roots = Vec::new();
+    if let Some(root) = game_root {
+        source_roots.push(root.to_path_buf());
+    }
+    source_roots.extend(dependency_roots.iter().cloned());
+    source_roots.push(mod_root.to_path_buf());
+    let plan = Arc::new(LayeredSourcePlan::from_roots(&source_roots)?);
+    let report = plan.report(options)?;
+    let target_index = plan
+        .layer_index(mod_root)
+        .ok_or_else(|| format!("target map root was not planned: {}", mod_root.display()))?;
+    let game_index = game_root.and_then(|root| plan.layer_index(root));
+    let roots = plan
+        .roots()
+        .into_iter()
+        .enumerate()
+        .map(|(source_index, path)| {
+            let layer = if source_index == target_index {
+                "target"
+            } else if Some(source_index) == game_index {
+                "game"
+            } else {
+                "parent"
+            };
+            MapDataRoot {
+                layer: layer.to_string(),
+                path,
+                source_index,
+                source_plan: Arc::clone(&plan),
+            }
+        })
+        .collect();
+    Ok((roots, report))
+}
+
+fn layered_history_state_views(
+    mod_root: Option<&Path>,
+    game_root: Option<&Path>,
+    dependency_roots: &[PathBuf],
+) -> Result<
+    (
+        Vec<HistoryStateStyle>,
+        Vec<DependencyHistoryState>,
+        Vec<HistoryStateStyle>,
+    ),
+    String,
+> {
+    let mut source_roots = Vec::new();
+    if let Some(root) = game_root {
+        source_roots.push(root.to_path_buf());
+    }
+    source_roots.extend(dependency_roots.iter().cloned());
+    if let Some(root) = mod_root {
+        source_roots.push(root.to_path_buf());
+    }
+    let plan = LayeredSourcePlan::from_roots(&source_roots)?;
+    let target_index = mod_root.and_then(|root| plan.layer_index(root));
+    let game_index = game_root.and_then(|root| plan.layer_index(root));
+    let mut target_states = Vec::new();
+    let mut parent_states = Vec::new();
+    let mut game_states = Vec::new();
+    for (layer_index, root) in plan.roots().into_iter().enumerate() {
+        let files = plan
+            .collect_files(layer_index, "history/states")?
+            .into_iter()
+            .filter(|file| {
+                file.extension()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
+            })
+            .collect();
+        let states = scan_history_state_styles_from_files(&root, files)?;
+        if Some(layer_index) == target_index {
+            target_states.extend(states);
+        } else if Some(layer_index) == game_index {
+            game_states.extend(states);
+        } else {
+            parent_states.extend(states.into_iter().map(|state| DependencyHistoryState {
+                root: root.display().to_string(),
+                state,
+            }));
+        }
+    }
+    Ok((target_states, parent_states, game_states))
 }
 
 fn map_transaction_risk_lanes(schemas: &BTreeSet<String>) -> Vec<String> {
@@ -660,16 +764,32 @@ struct MapDataFile {
     exists: bool,
 }
 
-fn map_data_audit_json(roots: &[MapDataRoot]) -> Result<String, String> {
+fn map_data_audit_json(
+    roots: &[MapDataRoot],
+    layered_scan: &LayeredScanReport,
+) -> Result<String, String> {
     let mut files = Vec::new();
     let mut state_count = 0usize;
     let mut province_count = 0usize;
     for root in roots {
-        state_count += scan_history_state_styles(&root.path)?.len();
-        province_count += scan_province_definitions(&root.path)?
-            .iter()
-            .map(|summary| summary.province_count)
-            .sum::<usize>();
+        state_count += scan_history_state_styles_from_files(
+            &root.path,
+            root.collect_files("history/states")?
+                .into_iter()
+                .filter(|file| {
+                    file.extension()
+                        .and_then(OsStr::to_str)
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
+                })
+                .collect(),
+        )?
+        .len();
+        if root.is_visible("map/definition.csv") {
+            province_count += scan_province_definitions(&root.path)?
+                .iter()
+                .map(|summary| summary.province_count)
+                .sum::<usize>();
+        }
         for spec in map_data_file_specs() {
             let path = root.path.join(spec.0);
             files.push(MapDataFile {
@@ -678,10 +798,10 @@ fn map_data_audit_json(roots: &[MapDataRoot]) -> Result<String, String> {
                 relative_path: map_data_slashes(spec.0),
                 risk: spec.1,
                 category: spec.2,
-                exists: path.exists(),
+                exists: root.is_visible(spec.0) && path.exists(),
             });
         }
-        for extra in map_data_globbed_files(&root.path, "map/strategicregions")? {
+        for extra in map_data_globbed_files(root, "map/strategicregions")? {
             files.push(MapDataFile {
                 layer: root.layer.clone(),
                 root: root.path.display().to_string(),
@@ -714,13 +834,14 @@ fn map_data_audit_json(roots: &[MapDataRoot]) -> Result<String, String> {
         "hoi4skill state-batch-plan --state <id> --game-root <HOI4 root> --require-passed".to_string(),
     ];
     Ok(format!(
-        "{{\n  \"schema\": \"hoi4skill.map_data_audit.v1\",\n  \"status\": {},\n  \"ok\": {},\n  \"root_count\": {},\n  \"target_has_local_map_files\": {},\n  \"history_state_count\": {},\n  \"definition_province_count\": {},\n  \"blocking_count\": {},\n  \"blockers\": {},\n  \"files\": [\n{}\n  ],\n  \"risk_policy\": {},\n  \"next_commands\": {}\n}}\n",
+        "{{\n  \"schema\": \"hoi4skill.map_data_audit.v1\",\n  \"status\": {},\n  \"ok\": {},\n  \"root_count\": {},\n  \"target_has_local_map_files\": {},\n  \"history_state_count\": {},\n  \"definition_province_count\": {},\n  \"layered_scan\": {},\n  \"blocking_count\": {},\n  \"blockers\": {},\n  \"files\": [\n{}\n  ],\n  \"risk_policy\": {},\n  \"next_commands\": {}\n}}\n",
         json_str(status),
         json_bool(blockers.is_empty()),
         roots.len(),
         json_bool(target_has_map),
         state_count,
         province_count,
+        layered_scan_report_json(layered_scan),
         blockers.len(),
         json_array(&blockers),
         files
@@ -754,14 +875,28 @@ fn map_data_slashes(raw: &str) -> String {
     raw.replace('\\', "/")
 }
 
-fn map_data_globbed_files(root: &Path, relative_dir: &str) -> Result<Vec<String>, String> {
+pub(crate) fn map_data_globbed_files(
+    root: &MapDataRoot,
+    relative_dir: &str,
+) -> Result<Vec<String>, String> {
+    let mut out = Vec::new();
+    for path in root.collect_files(relative_dir)? {
+        if path.extension().and_then(|ext| ext.to_str()) == Some("txt") {
+            out.push(rel_slash(&root.path, &path));
+        }
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn map_data_globbed_files_in_root(root: &Path, relative_dir: &str) -> Result<Vec<String>, String> {
     let dir = root.join(relative_dir);
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
     let mut out = Vec::new();
-    for entry in fs::read_dir(&dir).map_err(|e| format!("read {}: {e}", dir.display()))? {
-        let entry = entry.map_err(|e| format!("read {}: {e}", dir.display()))?;
+    for entry in fs::read_dir(&dir).map_err(|error| format!("read {}: {error}", dir.display()))? {
+        let entry = entry.map_err(|error| format!("read {}: {error}", dir.display()))?;
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) == Some("txt") {
             out.push(rel_slash(root, &path));
@@ -800,13 +935,8 @@ fn state_transaction_operations(
     index: Option<&GameIndex>,
     states: &[i64],
 ) -> Result<Vec<StateTransactionOperation>, String> {
-    let target_states = scan_history_state_styles(mod_root)?;
-    let parent_states = scan_dependency_history_states(dependency_roots)?;
-    let game_states = if let Some(game_root) = game_root {
-        scan_history_state_styles(game_root)?
-    } else {
-        Vec::new()
-    };
+    let (target_states, parent_states, game_states) =
+        layered_history_state_views(Some(mod_root), game_root, dependency_roots)?;
     let mut out = Vec::new();
     for state_id in states {
         let evidence =
@@ -966,13 +1096,8 @@ fn state_transaction_operations_from_text(
     dependency_roots: &[PathBuf],
     index: &GameIndex,
 ) -> Result<Vec<StateTransactionOperation>, String> {
-    let target_states = scan_history_state_styles(mod_root)?;
-    let parent_states = scan_dependency_history_states(dependency_roots)?;
-    let game_states = if let Some(game_root) = game_root {
-        scan_history_state_styles(game_root)?
-    } else {
-        Vec::new()
-    };
+    let (target_states, parent_states, game_states) =
+        layered_history_state_views(Some(mod_root), game_root, dependency_roots)?;
     let plan = compile_state_resource_text_plan(text, index);
     let mut out = Vec::new();
     for blocker in plan.blockers {
@@ -1125,15 +1250,8 @@ fn compile_supply_route_text_plan(
         });
     }
 
-    let target_states = mod_root
-        .map(scan_history_state_styles)
-        .transpose()?
-        .unwrap_or_default();
-    let parent_states = scan_dependency_history_states(dependency_roots)?;
-    let game_states = game_root
-        .map(scan_history_state_styles)
-        .transpose()?
-        .unwrap_or_default();
+    let (target_states, parent_states, game_states) =
+        layered_history_state_views(mod_root, game_root, dependency_roots)?;
 
     let route_states = [mentions[0].1.clone(), mentions[1].1.clone()];
     let mut endpoints = Vec::new();
@@ -1604,23 +1722,12 @@ fn map_topology_plan_json(
     index: Option<&GameIndex>,
     map: &ArgMap,
 ) -> Result<String, String> {
-    let mut roots = Vec::new();
-    if let Some(root) = game_root {
-        roots.push(MapDataRoot {
-            layer: "game".to_string(),
-            path: root.to_path_buf(),
-        });
-    }
-    for root in dependency_roots {
-        roots.push(MapDataRoot {
-            layer: "parent".to_string(),
-            path: root.clone(),
-        });
-    }
-    roots.push(MapDataRoot {
-        layer: "target".to_string(),
-        path: mod_root.to_path_buf(),
-    });
+    let (roots, _layered_scan) = map_data_roots(
+        mod_root,
+        game_root,
+        dependency_roots,
+        layered_scan_options_from_args(map)?,
+    )?;
     let required_files = map_topology_required_files(&roots);
     let missing_required = [
         "map/definition.csv",
@@ -1782,7 +1889,7 @@ fn map_override_risk_audit_json(
             }
         }
     }
-    for rel in map_data_globbed_files(mod_root, "map/strategicregions")? {
+    for rel in map_data_globbed_files_in_root(mod_root, "map/strategicregions")? {
         let target = mod_root.join(rel.replace('/', "\\"));
         for parent in dependency_roots {
             let parent_file = parent.join(rel.replace('/', "\\"));
@@ -2035,7 +2142,7 @@ fn map_topology_required_files(roots: &[MapDataRoot]) -> Vec<NetworkFileEvidence
             out.push(NetworkFileEvidence {
                 layer: root.layer.clone(),
                 relative_path: relative_path.to_string(),
-                exists: root.path.join(relative_path).exists(),
+                exists: root.exists(relative_path),
             });
         }
     }
@@ -2054,8 +2161,7 @@ fn rgb_string(rgb: (i64, i64, i64)) -> String {
 
 fn map_rgb_exists(roots: &[MapDataRoot], rgb: (i64, i64, i64)) -> Result<bool, String> {
     for root in roots {
-        let path = root.path.join("map/definition.csv");
-        if path.exists() {
+        if let Some(path) = root.visible_file("map/definition.csv") {
             for line in read_utf8_lossy(&path)?.lines() {
                 let cols = line.split(';').map(str::trim).collect::<Vec<_>>();
                 if cols.len() >= 4
@@ -2075,7 +2181,11 @@ fn map_topology_references(roots: &[MapDataRoot], province: i64) -> Result<Vec<S
     let mut refs = BTreeSet::new();
     for root in roots {
         for rel in ["history/states", "history/units", "map/strategicregions"] {
-            for file in txt_files(&root.path, rel)? {
+            for file in root.collect_files(rel)?.into_iter().filter(|file| {
+                file.extension()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
+            }) {
                 let text = read_utf8_lossy(&file)?;
                 if collect_i64_from_text(&text).contains(&province) {
                     refs.insert(format!("{}:{}", root.layer, rel_slash(&root.path, &file)));
@@ -2088,10 +2198,10 @@ fn map_topology_references(roots: &[MapDataRoot], province: i64) -> Result<Vec<S
             "map/adjacencies.csv",
             "map/weatherpositions.txt",
         ] {
-            let file = root.path.join(rel);
-            if file.exists() && collect_i64_from_text(&read_utf8_lossy(&file)?).contains(&province)
-            {
-                refs.insert(format!("{}:{rel}", root.layer));
+            if let Some(file) = root.visible_file(rel) {
+                if collect_i64_from_text(&read_utf8_lossy(&file)?).contains(&province) {
+                    refs.insert(format!("{}:{rel}", root.layer));
+                }
             }
         }
     }
@@ -2127,28 +2237,17 @@ fn strategic_region_plan_json(
     index: Option<&GameIndex>,
     map: &ArgMap,
 ) -> Result<String, String> {
-    let mut roots = Vec::new();
-    if let Some(root) = game_root {
-        roots.push(MapDataRoot {
-            layer: "game".to_string(),
-            path: root.to_path_buf(),
-        });
-    }
-    for root in dependency_roots {
-        roots.push(MapDataRoot {
-            layer: "parent".to_string(),
-            path: root.clone(),
-        });
-    }
-    roots.push(MapDataRoot {
-        layer: "target".to_string(),
-        path: mod_root.to_path_buf(),
-    });
+    let (roots, _layered_scan) = map_data_roots(
+        mod_root,
+        game_root,
+        dependency_roots,
+        layered_scan_options_from_args(map)?,
+    )?;
     let regions = scan_strategic_regions(&roots)?;
     let parent_region_files = roots
         .iter()
         .filter(|root| root.layer == "parent")
-        .filter(|root| root.path.join("map/strategicregions").exists())
+        .filter(|root| root.exists("map/strategicregions"))
         .count();
     let mut blockers = Vec::new();
     let mut questions = Vec::new();
@@ -2212,7 +2311,15 @@ fn strategic_region_plan_json(
 fn scan_strategic_regions(roots: &[MapDataRoot]) -> Result<Vec<StrategicRegionSummary>, String> {
     let mut out = Vec::new();
     for root in roots {
-        for file in txt_files(&root.path, "map/strategicregions")? {
+        for file in root
+            .collect_files("map/strategicregions")?
+            .into_iter()
+            .filter(|file| {
+                file.extension()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("txt"))
+            })
+        {
             let rel = rel_slash(&root.path, &file);
             let text = strip_comments(&read_utf8_lossy(&file)?);
             for block in direct_blocks_named(&text, "strategic_region") {
@@ -2398,31 +2505,16 @@ fn supply_network_plan_json(
     state_id: Option<i64>,
     map: &ArgMap,
 ) -> Result<String, String> {
-    let mut roots = Vec::new();
-    if let Some(root) = game_root {
-        roots.push(MapDataRoot {
-            layer: "game".to_string(),
-            path: root.to_path_buf(),
-        });
-    }
-    for root in dependency_roots {
-        roots.push(MapDataRoot {
-            layer: "parent".to_string(),
-            path: root.clone(),
-        });
-    }
-    roots.push(MapDataRoot {
-        layer: "target".to_string(),
-        path: mod_root.to_path_buf(),
-    });
+    let (roots, _layered_scan) = map_data_roots(
+        mod_root,
+        game_root,
+        dependency_roots,
+        layered_scan_options_from_args(map)?,
+    )?;
     let network_files = supply_network_file_evidence(&roots);
     let has_network_file = network_files.iter().any(|file| file.exists);
-    let target_states = scan_history_state_styles(mod_root)?;
-    let parent_states = scan_dependency_history_states(dependency_roots)?;
-    let game_states = game_root
-        .map(scan_history_state_styles)
-        .transpose()?
-        .unwrap_or_default();
+    let (target_states, parent_states, game_states) =
+        layered_history_state_views(Some(mod_root), game_root, dependency_roots)?;
     let state_view = state_id.and_then(|id| {
         state_transaction_state_view(id, &target_states, &parent_states, &game_states)
     });
@@ -2532,7 +2624,7 @@ fn supply_network_file_evidence(roots: &[MapDataRoot]) -> Vec<NetworkFileEvidenc
             out.push(NetworkFileEvidence {
                 layer: root.layer.clone(),
                 relative_path: relative_path.to_string(),
-                exists: root.path.join(relative_path).exists(),
+                exists: root.exists(relative_path),
             });
         }
     }
@@ -2551,8 +2643,7 @@ fn supply_network_file_json(file: &NetworkFileEvidence) -> String {
 fn scan_existing_supply_nodes(roots: &[MapDataRoot]) -> Result<BTreeSet<i64>, String> {
     let mut nodes = BTreeSet::new();
     for root in roots {
-        let path = root.path.join("map/supply_nodes.txt");
-        if path.exists() {
+        if let Some(path) = root.visible_file("map/supply_nodes.txt") {
             collect_i64_from_text(&read_utf8_lossy(&path)?)
                 .into_iter()
                 .for_each(|id| {
@@ -2566,8 +2657,7 @@ fn scan_existing_supply_nodes(roots: &[MapDataRoot]) -> Result<BTreeSet<i64>, St
 fn scan_existing_railway_lines(roots: &[MapDataRoot]) -> Result<Vec<Vec<i64>>, String> {
     let mut lines = Vec::new();
     for root in roots {
-        let path = root.path.join("map/railways.txt");
-        if path.exists() {
+        if let Some(path) = root.visible_file("map/railways.txt") {
             for line in read_utf8_lossy(&path)?.lines() {
                 let ids = collect_i64_from_text(line);
                 if ids.len() >= 2 {
@@ -2904,15 +2994,8 @@ fn province_query_json(
     vp_only: bool,
     text: &str,
 ) -> Result<String, String> {
-    let target_states = mod_root
-        .map(scan_history_state_styles)
-        .transpose()?
-        .unwrap_or_default();
-    let parent_states = scan_dependency_history_states(dependency_roots)?;
-    let game_states = game_root
-        .map(scan_history_state_styles)
-        .transpose()?
-        .unwrap_or_default();
+    let (target_states, parent_states, game_states) =
+        layered_history_state_views(mod_root, game_root, dependency_roots)?;
     let game_index = game_root
         .map(|root| build_game_index_with_mod_paths(root, dependency_roots))
         .transpose()?;

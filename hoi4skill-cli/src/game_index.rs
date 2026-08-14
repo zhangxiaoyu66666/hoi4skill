@@ -44,6 +44,8 @@ pub(crate) struct GameIndex {
     pub(crate) dynamic_modifier_effect_tooltips: BTreeMap<String, BTreeSet<String>>,
     pub(crate) localisation_entries: BTreeMap<String, String>,
     pub(crate) localisation_entry_aliases: BTreeMap<String, BTreeSet<String>>,
+    #[serde(default)]
+    pub(crate) layered_scan: LayeredScanReport,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -58,11 +60,12 @@ pub(crate) fn cmd_build_game_index(args: &[String]) -> Result<(), String> {
     let map = parse_args(args);
     let game_root = normalize_path(&require_value(&map, "game-root")?)?;
     let mod_paths = dependency_mod_roots(&map)?;
-    let index = if mod_paths.is_empty() {
-        build_game_index(&game_root)?
-    } else {
-        build_game_index_with_mod_paths(&game_root, &mod_paths)?
-    };
+    let index = build_game_index_with_profile_options(
+        &game_root,
+        &mod_paths,
+        GameIndexProfile::Full,
+        layered_scan_options_from_args(&map)?,
+    )?;
     let json = game_index_json(&index);
     write_or_print(&json, value(&map, "output"))
 }
@@ -73,8 +76,12 @@ pub(crate) fn cmd_code_catalog(args: &[String]) -> Result<(), String> {
     let mod_root = value(&map, "mod-root").map(normalize_path).transpose()?;
     let mod_paths = dependency_mod_roots_for_optional_edited_mod(&map, mod_root.as_deref(), true)?;
     let max_items = parse_usize_option(&map, "max-items", 200)?;
-    let index =
-        build_game_index_with_profile(&game_root, &mod_paths, GameIndexProfile::CodeCatalog)?;
+    let index = build_game_index_with_profile_options(
+        &game_root,
+        &mod_paths,
+        GameIndexProfile::CodeCatalog,
+        layered_scan_options_from_args(&map)?,
+    )?;
     let json = code_catalog_json(&index, max_items);
     write_or_print(&json, value(&map, "output"))
 }
@@ -86,8 +93,12 @@ pub(crate) fn cmd_check_code_symbol(args: &[String]) -> Result<(), String> {
     let mod_paths = dependency_mod_roots_for_optional_edited_mod(&map, mod_root.as_deref(), true)?;
     let symbol = require_value(&map, "symbol")?;
     let requested_kind = value(&map, "kind");
-    let index =
-        build_game_index_with_profile(&game_root, &mod_paths, GameIndexProfile::CodeCatalog)?;
+    let index = build_game_index_with_profile_options(
+        &game_root,
+        &mod_paths,
+        GameIndexProfile::CodeCatalog,
+        layered_scan_options_from_args(&map)?,
+    )?;
     let (json, ok) = check_code_symbol_json(&index, &symbol, requested_kind);
     write_or_print(&json, value(&map, "output"))?;
     if ok {
@@ -128,6 +139,7 @@ pub(crate) fn cmd_resolve_mod_dependencies(args: &[String]) -> Result<(), String
     }
 }
 
+#[cfg(test)]
 pub(crate) fn build_game_index(game_root: &Path) -> Result<GameIndex, String> {
     build_game_index_with_mod_paths(game_root, &[])
 }
@@ -139,23 +151,21 @@ pub(crate) fn build_country_tag_index_with_mod_paths(
     let indexed_roots = std::iter::once(game_root.to_path_buf())
         .chain(mod_paths.iter().cloned())
         .collect::<Vec<_>>();
+    let plan = LayeredSourcePlan::from_roots(&indexed_roots)?;
     let mut index = GameIndex {
         game_root: game_root.to_path_buf(),
-        indexed_roots: indexed_roots.clone(),
+        indexed_roots: plan.roots(),
+        layered_scan: plan.report(LayeredScanOptions::effective())?,
         ..Default::default()
     };
-    for root in indexed_roots {
+    for (layer_index, root) in plan.roots().into_iter().enumerate() {
         if !root.is_dir() {
             return Err(format!(
                 "{}: indexed root is not a directory",
                 root.display()
             ));
         }
-        let tag_root = root.join("common").join("country_tags");
-        if !tag_root.exists() {
-            continue;
-        }
-        for file in collect_files(&tag_root)? {
+        for file in plan.collect_files(layer_index, "common/country_tags")? {
             if file.extension().and_then(OsStr::to_str).unwrap_or("") != "txt" {
                 continue;
             }
@@ -181,12 +191,14 @@ pub(crate) fn build_gui_request_game_index_with_mod_paths(
     let indexed_roots = std::iter::once(game_root.to_path_buf())
         .chain(mod_paths.iter().cloned())
         .collect::<Vec<_>>();
+    let plan = LayeredSourcePlan::from_roots(&indexed_roots)?;
     let mut index = GameIndex {
         game_root: game_root.to_path_buf(),
-        indexed_roots: indexed_roots.clone(),
+        indexed_roots: plan.roots(),
+        layered_scan: plan.report(LayeredScanOptions::effective())?,
         ..Default::default()
     };
-    for (idx, root) in indexed_roots.into_iter().enumerate() {
+    for (idx, root) in plan.roots().into_iter().enumerate() {
         if !root.exists() {
             return Err(format!("{}: indexed root does not exist", root.display()));
         }
@@ -198,7 +210,7 @@ pub(crate) fn build_gui_request_game_index_with_mod_paths(
         }
         let include_localisation =
             idx > 0 || gui_request_should_scan_game_root_localisation(&root)?;
-        collect_gui_request_index_root(&mut index, &root, include_localisation)?;
+        collect_gui_request_index_root(&mut index, &plan, idx, include_localisation)?;
     }
     finalize_localisation_icon_names(&mut index);
     finalize_dynamic_modifier_localisation(&mut index);
@@ -207,12 +219,14 @@ pub(crate) fn build_gui_request_game_index_with_mod_paths(
 
 fn collect_gui_request_index_root(
     index: &mut GameIndex,
-    root: &Path,
+    plan: &LayeredSourcePlan,
+    layer_index: usize,
     include_localisation: bool,
 ) -> Result<(), String> {
     collect_gui_request_files(
-        root,
-        &root.join("common").join("country_tags"),
+        plan,
+        layer_index,
+        "common/country_tags",
         &["txt"],
         |_, text| {
             collect_country_tags(text, &mut index.country_tags);
@@ -220,8 +234,9 @@ fn collect_gui_request_index_root(
     )?;
     if include_localisation {
         collect_gui_request_files(
-            root,
-            &root.join("localisation"),
+            plan,
+            layer_index,
+            "localisation",
             &["yml", "yaml"],
             |_, text| {
                 collect_localisation_index_data(index, text);
@@ -229,38 +244,37 @@ fn collect_gui_request_index_root(
         )?;
     }
     collect_gui_request_files(
-        root,
-        &root.join("common").join("decisions").join("categories"),
+        plan,
+        layer_index,
+        "common/decisions/categories",
         &["txt"],
         |_, text| collect_direct_child_entries(text, &mut index.decision_categories),
     )?;
     collect_gui_request_files(
-        root,
-        &root.join("common").join("scripted_effects"),
+        plan,
+        layer_index,
+        "common/scripted_effects",
         &["txt"],
         |_, text| {
             collect_direct_child_entries(text, &mut index.effects);
         },
     )?;
     collect_gui_request_files(
-        root,
-        &root.join("common").join("scripted_triggers"),
+        plan,
+        layer_index,
+        "common/scripted_triggers",
         &["txt"],
         |_, text| {
             collect_direct_child_entries(text, &mut index.triggers);
         },
     )?;
+    collect_gui_request_files(plan, layer_index, "common/ideas", &["txt"], |_, text| {
+        collect_idea_ids(text, &mut index.ideas);
+    })?;
     collect_gui_request_files(
-        root,
-        &root.join("common").join("ideas"),
-        &["txt"],
-        |_, text| {
-            collect_idea_ids(text, &mut index.ideas);
-        },
-    )?;
-    collect_gui_request_files(
-        root,
-        &root.join("common").join("dynamic_modifiers"),
+        plan,
+        layer_index,
+        "common/dynamic_modifiers",
         &["txt"],
         |_, text| {
             collect_dynamic_modifier_definition_ids(text, &mut index.dynamic_modifiers);
@@ -272,7 +286,7 @@ fn collect_gui_request_index_root(
             collect_dynamic_modifier_variables(text, &mut index.dynamic_modifier_variables);
         },
     )?;
-    collect_gui_request_files(root, &root.join("interface"), &["gfx"], |file, text| {
+    collect_gui_request_files(plan, layer_index, "interface", &["gfx"], |file, text| {
         collect_sprite_names(text, &mut index.sprites);
         index.raw_gfx_names.extend(raw_gfx_name_assignments(text));
         collect_focus_goal_icons_from_gfx_file(file, text, &mut index.focus_goal_sprites);
@@ -293,8 +307,7 @@ fn collect_gui_request_index_root(
             &mut index.modifiers,
         ),
     ] {
-        let path = root.join(rel);
-        if path.is_file() {
+        if let Some(path) = plan.visible_file(layer_index, rel) {
             collect_markdown_heading_identifiers(&read_utf8_lossy(&path)?, target);
         }
     }
@@ -302,18 +315,17 @@ fn collect_gui_request_index_root(
 }
 
 fn collect_gui_request_files<F>(
-    root: &Path,
-    dir: &Path,
+    plan: &LayeredSourcePlan,
+    layer_index: usize,
+    relative_directory: &str,
     extensions: &[&str],
     mut collect: F,
 ) -> Result<(), String>
 where
     F: FnMut(&Path, &str),
 {
-    if !dir.is_dir() {
-        return Ok(());
-    }
-    for file in collect_files(dir)? {
+    let root = &plan.layers()[layer_index].root;
+    for file in plan.collect_files(layer_index, relative_directory)? {
         if !file.is_file() {
             continue;
         }
@@ -382,6 +394,20 @@ pub(crate) fn build_game_index_with_profile(
     mod_paths: &[PathBuf],
     profile: GameIndexProfile,
 ) -> Result<GameIndex, String> {
+    build_game_index_with_profile_options(
+        game_root,
+        mod_paths,
+        profile,
+        LayeredScanOptions::effective(),
+    )
+}
+
+pub(crate) fn build_game_index_with_profile_options(
+    game_root: &Path,
+    mod_paths: &[PathBuf],
+    profile: GameIndexProfile,
+    scan_options: LayeredScanOptions,
+) -> Result<GameIndex, String> {
     if !game_root.exists() {
         return Err(format!("{}: game root does not exist", game_root.display()));
     }
@@ -392,14 +418,17 @@ pub(crate) fn build_game_index_with_profile(
         ));
     }
 
+    let roots = std::iter::once(game_root.to_path_buf())
+        .chain(mod_paths.iter().cloned())
+        .collect::<Vec<_>>();
+    let plan = LayeredSourcePlan::from_roots(&roots)?;
     let mut index = GameIndex {
         game_root: game_root.to_path_buf(),
-        indexed_roots: std::iter::once(game_root.to_path_buf())
-            .chain(mod_paths.iter().cloned())
-            .collect(),
+        indexed_roots: plan.roots(),
+        layered_scan: plan.report(scan_options)?,
         ..Default::default()
     };
-    for root in index.indexed_roots.clone() {
+    for (layer_index, root) in plan.roots().into_iter().enumerate() {
         if !root.exists() {
             return Err(format!("{}: indexed root does not exist", root.display()));
         }
@@ -409,7 +438,7 @@ pub(crate) fn build_game_index_with_profile(
                 root.display()
             ));
         }
-        collect_cached_game_index_root(&mut index, &root, profile)?;
+        collect_cached_game_index_layer(&mut index, &plan, layer_index, profile, scan_options)?;
     }
     finalize_ideology_derived_modifiers(&mut index);
     if profile == GameIndexProfile::Full {
@@ -419,12 +448,30 @@ pub(crate) fn build_game_index_with_profile(
     Ok(index)
 }
 
+pub(crate) fn build_game_index_with_profile_for_target(
+    game_root: &Path,
+    dependency_mods: &[PathBuf],
+    target_root: &Path,
+    profile: GameIndexProfile,
+    scan_options: LayeredScanOptions,
+) -> Result<GameIndex, String> {
+    let mut roots = dependency_mods.to_vec();
+    if !roots
+        .iter()
+        .any(|root| slash_path(root).eq_ignore_ascii_case(&slash_path(target_root)))
+    {
+        roots.push(target_root.to_path_buf());
+    }
+    build_game_index_with_profile_options(game_root, &roots, profile, scan_options)
+}
+
 pub(crate) fn collect_game_index_root_with_profile(
     index: &mut GameIndex,
     root: &Path,
     profile: GameIndexProfile,
 ) -> Result<(), String> {
-    for file in collect_game_index_files(root, profile)? {
+    let plan = LayeredSourcePlan::from_roots(&[root.to_path_buf()])?;
+    for file in collect_game_index_files_for_layer(&plan, 0, profile)? {
         collect_game_index_file(index, root, &file, profile)?;
     }
     Ok(())
@@ -561,8 +608,9 @@ pub(crate) fn collect_game_index_file(
     Ok(())
 }
 
-pub(crate) fn collect_game_index_files(
-    root: &Path,
+pub(crate) fn collect_game_index_files_for_layer(
+    plan: &LayeredSourcePlan,
+    layer_index: usize,
     profile: GameIndexProfile,
 ) -> Result<Vec<PathBuf>, String> {
     const FULL_DIRECTORIES: &[&str] = &[
@@ -626,14 +674,15 @@ pub(crate) fn collect_game_index_files(
         GameIndexProfile::ClausewitzReference => REFERENCE_DIRECTORIES,
     };
 
+    let root = &plan.layers()[layer_index].root;
     let mut files = Vec::new();
     for relative in indexed_directories {
-        let directory = root.join(relative);
-        if directory.is_dir() {
-            files.extend(collect_files(&directory)?);
-        }
+        files.extend(plan.collect_files(layer_index, relative)?);
     }
     for container in ["dlc", "integrated_dlc"] {
+        if !plan.is_visible(layer_index, container) {
+            continue;
+        }
         let container = root.join(container);
         if !container.is_dir() {
             continue;
@@ -649,15 +698,19 @@ pub(crate) fn collect_game_index_files(
             {
                 continue;
             }
-            let interface = entry.path().join("interface");
-            if interface.is_dir() {
-                files.extend(collect_files(&interface)?);
-            }
+            let relative = format!(
+                "{}/{}/interface",
+                container
+                    .file_name()
+                    .and_then(OsStr::to_str)
+                    .unwrap_or("dlc"),
+                entry.file_name().to_string_lossy()
+            );
+            files.extend(plan.collect_files_from(layer_index, &relative, "interface")?);
         }
     }
     if profile != GameIndexProfile::ClausewitzReference {
-        let definition = root.join("map").join("definition.csv");
-        if definition.is_file() {
+        if let Some(definition) = plan.visible_file(layer_index, "map/definition.csv") {
             files.push(definition);
         }
     }
@@ -1654,11 +1707,12 @@ pub(crate) fn game_index_json(index: &GameIndex) -> String {
     let state_ids = index.state_ids.iter().copied().collect::<Vec<_>>();
     let province_ids = index.province_ids.iter().copied().collect::<Vec<_>>();
     format!(
-        "{{\n  \"game\": {{\"id\": {}, \"display_name\": {}}},\n  \"game_root\": {},\n  \"indexed_roots\": {},\n  \"country_tags\": {},\n  \"country_name_tags\": {},\n  \"localisation_icon_names\": {},\n  \"state_ids\": {},\n  \"state_names\": {},\n  \"province_ids\": {},\n  \"sprites\": {},\n  \"focus_goal_sprites\": {},\n  \"idea_pictures\": {},\n  \"event_pictures\": {},\n  \"decision_icons\": {},\n  \"decision_categories\": {},\n  \"decision_category_pictures\": {},\n  \"leader_portraits\": {},\n  \"buildings\": {},\n  \"building_max_levels\": {},\n  \"resources\": {},\n  \"ideologies\": {},\n  \"traits\": {},\n  \"equipment_types\": {},\n  \"technologies\": {},\n  \"technology_categories\": {},\n  \"sub_units\": {},\n  \"wargoal_types\": {},\n  \"effects\": {},\n  \"triggers\": {},\n  \"modifiers\": {},\n  \"ideas\": {},\n  \"idea_names\": {},\n  \"dynamic_modifiers\": {},\n  \"dynamic_modifier_variables\": {},\n  \"counts\": {{\"indexed_roots\": {}, \"country_tags\": {}, \"country_name_tags\": {}, \"localisation_icon_names\": {}, \"state_ids\": {}, \"state_names\": {}, \"province_ids\": {}, \"sprites\": {}, \"focus_goal_sprites\": {}, \"idea_pictures\": {}, \"event_pictures\": {}, \"decision_icons\": {}, \"decision_categories\": {}, \"decision_category_pictures\": {}, \"leader_portraits\": {}, \"buildings\": {}, \"building_max_levels\": {}, \"resources\": {}, \"ideologies\": {}, \"traits\": {}, \"equipment_types\": {}, \"technologies\": {}, \"technology_categories\": {}, \"sub_units\": {}, \"wargoal_types\": {}, \"effects\": {}, \"triggers\": {}, \"modifiers\": {}, \"ideas\": {}, \"idea_names\": {}, \"dynamic_modifiers\": {}, \"dynamic_modifier_variables\": {}}}\n}}\n",
+        "{{\n  \"game\": {{\"id\": {}, \"display_name\": {}}},\n  \"game_root\": {},\n  \"indexed_roots\": {},\n  \"layered_scan\": {},\n  \"country_tags\": {},\n  \"country_name_tags\": {},\n  \"localisation_icon_names\": {},\n  \"state_ids\": {},\n  \"state_names\": {},\n  \"province_ids\": {},\n  \"sprites\": {},\n  \"focus_goal_sprites\": {},\n  \"idea_pictures\": {},\n  \"event_pictures\": {},\n  \"decision_icons\": {},\n  \"decision_categories\": {},\n  \"decision_category_pictures\": {},\n  \"leader_portraits\": {},\n  \"buildings\": {},\n  \"building_max_levels\": {},\n  \"resources\": {},\n  \"ideologies\": {},\n  \"traits\": {},\n  \"equipment_types\": {},\n  \"technologies\": {},\n  \"technology_categories\": {},\n  \"sub_units\": {},\n  \"wargoal_types\": {},\n  \"effects\": {},\n  \"triggers\": {},\n  \"modifiers\": {},\n  \"ideas\": {},\n  \"idea_names\": {},\n  \"dynamic_modifiers\": {},\n  \"dynamic_modifier_variables\": {},\n  \"counts\": {{\"indexed_roots\": {}, \"country_tags\": {}, \"country_name_tags\": {}, \"localisation_icon_names\": {}, \"state_ids\": {}, \"state_names\": {}, \"province_ids\": {}, \"sprites\": {}, \"focus_goal_sprites\": {}, \"idea_pictures\": {}, \"event_pictures\": {}, \"decision_icons\": {}, \"decision_categories\": {}, \"decision_category_pictures\": {}, \"leader_portraits\": {}, \"buildings\": {}, \"building_max_levels\": {}, \"resources\": {}, \"ideologies\": {}, \"traits\": {}, \"equipment_types\": {}, \"technologies\": {}, \"technology_categories\": {}, \"sub_units\": {}, \"wargoal_types\": {}, \"effects\": {}, \"triggers\": {}, \"modifiers\": {}, \"ideas\": {}, \"idea_names\": {}, \"dynamic_modifiers\": {}, \"dynamic_modifier_variables\": {}}}\n}}\n",
         json_str(HOI4_PROFILE.id),
         json_str(HOI4_PROFILE.display_name),
         json_str(&index.game_root.display().to_string()),
         json_array(&indexed_roots),
+        layered_scan_report_json(&index.layered_scan),
         json_array(&tags),
         country_name_tags_json(&index.country_name_tags),
         country_name_tags_json(&index.localisation_icon_names),
@@ -1934,11 +1988,12 @@ pub(crate) fn code_catalog_json(index: &GameIndex, max_items: usize) -> String {
     .map(str::to_string)
     .collect::<Vec<_>>();
     format!(
-        "{{\n  \"schema\": \"hoi4skill.code_catalog.v1\",\n  \"game\": {{\"id\": {}, \"display_name\": {}}},\n  \"game_root\": {},\n  \"indexed_roots\": {},\n  \"max_items_per_category\": {},\n  \"anti_hallucination_rules\": {},\n  \"categories\": [\n    {}\n  ],\n  \"counts\": {{\"categories\": {}, \"effects\": {}, \"triggers\": {}, \"modifiers\": {}, \"dynamic_modifiers\": {}, \"dynamic_modifier_variables\": {}, \"resources\": {}, \"resource_ids\": {}, \"map_ids\": {}}}\n}}\n",
+        "{{\n  \"schema\": \"hoi4skill.code_catalog.v1\",\n  \"game\": {{\"id\": {}, \"display_name\": {}}},\n  \"game_root\": {},\n  \"indexed_roots\": {},\n  \"layered_scan\": {},\n  \"max_items_per_category\": {},\n  \"anti_hallucination_rules\": {},\n  \"categories\": [\n    {}\n  ],\n  \"counts\": {{\"categories\": {}, \"effects\": {}, \"triggers\": {}, \"modifiers\": {}, \"dynamic_modifiers\": {}, \"dynamic_modifier_variables\": {}, \"resources\": {}, \"resource_ids\": {}, \"map_ids\": {}}}\n}}\n",
         json_str(HOI4_PROFILE.id),
         json_str(HOI4_PROFILE.display_name),
         json_str(&index.game_root.display().to_string()),
         json_array(&indexed_roots),
+        layered_scan_report_json(&index.layered_scan),
         max_items,
         json_array(&rules),
         categories.join(",\n    "),

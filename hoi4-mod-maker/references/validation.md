@@ -55,3 +55,17 @@ Use this when the user asks for launch-ready or Workshop-ready output:
 - Do not fix only known typo examples. The validator rejects near-match spellings for all critical national-focus fields.
 - Event IDs can collide when namespaces or numbers are reused.
 - `replace_path` can disable vanilla or other mod content unexpectedly.
+
+## `replace_path`-aware scanning
+
+Layered scanners treat roots in HOI4 load order: game, dependency Mods, then the
+edited Mod. A higher layer's repeated `replace_path` declarations mask the same
+relative subtree in every lower layer. Normal runs prune a masked directory
+before recursion, so its files are neither opened nor added to the effective
+symbol index.
+
+For game-update adaptation only, pass `--replace-path-diagnostics`. This opt-in
+mode reads masked files and records bounded path, size, timestamp, and content
+hash evidence in `layered_scan`; it never adds masked symbols back to validation
+or generation. Use `--max-replaced-files <n>` to cap detailed file rows (default
+200). Leave diagnostic mode off for ordinary authoring and validation.

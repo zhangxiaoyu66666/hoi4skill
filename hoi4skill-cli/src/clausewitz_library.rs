@@ -43,7 +43,11 @@ pub(crate) fn cmd_build_clausewitz_library(args: &[String]) -> Result<(), String
     println!("Official examples exported: {count}");
     if !code_mod_roots.is_empty() {
         let overlay = mod_overlay_library_path(&output, &code_mod_roots);
-        let count = build_clausewitz_library(&code_mod_roots, &overlay)?;
+        let count = build_clausewitz_library_with_options(
+            &code_mod_roots,
+            &overlay,
+            layered_scan_options_from_args(&map)?,
+        )?;
         println!("User-authorized mod code library: {}", overlay.display());
         println!("Mod examples: {count}");
     }
@@ -153,9 +157,7 @@ pub(crate) fn code_mod_roots(map: &ArgMap) -> Result<Vec<PathBuf>, String> {
             roots.push(resolve_mod_root(&normalize_path(path)?)?.root);
         }
     }
-    roots.sort();
-    roots.dedup();
-    Ok(roots)
+    Ok(dedupe_paths(roots))
 }
 
 pub(crate) fn request_explicitly_loads_mod_code(text: &str) -> bool {
@@ -197,6 +199,14 @@ fn mod_overlay_library_path(base: &Path, roots: &[PathBuf]) -> PathBuf {
 }
 
 pub(crate) fn build_clausewitz_library(roots: &[PathBuf], output: &Path) -> Result<usize, String> {
+    build_clausewitz_library_with_options(roots, output, LayeredScanOptions::effective())
+}
+
+pub(crate) fn build_clausewitz_library_with_options(
+    roots: &[PathBuf],
+    output: &Path,
+    scan_options: LayeredScanOptions,
+) -> Result<usize, String> {
     if output.exists() {
         let known_library = output.join("manifest.json").is_file()
             && output.join("index.tsv").is_file()
@@ -217,15 +227,17 @@ pub(crate) fn build_clausewitz_library(roots: &[PathBuf], output: &Path) -> Resu
     }
     fs::create_dir_all(output).map_err(|e| format!("create {}: {e}", output.display()))?;
 
+    let plan = LayeredSourcePlan::from_roots(roots)?;
+    let layered_scan = plan.report(scan_options)?;
     let mut examples = Vec::new();
-    for root in roots {
+    for (layer_index, root) in plan.roots().into_iter().enumerate() {
         if !root.is_dir() {
             return Err(format!(
                 "{}: indexed root is not a directory",
                 root.display()
             ));
         }
-        collect_clausewitz_examples(root, &mut examples)?;
+        collect_clausewitz_examples_for_layer(&plan, layer_index, &mut examples)?;
     }
     examples.sort_by(|left, right| {
         (&left.system, &left.symbol, &left.source).cmp(&(
@@ -277,10 +289,11 @@ pub(crate) fn build_clausewitz_library(roots: &[PathBuf], output: &Path) -> Resu
     fs::write(
         output.join("manifest.json"),
         format!(
-            "{{\n  \"format_version\": {},\n  \"source_fingerprint\": {},\n  \"example_count\": {},\n  \"roots\": [{}]\n}}\n",
+            "{{\n  \"format_version\": {},\n  \"source_fingerprint\": {},\n  \"example_count\": {},\n  \"layered_scan\": {},\n  \"roots\": [{}]\n}}\n",
             json_str(LIBRARY_VERSION),
             json_str(&clausewitz_library_fingerprint(roots)),
             examples.len(),
+            layered_scan_report_json(&layered_scan),
             roots_json
         ),
     )
@@ -335,6 +348,14 @@ fn build_empty_clausewitz_library(roots: &[PathBuf], output: &Path) -> Result<us
 
 fn clausewitz_library_fingerprint(roots: &[PathBuf]) -> String {
     let mut parts = Vec::new();
+    if let Ok(plan) = LayeredSourcePlan::from_roots(roots) {
+        for layer_index in 0..plan.layers().len() {
+            parts.push(format!(
+                "visibility:{}",
+                plan.visibility_fingerprint(layer_index)
+            ));
+        }
+    }
     for root in roots {
         parts.push(root.display().to_string());
         for relative in [
@@ -549,10 +570,12 @@ pub(crate) fn render_retrieved_clausewitz_context(
     Ok(out)
 }
 
-fn collect_clausewitz_examples(
-    root: &Path,
+fn collect_clausewitz_examples_for_layer(
+    plan: &LayeredSourcePlan,
+    layer_index: usize,
     out: &mut Vec<ClausewitzExample>,
 ) -> Result<(), String> {
+    let root = &plan.layers()[layer_index].root;
     for (relative, system) in [
         ("common/national_focus", "focus"),
         ("events", "event"),
@@ -566,11 +589,7 @@ fn collect_clausewitz_examples(
         ("history/states", "state_history"),
         ("interface", "gfx"),
     ] {
-        let directory = root.join(relative);
-        if !directory.is_dir() {
-            continue;
-        }
-        for file in collect_files(&directory)? {
+        for file in plan.collect_files(layer_index, relative)? {
             let extension = file
                 .extension()
                 .and_then(OsStr::to_str)

@@ -737,8 +737,15 @@ pub(crate) fn scan_history_state_files(root: &Path) -> Result<Vec<String>, Strin
 }
 
 pub(crate) fn scan_history_state_styles(root: &Path) -> Result<Vec<HistoryStateStyle>, String> {
+    scan_history_state_styles_from_files(root, txt_files(root, "history/states")?)
+}
+
+pub(crate) fn scan_history_state_styles_from_files(
+    root: &Path,
+    files: Vec<PathBuf>,
+) -> Result<Vec<HistoryStateStyle>, String> {
     let mut out = Vec::new();
-    for file in txt_files(root, "history/states")? {
+    for file in files {
         let rel = rel_slash(root, &file);
         let text = strip_comments(&read_utf8_lossy(&file)?);
         for block in direct_blocks_named(&text, "state") {

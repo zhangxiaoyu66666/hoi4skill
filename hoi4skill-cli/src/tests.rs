@@ -42728,7 +42728,7 @@ fn prepare_edit_context_does_not_block_narrow_write_on_existing_mod_errors() {
     assert!(context.contains("\"final_code_allowed_by_context\": true"));
     assert!(context.contains("target mod has pre-existing validation issues"));
     assert!(context.contains("changed-only strict validation"));
-    assert!(context.contains("\"source\": \"dry_run_validation_error\"") == false);
+    assert!(!context.contains("\"source\": \"dry_run_validation_error\""));
     assert!(context.contains("\"suppressed_existing_target_errors\": true"));
     assert!(context.contains("pre-existing target-mod validation errors omitted"));
 }
@@ -58491,4 +58491,325 @@ fn history_edit_plan_allows_verified_local_state_file() {
     assert!(json.contains("\"province_id_known\": true"));
     assert!(json.contains("\"capital_province_id_known\": true"));
     assert!(json.contains("\"capital_value_also_state_id\": false"));
+}
+
+#[test]
+fn layered_source_plan_prunes_replace_path_before_descending() {
+    let workspace = unique_temp_dir("replace-path-pruning");
+    let game = workspace.join("game");
+    let parent = workspace.join("parent");
+    fs::create_dir_all(game.join("common/technologies/deep")).unwrap();
+    fs::create_dir_all(game.join("common/ideas")).unwrap();
+    fs::create_dir_all(parent.join("common/technologies")).unwrap();
+    fs::write(
+        game.join("common/technologies/deep/vanilla.txt"),
+        "technologies = { vanilla_hidden = {} }\n",
+    )
+    .unwrap();
+    fs::write(game.join("common/ideas/visible.txt"), "ideas = {}\n").unwrap();
+    fs::write(
+        parent.join("descriptor.mod"),
+        "name=\"Parent\"\nreplace_path=\"common/technologies\"\n",
+    )
+    .unwrap();
+    fs::write(
+        parent.join("common/technologies/parent.txt"),
+        "technologies = { parent_visible = {} }\n",
+    )
+    .unwrap();
+
+    let plan = LayeredSourcePlan::from_roots(&[game.clone(), parent.clone()]).unwrap();
+    let hidden = plan.collect_files(0, "common/technologies").unwrap();
+    let visible = plan.collect_files(0, "common/ideas").unwrap();
+    let parent_files = plan.collect_files(1, "common/technologies").unwrap();
+    let report = plan.report(LayeredScanOptions::effective()).unwrap();
+    fs::remove_dir_all(&workspace).unwrap();
+
+    assert!(hidden.is_empty());
+    assert_eq!(visible.len(), 1);
+    assert_eq!(parent_files.len(), 1);
+    assert_eq!(report.pruned_subtrees, 1);
+    assert_eq!(report.diagnostic_files_total, 0);
+    assert_eq!(report.mode, "effective");
+}
+
+#[test]
+fn replace_path_matching_uses_path_segment_boundaries() {
+    let workspace = unique_temp_dir("replace-path-boundary");
+    let game = workspace.join("game");
+    let parent = workspace.join("parent");
+    fs::create_dir_all(game.join("common/idea")).unwrap();
+    fs::create_dir_all(game.join("common/ideas")).unwrap();
+    fs::create_dir_all(&parent).unwrap();
+    fs::write(game.join("common/idea/hidden.txt"), "hidden = yes\n").unwrap();
+    fs::write(game.join("common/ideas/visible.txt"), "visible = yes\n").unwrap();
+    fs::write(
+        parent.join("descriptor.mod"),
+        "replace_path = \"common/idea\"\n",
+    )
+    .unwrap();
+
+    let plan = LayeredSourcePlan::from_roots(&[game, parent]).unwrap();
+    assert!(plan.collect_files(0, "common/idea").unwrap().is_empty());
+    assert_eq!(plan.collect_files(0, "common/ideas").unwrap().len(), 1);
+    fs::remove_dir_all(&workspace).unwrap();
+}
+
+#[test]
+fn launcher_descriptor_replace_path_is_honoured() {
+    let workspace = unique_temp_dir("launcher-replace-path");
+    let game = workspace.join("game");
+    let parent = workspace.join("parent");
+    fs::create_dir_all(game.join("events")).unwrap();
+    fs::create_dir_all(&parent).unwrap();
+    fs::write(game.join("events/vanilla.txt"), "country_event = {}\n").unwrap();
+    fs::write(
+        workspace.join("parent.mod"),
+        format!(
+            "path=\"{}\"\nreplace_path=\"events\"\n",
+            parent.display().to_string().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+
+    let plan = LayeredSourcePlan::from_roots(&[game, parent]).unwrap();
+    assert!(plan.collect_files(0, "events").unwrap().is_empty());
+    assert_eq!(
+        plan.report(LayeredScanOptions::effective())
+            .unwrap()
+            .declarations
+            .len(),
+        1
+    );
+    fs::remove_dir_all(&workspace).unwrap();
+}
+
+#[test]
+fn game_index_diagnostic_reads_hidden_files_without_indexing_them() {
+    let workspace = unique_temp_dir("replace-path-diagnostics");
+    let game = workspace.join("game");
+    let parent = workspace.join("parent");
+    fs::create_dir_all(game.join("common/technologies")).unwrap();
+    fs::create_dir_all(parent.join("common/technologies")).unwrap();
+    fs::write(
+        game.join("common/technologies/vanilla.txt"),
+        "technologies = { vanilla_hidden = {} }\n",
+    )
+    .unwrap();
+    fs::write(
+        parent.join("descriptor.mod"),
+        "replace_path=\"common/technologies\"\n",
+    )
+    .unwrap();
+    fs::write(
+        parent.join("common/technologies/parent.txt"),
+        "technologies = { parent_visible = {} }\n",
+    )
+    .unwrap();
+
+    let index = build_game_index_with_profile_options(
+        &game,
+        &[parent],
+        GameIndexProfile::CodeCatalog,
+        LayeredScanOptions {
+            replace_path_diagnostics: true,
+            max_replaced_files: 10,
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(&workspace).unwrap();
+
+    assert!(!index.technologies.contains("vanilla_hidden"));
+    assert!(index.technologies.contains("parent_visible"));
+    assert_eq!(index.layered_scan.mode, "replace_path_diagnostics");
+    assert_eq!(index.layered_scan.diagnostic_files_total, 1);
+    assert_eq!(index.layered_scan.diagnostic_files.len(), 1);
+    assert!(!index.layered_scan.diagnostic_files[0]
+        .content_hash
+        .is_empty());
+}
+
+#[test]
+fn replace_path_interface_also_hides_virtual_dlc_interface_files() {
+    let workspace = unique_temp_dir("replace-path-dlc-interface");
+    let game = workspace.join("game");
+    let parent = workspace.join("parent");
+    fs::create_dir_all(game.join("dlc/test_dlc/interface")).unwrap();
+    fs::create_dir_all(parent.join("interface")).unwrap();
+    fs::write(
+        game.join("dlc/test_dlc/interface/dlc.gfx"),
+        "spriteType = { name = \"GFX_hidden_dlc_sprite\" texturefile = \"gfx/hidden.dds\" }\n",
+    )
+    .unwrap();
+    fs::write(
+        parent.join("descriptor.mod"),
+        "replace_path=\"interface\"\n",
+    )
+    .unwrap();
+    fs::write(
+        parent.join("interface/parent.gfx"),
+        "spriteType = { name = \"GFX_parent_sprite\" texturefile = \"gfx/parent.dds\" }\n",
+    )
+    .unwrap();
+
+    let index =
+        build_game_index_with_profile(&game, &[parent], GameIndexProfile::CodeCatalog).unwrap();
+    fs::remove_dir_all(&workspace).unwrap();
+
+    assert!(!index.sprites.contains("GFX_hidden_dlc_sprite"));
+    assert!(index.sprites.contains("GFX_parent_sprite"));
+}
+
+#[test]
+fn target_replace_path_removes_lower_technology_from_strict_validation() {
+    let workspace = unique_temp_dir("replace-path-validation");
+    let game = workspace.join("game");
+    let target = workspace.join("target");
+    fs::create_dir_all(game.join("common/technologies")).unwrap();
+    fs::create_dir_all(target.join("common/technologies")).unwrap();
+    fs::create_dir_all(target.join("events")).unwrap();
+    fs::write(
+        game.join("common/technologies/vanilla.txt"),
+        "technologies = { vanilla_hidden = {} }\n",
+    )
+    .unwrap();
+    fs::write(
+        target.join("descriptor.mod"),
+        "name=\"Target\"\nreplace_path=\"common/technologies\"\n",
+    )
+    .unwrap();
+    fs::write(
+        target.join("common/technologies/target.txt"),
+        "technologies = { target_visible = {} }\n",
+    )
+    .unwrap();
+    fs::write(
+        target.join("events/test.txt"),
+        "add_namespace = tst\ncountry_event = { id = tst.1 is_triggered_only = yes immediate = { set_technology = { vanilla_hidden = 1 popup = no } } }\n",
+    )
+    .unwrap();
+
+    let base = build_game_index_with_profile(&game, &[], GameIndexProfile::Validation).unwrap();
+    let report = validate_mod_with_options(
+        &target,
+        Some(&base),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    )
+    .unwrap();
+    fs::remove_dir_all(&workspace).unwrap();
+
+    assert!(report
+        .errors
+        .iter()
+        .any(|error| error.contains("technology vanilla_hidden")
+            && error.contains("not present in game index")));
+    assert!(!report
+        .errors
+        .iter()
+        .any(|error| error.contains("technology `popup`")));
+}
+
+#[test]
+fn replace_path_hides_lower_texture_from_validation_lookup() {
+    let workspace = unique_temp_dir("replace-path-texture");
+    let game = workspace.join("game");
+    let parent = workspace.join("parent");
+    let target = workspace.join("target");
+    fs::create_dir_all(game.join("gfx/interface")).unwrap();
+    fs::create_dir_all(&parent).unwrap();
+    fs::create_dir_all(&target).unwrap();
+    fs::write(game.join("gfx/interface/hidden.dds"), "texture").unwrap();
+    fs::write(parent.join("descriptor.mod"), "replace_path=\"gfx\"\n").unwrap();
+    let index = GameIndex {
+        game_root: game.clone(),
+        indexed_roots: vec![game, parent],
+        ..Default::default()
+    };
+
+    let resolved =
+        resolve_texture_in_indexed_roots(&target, "gfx/interface/hidden.dds", Some(&index));
+    fs::remove_dir_all(&workspace).unwrap();
+    assert!(resolved.is_none());
+}
+
+#[test]
+fn clausewitz_library_excludes_replaced_lower_examples() {
+    let workspace = unique_temp_dir("replace-path-clausewitz-library");
+    let game = workspace.join("game");
+    let parent = workspace.join("parent");
+    let output = workspace.join("library");
+    fs::create_dir_all(game.join("common/scripted_effects")).unwrap();
+    fs::create_dir_all(parent.join("common/scripted_effects")).unwrap();
+    fs::write(
+        game.join("common/scripted_effects/base.txt"),
+        "vanilla_hidden_effect = {\n add_political_power = 1\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        parent.join("descriptor.mod"),
+        "replace_path=\"common/scripted_effects\"\n",
+    )
+    .unwrap();
+    fs::write(
+        parent.join("common/scripted_effects/parent.txt"),
+        "parent_visible_effect = {\n add_political_power = 2\n}\n",
+    )
+    .unwrap();
+
+    build_clausewitz_library(&[game, parent], &output).unwrap();
+    let index = read_utf8_lossy(&output.join("index.tsv")).unwrap();
+    fs::remove_dir_all(&workspace).unwrap();
+
+    assert!(!index.contains("vanilla_hidden_effect"));
+    assert!(index.contains("parent_visible_effect"));
+}
+
+#[test]
+fn map_data_audit_reports_replaced_map_files_only_in_diagnostics() {
+    let workspace = unique_temp_dir("replace-path-map-audit");
+    let game = workspace.join("game");
+    let target = workspace.join("target");
+    fs::create_dir_all(game.join("map/strategicregions")).unwrap();
+    fs::create_dir_all(target.join("map/strategicregions")).unwrap();
+    fs::write(
+        game.join("map/strategicregions/vanilla.txt"),
+        "strategic_region = { id = 1 provinces = { 1 } }\n",
+    )
+    .unwrap();
+    fs::write(
+        target.join("descriptor.mod"),
+        "replace_path=\"map/strategicregions\"\n",
+    )
+    .unwrap();
+    fs::write(
+        target.join("map/strategicregions/target.txt"),
+        "strategic_region = { id = 2 provinces = { 2 } }\n",
+    )
+    .unwrap();
+
+    let (roots, report) = map_data_roots(
+        &target,
+        Some(&game),
+        &[],
+        LayeredScanOptions {
+            replace_path_diagnostics: true,
+            max_replaced_files: 10,
+        },
+    )
+    .unwrap();
+    let game_root = roots.iter().find(|root| root.layer == "game").unwrap();
+    let target_root = roots.iter().find(|root| root.layer == "target").unwrap();
+    assert!(map_data_globbed_files(game_root, "map/strategicregions")
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        map_data_globbed_files(target_root, "map/strategicregions")
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(report.diagnostic_files_total, 1);
+    fs::remove_dir_all(&workspace).unwrap();
 }

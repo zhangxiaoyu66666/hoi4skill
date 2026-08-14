@@ -345,6 +345,7 @@ When details are missing:
 - Use national spirits for long-term focus effects: focus `completion_reward` may `add_ideas`, and temporary long-term states must be removed later with `remove_ideas`. Use direct focus rewards only for immediate effects; never put `modifier = { ... }` directly inside a focus `completion_reward`.
 - Prefer new files inside the mod over editing copied vanilla mega-files.
 - Avoid `replace_path` unless the request requires total replacement.
+- Treat game, dependency Mod, and target Mod roots in load order. Normal indexing and validation must prune lower-layer paths masked by a higher layer's `replace_path`. Use `--replace-path-diagnostics` only while adapting to a game update; it reads and hashes masked files for comparison but never makes their symbols valid again. Leave it off for routine work.
 - When adding state buildings, choose explicit state IDs only after inspecting existing targets or vanilla state files.
 - Keep balance conservative and easy for players to understand.
 - Use comments sparingly and only to explain non-obvious compatibility or placement choices.
