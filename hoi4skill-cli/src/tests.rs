@@ -45333,6 +45333,45 @@ fn single_line_sprite_type_keeps_texturefile() {
 }
 
 #[test]
+fn blocks_named_ignores_quoted_and_commented_block_syntax() {
+    let text = r#"
+        completion_reward = {
+            create_unit = {
+                division = "start_experience_factor = 0.8 {"
+            }
+            hidden_effect = { real_effect = yes }
+        }
+        text = "completion_reward = { fake_effect = yes }"
+        # completion_reward = { commented_effect = yes }
+    "#;
+    let blocks = blocks_named(text, "completion_reward");
+
+    assert_eq!(blocks.len(), 1);
+    assert!(blocks[0].contains("real_effect = yes"));
+    assert!(!blocks[0].contains("fake_effect = yes"));
+    assert!(!blocks[0].contains("commented_effect = yes"));
+}
+
+#[test]
+fn direct_child_blocks_keeps_variable_array_scope_as_one_key() {
+    let blocks = direct_child_blocks(
+        "var:global.TNO_Espionage_Countries^RegionID = { add_stability = 0.1 }",
+    );
+
+    assert_eq!(blocks.len(), 1);
+    assert_eq!(blocks[0].0, "var:global.TNO_Espionage_Countries^RegionID");
+}
+
+#[test]
+fn direct_assignment_keys_skips_embedded_assignments_in_quoted_values() {
+    let keys = direct_assignment_keys(
+        r#"division = "division_template = \"Volkssturm\" start_experience_factor = 0.8" owner = ROOT"#,
+    );
+
+    assert_eq!(keys, vec!["division", "owner"]);
+}
+
+#[test]
 fn register_gfx_icons_writes_all_ui_sprite_categories() {
     let root = unique_temp_dir("register-gfx-all");
     let image_root = root.join("gfx").join("interface");
@@ -50162,8 +50201,14 @@ fn game_index_ignores_nested_shadow_resource_trees_outside_root_load_paths() {
     let root = unique_temp_dir("game-index-pruned-root");
     let shadow = root.join("unrelated").join("common").join("country_tags");
     let dlc_interface = root.join("dlc").join("dlc999_test").join("interface");
+    let dlc_ideas = root
+        .join("dlc")
+        .join("dlc999_test")
+        .join("common")
+        .join("ideas");
     fs::create_dir_all(&shadow).unwrap();
     fs::create_dir_all(&dlc_interface).unwrap();
+    fs::create_dir_all(&dlc_ideas).unwrap();
     fs::write(
         shadow.join("shadow_tags.txt"),
         "ZZZ = \"countries/Shadow.txt\"\n",
@@ -50174,12 +50219,18 @@ fn game_index_ignores_nested_shadow_resource_trees_outside_root_load_paths() {
         "spriteType = { name = GFX_test_dlc_sprite texturefile = \"gfx/test.dds\" }\n",
     )
     .unwrap();
+    fs::write(
+        dlc_ideas.join("test.txt"),
+        "ideas = { country = { TST_dlc_idea = {} } }\n",
+    )
+    .unwrap();
 
     let index = build_game_index(&root).unwrap();
     fs::remove_dir_all(&root).unwrap();
 
     assert!(!index.country_tags.contains("ZZZ"));
     assert!(index.sprites.contains("GFX_test_dlc_sprite"));
+    assert!(index.ideas.contains("TST_dlc_idea"));
 }
 
 #[test]
@@ -50308,6 +50359,7 @@ fn game_index_cache_invalidates_changed_and_deleted_files() {
 fn game_index_collects_tags_states_and_sprites() {
     let root = unique_temp_dir("game-index");
     fs::create_dir_all(root.join("common").join("country_tags")).unwrap();
+    fs::create_dir_all(root.join("common").join("country_tag_aliases")).unwrap();
     fs::create_dir_all(root.join("common").join("buildings")).unwrap();
     fs::create_dir_all(root.join("common").join("resources")).unwrap();
     fs::create_dir_all(root.join("common").join("ideologies")).unwrap();
@@ -50329,6 +50381,13 @@ fn game_index_collects_tags_states_and_sprites() {
             .join("country_tags")
             .join("00_countries.txt"),
         "SOV = \"countries/Soviet.txt\"\nITA = \"countries/Italy.txt\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("common")
+            .join("country_tag_aliases")
+            .join("aliases.txt"),
+        "SOV_ALIAS = { }\n",
     )
     .unwrap();
     fs::write(
@@ -50370,7 +50429,7 @@ fn game_index_collects_tags_states_and_sprites() {
             .join("units")
             .join("equipment")
             .join("00_equipment.txt"),
-        "equipments = {\n  infantry_equipment = { year = 1936 }\n  artillery_equipment = { year = 1936 }\n}\n",
+        "equipments = {\n  infantry_equipment = { year = 1936 }\n  artillery_equipment = { year = 1936 }\n}\nduplicate_archetypes = {\n  small_plane_cas_airframe = { archetype = small_plane_airframe type = cas }\n}\n",
     )
     .unwrap();
     fs::write(
@@ -50470,6 +50529,7 @@ spriteType = { name = "GFX_portrait_GER_wilhelm_ii" texturefile = "gfx/leaders/G
 
     assert!(index.country_tags.contains("SOV"));
     assert!(index.country_tags.contains("ITA"));
+    assert!(index.country_tags.contains("SOV_ALIAS"));
     assert!(index.state_ids.contains(&64));
     assert_eq!(index.state_names.get("STATE_64"), Some(&64));
     assert!(index.province_ids.contains(&123));
@@ -50507,8 +50567,11 @@ spriteType = { name = "GFX_portrait_GER_wilhelm_ii" texturefile = "gfx/leaders/G
     assert!(index.ideologies.contains("communism"));
     assert!(!index.ideologies.contains("conservatism"));
     assert!(!index.ideologies.contains("marxism"));
+    assert!(index.ideology_types.contains("conservatism"));
+    assert!(index.ideology_types.contains("marxism"));
     assert!(index.traits.contains("popular_figurehead"));
     assert!(index.equipment_types.contains("infantry_equipment"));
+    assert!(index.equipment_types.contains("small_plane_cas_airframe"));
     assert!(index.technologies.contains("infantry_weapons"));
     assert!(index.technology_categories.contains("tech_infantry"));
     assert!(index.sub_units.contains("infantry"));
@@ -50549,7 +50612,7 @@ spriteType = { name = "GFX_portrait_GER_wilhelm_ii" texturefile = "gfx/leaders/G
     assert!(index
         .dynamic_modifier_variables
         .contains("SOV_wrapped_power"));
-    assert!(json.contains("\"country_tags\": [\"ITA\", \"SOV\"]"));
+    assert!(json.contains("\"country_tags\": [\"ITA\", \"SOV\", \"SOV_ALIAS\"]"));
     assert!(json.contains("\"state_ids\": [64]"));
     assert!(json.contains("\"state_names\": {\"STATE_64\": 64}"));
     assert!(json.contains("\"province_ids\": [123, 456, 789]"));
@@ -50572,7 +50635,9 @@ spriteType = { name = "GFX_portrait_GER_wilhelm_ii" texturefile = "gfx/leaders/G
     assert!(json.contains("\"resources\": [\"oil\", \"steel\"]"));
     assert!(json.contains("\"ideologies\": [\"communism\", \"democratic\"]"));
     assert!(json.contains("\"traits\": [\"popular_figurehead\", \"war_industrialist\"]"));
-    assert!(json.contains("\"equipment_types\": [\"artillery_equipment\", \"infantry_equipment\"]"));
+    assert!(json.contains(
+        "\"equipment_types\": [\"artillery_equipment\", \"infantry_equipment\", \"small_plane_cas_airframe\"]"
+    ));
     assert!(json.contains("\"technologies\": [\"infantry_weapons\"]"));
     assert!(json.contains("\"technology_categories\": [\"infantry\", \"tech_infantry\"]"));
     assert!(json.contains("\"sub_units\": [\"artillery_brigade\", \"infantry\"]"));
@@ -50617,6 +50682,76 @@ fn strict_dynamic_modifier_accepts_ideology_derived_modifiers() {
     assert!(!errors.contains("unknown modifier `totalist_drift`"));
     assert!(!errors.contains("unknown modifier `social_democrat_acceptance`"));
     assert!(errors.contains("mystery_drift"));
+}
+
+#[test]
+fn game_index_derives_building_modifiers_and_observes_real_modifier_blocks() {
+    let mut index = GameIndex::default();
+    index.buildings.insert("arms_factory".to_string());
+    finalize_building_derived_modifiers(&mut index);
+    assert!(index
+        .modifiers
+        .contains("production_speed_arms_factory_factor"));
+
+    collect_observed_modifier_ids(
+        r#"
+ideas = {
+    country = {
+        official_idea = {
+            modifier = {
+                political_advisor_cost_factor = -0.25
+                custom_modifier_tooltip = official_idea_tt
+            }
+            ai_will_do = {
+                modifier = {
+                    factor = 2
+                    has_war = yes
+                }
+            }
+        }
+    }
+}
+"#,
+        &mut index.observed_modifiers,
+    );
+    assert!(index
+        .observed_modifiers
+        .contains("political_advisor_cost_factor"));
+    assert!(!index.observed_modifiers.contains("custom_modifier_tooltip"));
+    assert!(!index.observed_modifiers.contains("has_war"));
+}
+
+#[test]
+fn intrinsic_modifier_usage_is_cached_even_when_ideas_are_layer_masked() {
+    let game_root = unique_temp_dir("intrinsic-modifier-usage");
+    let target_root = unique_temp_dir("intrinsic-modifier-target");
+    let ideas = game_root.join("common").join("ideas");
+    fs::create_dir_all(&ideas).unwrap();
+    fs::create_dir_all(&target_root).unwrap();
+    fs::write(
+        ideas.join("official.txt"),
+        "ideas = { country = { official = { modifier = { political_advisor_cost_factor = -0.25 } } } }",
+    )
+    .unwrap();
+    fs::write(
+        target_root.join("descriptor.mod"),
+        "name=\"Target\"\nreplace_path=\"common/ideas\"\n",
+    )
+    .unwrap();
+    let index = build_game_index_with_profile_for_target(
+        &game_root,
+        &[],
+        &target_root,
+        GameIndexProfile::Validation,
+        LayeredScanOptions {
+            use_index_cache: false,
+            ..LayeredScanOptions::effective()
+        },
+    )
+    .unwrap();
+    assert!(index.modifiers.contains("political_advisor_cost_factor"));
+    fs::remove_dir_all(game_root).unwrap();
+    fs::remove_dir_all(target_root).unwrap();
 }
 
 #[test]
@@ -54771,6 +54906,115 @@ fn game_index_helpers_distinguish_known_and_unknown_refs() {
 }
 
 #[test]
+fn game_index_collects_character_advisor_idea_tokens() {
+    let mut ideas = BTreeSet::new();
+    collect_character_advisor_idea_tokens(
+        r#"
+characters = {
+    ARG_juan_peron = {
+        advisor = { idea_token = ARG_juan_peron slot = political_advisor }
+        advisor = { idea_token = ARG_juan_peron_high_command slot = high_command }
+    }
+}
+"#,
+        &mut ideas,
+    );
+
+    assert_eq!(
+        ideas,
+        BTreeSet::from([
+            "ARG_juan_peron".to_string(),
+            "ARG_juan_peron_high_command".to_string(),
+        ])
+    );
+}
+
+#[test]
+fn game_index_collects_cosmetic_country_tags_without_country_file_fields() {
+    let mut tags = BTreeSet::new();
+    collect_cosmetic_country_tags(
+        "graphical_culture = western_european_gfx\ncolor = { 1 2 3 }\nENE = { color = { 4 5 6 } }\n",
+        &mut tags,
+    );
+
+    assert_eq!(tags, BTreeSet::from(["ENE".to_string()]));
+}
+
+#[test]
+fn game_index_collects_ideas_from_vanilla_style_eof_unclosed_wrapper() {
+    let mut ideas = BTreeSet::new();
+    collect_idea_ids(
+        r#"
+ideas = {
+    country = {
+        PER_a_modern_iran_idea = { modifier = { stability_factor = 0.1 } }
+    }
+"#,
+        &mut ideas,
+    );
+
+    assert!(ideas.contains("PER_a_modern_iran_idea"));
+}
+
+#[test]
+fn game_index_derives_duplicate_equipment_archetype_levels_from_source_data() {
+    let mut index = GameIndex::default();
+    index
+        .equipment_types
+        .extend(["small_plane_airframe_0", "small_plane_airframe_1"].map(str::to_string));
+    collect_duplicate_equipment_archetypes(
+        "duplicate_archetypes = { small_plane_cas_airframe = { archetype = small_plane_airframe variant_name = { small_plane_cas_airframe_1 = CAS_1 } } }",
+        &mut index.equipment_types,
+        &mut index.equipment_duplicate_archetypes,
+    );
+    finalize_equipment_derived_types(&mut index);
+
+    assert!(index.equipment_types.contains("small_plane_cas_airframe_0"));
+    assert!(index.equipment_types.contains("small_plane_cas_airframe_1"));
+}
+
+#[test]
+fn game_data_reference_scan_distinguishes_scope_blocks_and_equipment_metadata() {
+    let path = Path::new("M:\\mod\\events\\sample.txt");
+    let mut refs = GameDataRefs::default();
+
+    collect_game_data_refs(
+        path,
+        r#"
+ai_chance = {
+    modifier = {
+        factor = 5
+        has_country_flag = sample_flag
+        ALB = { is_in_faction_with = ROOT }
+    }
+}
+random_list = {
+    modifier = {
+        add = 10
+        has_global_flag = sample_flag
+        owns_state = 1
+    }
+}
+add_equipment_production = {
+    equipment = {
+        type = ship_hull_carrier_1
+        creator = "JAP"
+        version_name = "Shokaku Class"
+    }
+    requested_factories = 3
+}
+"#,
+        &mut refs,
+    );
+
+    assert!(refs.modifiers.is_empty());
+    assert_eq!(
+        refs.equipment.keys().cloned().collect::<Vec<_>>(),
+        vec!["ship_hull_carrier_1".to_string()]
+    );
+}
+
+#[test]
 fn validator_rejects_unknown_effect_keys_against_indexed_docs() {
     let root = unique_temp_dir("validate-unknown-effects");
     fs::create_dir_all(root.join("events")).unwrap();
@@ -54877,6 +55121,395 @@ fn validator_treats_capital_scope_as_script_scope() {
         "{errors}"
     );
     assert!(!errors.contains("unknown trigger `controller`"), "{errors}");
+}
+
+#[test]
+fn validator_treats_engine_keywords_as_ascii_case_insensitive() {
+    let path = Path::new("M:\\mod\\events\\case.txt");
+    let effect_block = "IF = { LIMIT = { HAS_WAR = no } OWNER = { ADD_STABILITY = 0.1 } }\nELSE = { CONTROLLER = { ADD_STABILITY = 0.05 } }\n";
+    let trigger_block = "NOt = { HAS_WAR = yes }\nCONTROLLER = { HAS_WAR = no }\n";
+    let mut index = GameIndex::default();
+    index.effects.insert("add_stability".to_string());
+    index.triggers.insert("has_war".to_string());
+    let options = ValidationOptions {
+        strict_code_index: true,
+    };
+    let mut reporter = Reporter::default();
+
+    check_unknown_effect_keys(
+        path,
+        "option",
+        effect_block,
+        Some(&index),
+        options,
+        &mut reporter,
+    );
+    check_unknown_trigger_keys_in_block(
+        path,
+        "limit",
+        trigger_block,
+        &index,
+        options,
+        &mut reporter,
+    );
+
+    assert!(reporter.errors.is_empty(), "{}", reporter.errors.join("\n"));
+}
+
+#[test]
+fn validator_treats_indexed_character_ids_as_scopes() {
+    let path = Path::new("M:\\mod\\common\\decisions\\characters.txt");
+    let block = "ger_EXAMPLE_character = { add_stability = 0.1 }\n";
+    let mut index = GameIndex::default();
+    index.characters.insert("GER_example_character".to_string());
+    index.effects.insert("add_stability".to_string());
+    let mut reporter = Reporter::default();
+
+    check_unknown_effect_keys(
+        path,
+        "complete_effect",
+        block,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &mut reporter,
+    );
+
+    assert!(reporter.errors.is_empty(), "{}", reporter.errors.join("\n"));
+}
+
+#[test]
+fn validator_accepts_effect_and_trigger_control_parameters_used_by_vanilla() {
+    let path = Path::new("M:\\mod\\common\\scripted_effects\\control.txt");
+    let mut index = GameIndex::default();
+    index.effects.insert("random".to_string());
+    index.triggers.insert("has_war".to_string());
+    let options = ValidationOptions {
+        strict_code_index: true,
+    };
+    let mut reporter = Reporter::default();
+
+    check_unknown_effect_keys(
+        path,
+        "effect",
+        "random = { chance = 75 visible_when_empty = yes }",
+        Some(&index),
+        options,
+        &mut reporter,
+    );
+    check_unknown_trigger_keys_in_block(
+        path,
+        "limit",
+        "value = 50 less_than = 75 not_equals = 100 FACTION_LEADER = { always = yes }",
+        &index,
+        options,
+        &mut reporter,
+    );
+
+    assert!(reporter.errors.is_empty(), "{}", reporter.errors.join("\n"));
+}
+
+#[test]
+fn validator_recurses_through_variable_array_scopes_without_reporting_the_index() {
+    let path = Path::new("M:\\mod\\common\\scripted_effects\\arrays.txt");
+    let mut index = GameIndex::default();
+    index.effects.insert("add_stability".to_string());
+    let mut reporter = Reporter::default();
+
+    check_unknown_effect_keys(
+        path,
+        "effect",
+        "var:global.TNO_Espionage_Countries^RegionID = { add_stability = 0.1 }",
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &mut reporter,
+    );
+
+    assert!(reporter.errors.is_empty(), "{}", reporter.errors.join("\n"));
+}
+
+#[test]
+fn game_index_derives_modifiers_from_custom_resources() {
+    let mut index = GameIndex::default();
+    index.resources.insert("power".to_string());
+
+    finalize_resource_derived_modifiers(&mut index);
+
+    assert!(index.modifiers.contains("country_resource_power"));
+    assert!(index.modifiers.contains("country_resource_cost_power"));
+    assert!(index.modifiers.contains("state_resource_power"));
+    assert!(index.modifiers.contains("temporary_state_resource_power"));
+}
+
+#[test]
+fn game_index_reads_explicit_sub_unit_modifiers() {
+    let mut modifiers = BTreeSet::new();
+    collect_identifier_tokens_in_wrappers(
+        "sub_unit_modifiers = { modifier_army_sub_unit_MBT_attack_factor }",
+        &mut modifiers,
+        &["sub_unit_modifiers"],
+    );
+
+    assert_eq!(
+        modifiers,
+        BTreeSet::from(["modifier_army_sub_unit_MBT_attack_factor".to_string()])
+    );
+}
+
+#[test]
+fn game_index_derives_speed_modifier_from_custom_specialization() {
+    let mut modifiers = BTreeSet::new();
+
+    collect_specialization_derived_modifiers(
+        "specialization_theory = { icon = GFX_specialization_theory }",
+        &mut modifiers,
+    );
+
+    assert_eq!(
+        modifiers,
+        BTreeSet::from(["specialization_theory_speed_factor".to_string()])
+    );
+}
+
+#[test]
+fn strict_sprite_lookup_accepts_numeric_frame_suffix() {
+    let sprites = BTreeSet::from(["GFX_occupation_compliance_modifier_strip".to_string()]);
+
+    assert!(is_known_sprite_with_options(
+        "GFX_occupation_compliance_modifier_strip:3",
+        &sprites,
+        None,
+        ValidationOptions {
+            strict_code_index: true,
+        },
+    ));
+}
+
+#[test]
+fn validator_allows_a_symbol_defined_as_both_idea_and_dynamic_modifier() {
+    let mut index = GameIndex::default();
+    index.ideas.insert("dual_symbol".to_string());
+    index.dynamic_modifiers.insert("dual_symbol".to_string());
+    let refs = BTreeMap::from([(
+        "dual_symbol".to_string(),
+        BTreeSet::from([PathBuf::from("M:\\mod\\events\\dual.txt")]),
+    )]);
+    let mut reporter = Reporter::default();
+
+    report_dynamic_modifiers_used_as_ideas(&refs, &index, &mut reporter, true);
+
+    assert!(reporter.errors.is_empty(), "{}", reporter.errors.join("\n"));
+}
+
+#[test]
+fn validator_uses_documented_effect_parameters_and_dynamic_scopes() {
+    let path = Path::new("M:\\mod\\events\\documented.txt");
+    let block = "every_country = { random_select_amount = 2 display_individual_scopes = yes faction_leader = { add_stability = 0.1 } }\n";
+    let mut index = GameIndex::default();
+    index.effects.insert("every_country".to_string());
+    index.effects.insert("add_stability".to_string());
+    index
+        .documented_effect_parameters
+        .extend(["random_select_amount", "display_individual_scopes"].map(str::to_string));
+    index
+        .documented_dynamic_variables
+        .insert("faction_leader".to_string());
+    let mut reporter = Reporter::default();
+
+    check_unknown_effect_keys(
+        path,
+        "option",
+        block,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &mut reporter,
+    );
+
+    assert!(reporter.errors.is_empty(), "{}", reporter.errors.join("\n"));
+}
+
+#[test]
+fn localisation_icon_parser_handles_closing_marker_and_sentence_punctuation() {
+    let (tokens, issues) = extract_localisation_tokens(
+        "Cost £pol_power£. Mission £operative_mission_icons_small|1£Build network. More £command_power.",
+    );
+
+    assert!(issues.is_empty(), "{issues:?}");
+    assert_eq!(
+        tokens
+            .iter()
+            .filter(|token| token.kind == "icon")
+            .map(|token| token.text.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "£pol_power",
+            "£operative_mission_icons_small|1",
+            "£command_power"
+        ]
+    );
+}
+
+#[test]
+fn localisation_reference_scan_ignores_commented_focuses_and_hidden_event_text() {
+    let focus_path = Path::new("M:\\game\\common\\national_focus\\commented.txt");
+    let event_path = Path::new("M:\\game\\events\\hidden.txt");
+    let mut refs = BTreeMap::new();
+    let mut reporter = Reporter::default();
+
+    collect_localisation_refs(
+        focus_path,
+        "# focus = { id = COMMENTED_FOCUS }\n",
+        &mut refs,
+        &mut reporter,
+    );
+    collect_localisation_refs(
+        event_path,
+        "country_event = { id = test.1 hidden = yes title = MISSING_TITLE desc = MISSING_DESC option = { name = MISSING_OPTION } }\n",
+        &mut refs,
+        &mut reporter,
+    );
+
+    assert!(refs.is_empty(), "{refs:?}");
+}
+
+#[test]
+fn game_index_expands_documented_modifier_templates_from_modified_types() {
+    let docs = r#"
+##  <span id="state_resource_"></span>state_resource_<Resource>
+* **Modified types**: oil, steel
+## <SpecialProject>_speed_factor
+* **Modified types**: sp_tag_jet, sp_nuclear_bomb
+"#;
+    let mut modifiers = BTreeSet::new();
+
+    collect_documented_modifier_expansions(docs, &mut modifiers);
+
+    assert!(modifiers.contains("state_resource_oil"));
+    assert!(modifiers.contains("state_resource_steel"));
+    assert!(modifiers.contains("sp_tag_jet_speed_factor"));
+    assert!(modifiers.contains("sp_nuclear_bomb_speed_factor"));
+}
+
+#[test]
+fn game_index_only_collects_scope_valued_dynamic_variables() {
+    let docs = r#"
+### faction_leader
+* description: faction leader of this country's faction
+### modifier
+* description: a modifier stored in country scope
+### navy_chief
+* description: returns the currently hired navy chief of the country
+"#;
+    let mut scopes = BTreeSet::new();
+
+    collect_documented_dynamic_scope_identifiers(docs, &mut scopes);
+
+    assert!(scopes.contains("faction_leader"));
+    assert!(scopes.contains("navy_chief"));
+    assert!(!scopes.contains("modifier"));
+}
+
+#[test]
+fn effect_validation_does_not_treat_random_list_weight_modifiers_as_effects() {
+    let path = Path::new("M:\\mod\\common\\decisions\\weights.txt");
+    let text = r#"
+hidden_effect = {
+    random_list = {
+        25 = {
+            modifier = {
+                factor = 0
+                has_government = communism
+            }
+            set_country_flag = selected
+        }
+    }
+}
+"#;
+    let mut index = GameIndex::default();
+    index.effects.insert("set_country_flag".to_string());
+    index.triggers.insert("has_government".to_string());
+    let mut reporter = Reporter::default();
+
+    check_effect_contexts(
+        path,
+        text,
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &mut reporter,
+    );
+
+    assert!(reporter.errors.is_empty(), "{}", reporter.errors.join("\n"));
+}
+
+#[test]
+fn texture_validation_resolves_paths_relative_to_their_dlc_package() {
+    let workspace = unique_temp_dir("dlc-texture-resolution");
+    let game = workspace.join("game");
+    let source = game
+        .join("dlc")
+        .join("sample_pack")
+        .join("interface")
+        .join("sample.gfx");
+    let texture = game
+        .join("dlc")
+        .join("sample_pack")
+        .join("gfx")
+        .join("interface")
+        .join("sample.dds");
+    fs::create_dir_all(source.parent().unwrap()).unwrap();
+    fs::create_dir_all(texture.parent().unwrap()).unwrap();
+    fs::write(&texture, "dds").unwrap();
+    let index = GameIndex {
+        game_root: game.clone(),
+        indexed_roots: vec![game.clone()],
+        ..Default::default()
+    };
+    let mut reporter = Reporter::default();
+
+    check_sprite_textures(
+        &game,
+        &source,
+        "spriteType = { name = GFX_sample texturefile = \"gfx//interface//sample.dds\" }",
+        Some(&index),
+        &mut reporter,
+    );
+
+    fs::remove_dir_all(&workspace).unwrap();
+    assert!(
+        reporter.warnings.is_empty(),
+        "{}",
+        reporter.warnings.join("\n")
+    );
+}
+
+#[test]
+fn project_check_does_not_treat_vanilla_todo_comments_as_generated_code() {
+    let path = Path::new("M:\\game\\common\\scripted_effects\\vanilla.txt");
+    let text = "# TODO: Paradox source note\nexample_effect = { }\n";
+    let options = ValidationOptions {
+        strict_code_index: true,
+    };
+    let mut authoring = Reporter::default();
+    let mut project_check = Reporter::default();
+
+    check_unresolved_generation_markers(path, text, options, &mut authoring);
+    check_unresolved_generation_markers_for_purpose(
+        path,
+        text,
+        options,
+        ValidationPurpose::ProjectCheck,
+        &mut project_check,
+    );
+
+    assert_eq!(authoring.errors.len(), 1);
+    assert!(project_check.errors.is_empty());
 }
 
 #[test]
@@ -56829,7 +57462,7 @@ fn render_focus_tree_uses_unknown_icon_and_empty_reward_by_default() {
 }
 
 #[test]
-fn validator_requires_bare_idea_picture_reference_and_registered_sprite() {
+fn validator_accepts_all_engine_supported_idea_picture_reference_forms() {
     let root = unique_temp_dir("validate-idea-picture");
     fs::create_dir_all(root.join("common").join("ideas")).unwrap();
     fs::create_dir_all(root.join("interface")).unwrap();
@@ -56845,21 +57478,14 @@ fn validator_requires_bare_idea_picture_reference_and_registered_sprite() {
     .unwrap();
     fs::write(
         root.join("common").join("ideas").join("ideas.txt"),
-        "ideas = { country = { good_idea = { picture = democratic_planned_economy } bad_idea = { picture = GFX_idea_democratic_planned_economy } } }\n",
+        "ideas = { country = { bare = { picture = democratic_planned_economy } prefixed = { picture = idea_democratic_planned_economy } full = { picture = GFX_idea_democratic_planned_economy } } }\n",
     )
     .unwrap();
 
     let report = validate_mod(&root, None).unwrap();
     fs::remove_dir_all(&root).unwrap();
 
-    assert!(report.errors.iter().any(|error| {
-        error.contains("idea picture must omit the GFX_idea_ prefix")
-            && error.contains("picture = democratic_planned_economy")
-    }));
-    assert!(!report
-        .warnings
-        .iter()
-        .any(|warning| warning.contains("idea picture democratic_planned_economy requires")));
+    assert!(report.errors.is_empty(), "{}", report.errors.join("\n"));
 }
 
 #[test]
@@ -56893,6 +57519,168 @@ focus = {
         .errors
         .iter()
         .any(|msg| msg.contains("missing required template field `available`")));
+}
+
+#[test]
+fn project_check_skips_authoring_template_rules_but_keeps_field_typos() {
+    let path = Path::new("M:\\mod\\common\\national_focus\\project_focus.txt");
+    let text = r#"
+focus_tree = {
+    id = project_tree
+    country = SOV
+    focus = {
+        id = SOV_project_focus
+        costs = 10
+    }
+}
+"#;
+    let mut reporter = Reporter::default();
+
+    check_national_focus_fields_for_purpose(
+        path,
+        &strip_comments(text),
+        ValidationPurpose::ProjectCheck,
+        &mut reporter,
+    );
+
+    assert!(reporter.errors.iter().any(|message| message
+        .contains("unknown near-match field `costs`")
+        && message.contains("exact HOI4 field `cost`")));
+    assert!(!reporter.errors.iter().any(|message| {
+        message.contains("country selector")
+            || message.contains("missing required template field")
+            || message.contains("relative_position_id")
+    }));
+    assert!(reporter.warnings.is_empty());
+}
+
+#[test]
+fn project_check_ignores_internal_workspace_files() {
+    let root = unique_temp_dir("project-check-internal-files");
+    fs::create_dir_all(root.join("events")).unwrap();
+    fs::create_dir_all(root.join(".hoi4skill").join("gui_staging")).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Project Check\"\nsupported_version=\"*\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("events").join("clean.txt"),
+        "add_namespace = clean\n",
+    )
+    .unwrap();
+    let internal = root
+        .join(".hoi4skill")
+        .join("gui_staging")
+        .join("broken.txt");
+    fs::write(&internal, "country_event = {\n").unwrap();
+
+    let report = validate_mod_with_options_and_purpose(
+        &root,
+        None,
+        ValidationOptions::default(),
+        ValidationPurpose::ProjectCheck,
+    )
+    .unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(!report
+        .errors
+        .iter()
+        .chain(report.warnings.iter())
+        .any(|message| message.contains("gui_staging") || message.contains("broken.txt")));
+}
+
+#[test]
+fn cosmetic_tags_are_not_country_tag_references() {
+    let path = Path::new("M:\\mod\\common\\national_focus\\focus.txt");
+    let mut refs = BTreeMap::new();
+    collect_country_tag_refs(path, "tag = SOV\nset_cosmetic_tag = SOC\n", &mut refs);
+
+    assert!(refs.contains_key("SOV"));
+    assert!(!refs.contains_key("SOC"));
+}
+
+#[test]
+fn project_check_deduplicates_identical_diagnostics() {
+    let mut reporter = Reporter::default();
+    reporter.error("same error".to_string());
+    reporter.error("same error".to_string());
+    reporter.warn("same warning".to_string());
+    reporter.warn("same warning".to_string());
+
+    reporter.deduplicate();
+
+    assert_eq!(reporter.errors, ["same error"]);
+    assert_eq!(reporter.warnings, ["same warning"]);
+}
+
+#[test]
+fn project_check_accepts_exact_raw_gfx_definitions_when_structured_parsing_has_a_gap() {
+    let path = PathBuf::from("M:\\mod\\events\\pictures.txt");
+    let mut gfx_refs = BTreeMap::new();
+    gfx_refs.insert("GFX_raw_focus".to_string(), BTreeSet::from([path.clone()]));
+    let mut idea_refs = BTreeMap::new();
+    idea_refs.insert("legacy_idea".to_string(), BTreeSet::from([path.clone()]));
+    let mut event_refs = BTreeMap::new();
+    event_refs.insert("GFX_legacy_event".to_string(), BTreeSet::from([path]));
+    let raw_names = BTreeSet::from([
+        "GFX_raw_focus".to_string(),
+        "GFX_idea_legacy_idea".to_string(),
+        "GFX_legacy_event".to_string(),
+    ]);
+
+    let project_report = report_picture_refs(
+        &gfx_refs,
+        &idea_refs,
+        &event_refs,
+        &BTreeSet::new(),
+        &raw_names,
+        None,
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        ValidationPurpose::ProjectCheck,
+    );
+    let authoring_report = report_picture_refs(
+        &gfx_refs,
+        &idea_refs,
+        &event_refs,
+        &BTreeSet::new(),
+        &raw_names,
+        None,
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        ValidationPurpose::Authoring,
+    );
+
+    assert!(project_report.errors.is_empty());
+    assert_eq!(authoring_report.errors.len(), 2);
+    assert!(!authoring_report
+        .errors
+        .iter()
+        .any(|error| error.contains("idea picture legacy_idea")));
+}
+
+#[test]
+fn overlord_is_a_trigger_scope_not_an_unknown_trigger() {
+    let mut index = GameIndex::default();
+    index.triggers.insert("exists".to_string());
+    let mut reporter = Reporter::default();
+
+    check_unknown_trigger_keys(
+        Path::new("M:\\mod\\common\\scripted_localisation\\scope.txt"),
+        "trigger",
+        "overlord = { exists = yes }",
+        Some(&index),
+        ValidationOptions {
+            strict_code_index: true,
+        },
+        &mut reporter,
+    );
+
+    assert!(reporter.errors.is_empty(), "{:?}", reporter.errors);
 }
 
 #[test]
@@ -57001,13 +57789,14 @@ fn validator_errors_for_unknown_indexed_focus_and_symbols() {
     .unwrap();
     fs::write(
         focus_dir.join("bad_focus.txt"),
-        "focus_tree = {\n\tid = bad_tree\n\tcountry = { factor = 0 modifier = { add = 10 tag = SOV } }\n\tfocus = {\n\t\tid = SOV_real_focus\n\t\ticon = GFX_missing_icon\n\t\tx = 0\n\t\ty = 0\n\t\tprerequisite = { focus = SOV_missing_parent }\n\t\trelative_position_id = SOV_missing_relative\n\t\tcost = 10\n\t\tai_will_do = { factor = 100 }\n\t\tavailable = { ideology = mystery_ideology }\n\t\tbypass = { has_idea = mystery_idea }\n\t\tcancel_if_invalid = yes\n\t\tcontinue_if_invalid = no\n\t\tavailable_if_capitulated = no\n\t\tcompletion_reward = { set_technology = { mystery_tech = 1 } }\n\t}\n}\n",
+        "focus_tree = {\n\tid = bad_tree\n\tcountry = { factor = 0 modifier = { add = 10 tag = SOV } }\n\tfocus = {\n\t\tid = SOV_real_focus\n\t\ticon = GFX_missing_icon\n\t\tx = 0\n\t\ty = 0\n\t\tprerequisite = { focus = SOV_missing_parent }\n\t\trelative_position_id = SOV_missing_relative\n\t\tcost = 10\n\t\tai_will_do = { factor = 100 }\n\t\tavailable = { ideology = mystery_ideology has_government = known_subideology }\n\t\tbypass = { has_idea = mystery_idea }\n\t\tcancel_if_invalid = yes\n\t\tcontinue_if_invalid = no\n\t\tavailable_if_capitulated = no\n\t\tcompletion_reward = { set_technology = { mystery_tech = 1 } }\n\t}\n}\n",
     )
     .unwrap();
     let mut index = GameIndex::default();
     index.country_tags.insert("SOV".to_string());
     index.focus_ids.insert("SOV_dependency_focus".to_string());
     index.ideologies.insert("democratic".to_string());
+    index.ideology_types.insert("known_subideology".to_string());
     index.technologies.insert("infantry_weapons".to_string());
 
     let reporter = validate_mod(&root, Some(&index)).unwrap();
@@ -57030,11 +57819,55 @@ fn validator_errors_for_unknown_indexed_focus_and_symbols() {
         .iter()
         .any(|msg| msg
             .contains("ideology mystery_ideology is referenced but not present in game index")));
+    assert!(!reporter
+        .errors
+        .iter()
+        .any(|msg| msg.contains("known_subideology")));
     assert!(reporter
         .errors
         .iter()
         .any(|msg| msg
             .contains("technology mystery_tech is referenced but not present in game index")));
+}
+
+#[test]
+fn validator_accepts_indexed_ideologies_and_observed_advisor_slots_as_trait_tags() {
+    let root = unique_temp_dir("validate-advisor-trait-tags");
+    let characters_dir = root.join("common").join("characters");
+    fs::create_dir_all(&characters_dir).unwrap();
+    fs::write(
+        root.join("descriptor.mod"),
+        "name=\"Test\"\nsupported_version=\"1.18.*\"\n",
+    )
+    .unwrap();
+    fs::write(
+        characters_dir.join("TST.txt"),
+        "characters = { TST_advisor = { advisor = { slot = theorist traits = { paternalism theorist known_trait mystery_trait } } } }\n",
+    )
+    .unwrap();
+    let mut index = GameIndex::default();
+    index.ideologies.insert("paternalism".to_string());
+    index.traits.insert("known_trait".to_string());
+
+    let reporter = validate_mod(&root, Some(&index)).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(!reporter
+        .errors
+        .iter()
+        .any(|message| message.contains("trait paternalism")));
+    assert!(!reporter
+        .errors
+        .iter()
+        .any(|message| message.contains("trait theorist")));
+    assert!(!reporter
+        .errors
+        .iter()
+        .any(|message| message.contains("trait known_trait")));
+    assert!(reporter
+        .errors
+        .iter()
+        .any(|message| message.contains("trait mystery_trait")));
 }
 
 #[test]
@@ -57528,7 +58361,13 @@ fn translate_localisation_prompt_reads_source_and_skips_existing_target_keys() {
     let existing = target_existing_keys(Some(&root), &to).unwrap();
     let files =
         collect_localisation_source_files(Some(&root), &source_roots, &[], &existing, 100).unwrap();
-    let prompt = render_localisation_translation_prompt(&from, &to, &files);
+    let prompt = render_localisation_translation_prompt_with_glossary(
+        &from,
+        &to,
+        &files,
+        &LocalisationGlossary::default(),
+        None,
+    );
     fs::remove_dir_all(&root).unwrap();
 
     assert_eq!(all_translation_entries(&files).len(), 2);
@@ -57538,6 +58377,225 @@ fn translate_localisation_prompt_reads_source_and_skips_existing_target_keys() {
     assert!(prompt.contains("[ROOT.GetName]"));
     assert!(prompt.contains("Do not translate tokens"));
     assert!(!prompt.contains("TST_existing:0"));
+}
+
+#[test]
+fn localisation_glossary_persists_first_decision_and_injects_relevant_terms() {
+    let root = unique_temp_dir("localisation-glossary-prompt");
+    fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("simp_chinese")
+            .join("events_l_simp_chinese.yml"),
+        "l_simp_chinese:\n evt.1.t:0 \"人民委员会召开会议\"\n",
+    )
+    .unwrap();
+
+    cmd_localisation_glossary(&[
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--from".to_string(),
+        "simp_chinese".to_string(),
+        "--to".to_string(),
+        "english".to_string(),
+        "--set".to_string(),
+        "人民委员会=People's Commissariat".to_string(),
+        "--set".to_string(),
+        "中央委员会=Central Committee".to_string(),
+    ])
+    .unwrap();
+    let glossary_path = root.join(DEFAULT_LOCALISATION_GLOSSARY);
+    let glossary = load_localisation_glossary(Some(&glossary_path)).unwrap();
+    let prompt_path = root.join("translation_prompt.md");
+    cmd_translate_localisation(&[
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--from".to_string(),
+        "simp_chinese".to_string(),
+        "--to".to_string(),
+        "english".to_string(),
+        "--format".to_string(),
+        "prompt".to_string(),
+        "--output".to_string(),
+        prompt_path.display().to_string(),
+    ])
+    .unwrap();
+    let prompt = read_utf8_lossy(&prompt_path).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert_eq!(glossary.entries.len(), 2);
+    assert!(prompt.contains("## Global Terminology"));
+    assert!(prompt.contains("人民委员会"));
+    assert!(prompt.contains("People's Commissariat"));
+    assert!(!prompt.contains("Central Committee"));
+    assert!(prompt.contains("do not introduce literary synonyms"));
+}
+
+#[test]
+fn translate_localisation_apply_blocks_glossary_mismatch_before_any_write() {
+    let root = unique_temp_dir("localisation-glossary-apply-block");
+    fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("simp_chinese")
+            .join("events_l_simp_chinese.yml"),
+        "l_simp_chinese:\n evt.1.t:0 \"人民委员会召开会议\"\n evt.1.a:0 \"继续\"\n",
+    )
+    .unwrap();
+    cmd_localisation_glossary(&[
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--from".to_string(),
+        "simp_chinese".to_string(),
+        "--to".to_string(),
+        "english".to_string(),
+        "--set".to_string(),
+        "人民委员会=People's Commissariat".to_string(),
+    ])
+    .unwrap();
+    let translated = root.join("translated_l_english.yml");
+    fs::write(
+        &translated,
+        "l_english:\n evt.1.t:0 \"The People's Committee convenes\"\n evt.1.a:0 \"Continue\"\n",
+    )
+    .unwrap();
+
+    let error = cmd_translate_localisation(&[
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--from".to_string(),
+        "simp_chinese".to_string(),
+        "--to".to_string(),
+        "english".to_string(),
+        "--translated-input".to_string(),
+        translated.display().to_string(),
+        "--apply".to_string(),
+    ])
+    .unwrap_err();
+    let target_dir = root.join("localisation").join("english");
+    let target_exists = target_dir.exists();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(error.contains("localisation glossary mismatch blocked translation apply"));
+    assert!(error.contains("evt.1.t"));
+    assert!(error.contains("People's Commissariat"));
+    assert!(!target_exists);
+}
+
+#[test]
+fn localisation_glossary_check_audits_existing_target_files() {
+    let root = unique_temp_dir("localisation-glossary-existing-check");
+    fs::create_dir_all(root.join("localisation").join("simp_chinese")).unwrap();
+    fs::create_dir_all(root.join("localisation").join("english")).unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("simp_chinese")
+            .join("events_l_simp_chinese.yml"),
+        "l_simp_chinese:\n evt.1.t:0 \"人民委员会召开会议\"\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("localisation")
+            .join("english")
+            .join("events_l_english.yml"),
+        "l_english:\n evt.1.t:0 \"The People's Committee convenes\"\n",
+    )
+    .unwrap();
+    cmd_localisation_glossary(&[
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--from".to_string(),
+        "simp_chinese".to_string(),
+        "--to".to_string(),
+        "english".to_string(),
+        "--set".to_string(),
+        "人民委员会=People's Commissariat".to_string(),
+    ])
+    .unwrap();
+    let report_path = root.join("glossary_check.json");
+
+    let error = cmd_localisation_glossary(&[
+        "--mod-root".to_string(),
+        root.display().to_string(),
+        "--from".to_string(),
+        "simp_chinese".to_string(),
+        "--to".to_string(),
+        "english".to_string(),
+        "--check".to_string(),
+        "--output".to_string(),
+        report_path.display().to_string(),
+    ])
+    .unwrap_err();
+    let report = read_utf8_lossy(&report_path).unwrap();
+    fs::remove_dir_all(&root).unwrap();
+
+    assert!(error.contains("localisation glossary check failed"));
+    assert!(report.contains("\"violation_count\": 1"));
+    assert!(report.contains("\"source_term\": \"人民委员会\""));
+    assert!(report.contains("\"required_target\": \"People's Commissariat\""));
+}
+
+#[test]
+fn localisation_glossary_prefers_longest_nested_term_without_hiding_independent_matches() {
+    let glossary = LocalisationGlossary {
+        schema: LOCALISATION_GLOSSARY_SCHEMA.to_string(),
+        entries: vec![
+            LocalisationGlossaryEntry {
+                from: "simp_chinese".to_string(),
+                to: "english".to_string(),
+                source: "委员会".to_string(),
+                target: "Committee".to_string(),
+                note: String::new(),
+            },
+            LocalisationGlossaryEntry {
+                from: "simp_chinese".to_string(),
+                to: "english".to_string(),
+                source: "人民委员会".to_string(),
+                target: "People's Commissariat".to_string(),
+                note: String::new(),
+            },
+        ],
+    };
+    let nested_only = LocalisationTranslationEntry {
+        key: "evt.1.t".to_string(),
+        value: "人民委员会召开会议".to_string(),
+        source_file: "events.yml".to_string(),
+    };
+    let nested_terms = applicable_localisation_glossary_entries(
+        &glossary,
+        "simp_chinese",
+        "english",
+        std::slice::from_ref(&nested_only),
+    );
+    let nested_violations = check_localisation_glossary_value(
+        &nested_only,
+        "The People's Commissariat convenes",
+        &nested_terms,
+    );
+
+    let independent = LocalisationTranslationEntry {
+        key: "evt.2.t".to_string(),
+        value: "委员会与人民委员会举行联席会议".to_string(),
+        source_file: "events.yml".to_string(),
+    };
+    let independent_terms = applicable_localisation_glossary_entries(
+        &glossary,
+        "simp_chinese",
+        "english",
+        std::slice::from_ref(&independent),
+    );
+    let independent_violations = check_localisation_glossary_value(
+        &independent,
+        "The People's Commissariat convenes",
+        &independent_terms,
+    );
+
+    assert_eq!(nested_terms.len(), 1);
+    assert_eq!(nested_terms[0].source, "人民委员会");
+    assert!(nested_violations.is_empty());
+    assert_eq!(independent_terms.len(), 2);
+    assert_eq!(independent_violations.len(), 1);
+    assert_eq!(independent_violations[0].source_term, "委员会");
 }
 
 #[test]
@@ -57759,7 +58817,13 @@ fn translate_localisation_supports_non_english_non_chinese_language_pairs() {
     let files =
         collect_localisation_source_files(Some(&root), &source_roots, &[], &BTreeSet::new(), 100)
             .unwrap();
-    let prompt = render_localisation_translation_prompt("french", "german", &files);
+    let prompt = render_localisation_translation_prompt_with_glossary(
+        "french",
+        "german",
+        &files,
+        &LocalisationGlossary::default(),
+        None,
+    );
     let report =
         write_translation_yml_files(&files, "french", "german", &output_dir, false).unwrap();
     let written = fs::read_to_string(output_dir.join("events_l_german.yml")).unwrap();
@@ -57805,7 +58869,7 @@ fn translate_localisation_apply_injects_translated_values_and_reports_omissions(
             .unwrap();
     let translations =
         collect_translated_localisation_map(&[root.join("translated_l_simp_chinese.yml")]).unwrap();
-    let report = apply_localisation_translations(
+    let report = apply_localisation_translations_with_glossary(
         &root,
         &source_files,
         "english",
@@ -57813,6 +58877,8 @@ fn translate_localisation_apply_injects_translated_values_and_reports_omissions(
         &translations,
         false,
         false,
+        &LocalisationGlossary::default(),
+        None,
     )
     .unwrap();
     let target = fs::read_to_string(
@@ -58193,17 +59259,17 @@ capital = 64
         .iter()
         .any(|warning| warning
             .contains("effect-like command `add_stability` appears directly inside")));
-    assert!(reporter
+    assert!(!reporter
         .warnings
         .iter()
-        .any(|warning| warning.contains("capital = 64 cannot be verified")));
+        .any(|warning| warning.contains("capital = 64")));
 
     let mut index = GameIndex::default();
     index.state_ids.insert(64);
     index.province_ids.insert(123);
     let mut indexed_reporter = Reporter::default();
     check_script_semantics(path, text, Some(&index), &mut indexed_reporter);
-    assert!(indexed_reporter
+    assert!(!indexed_reporter
         .warnings
         .iter()
         .any(|warning| warning.contains("capital = 64 matches a known state id")));
@@ -58214,10 +59280,10 @@ capital = 64
 
     let mut province_reporter = Reporter::default();
     check_script_semantics(path, "capital = 999", Some(&index), &mut province_reporter);
-    assert!(province_reporter
+    assert!(!province_reporter
         .warnings
         .iter()
-        .any(|warning| warning.contains("not present in the province index")));
+        .any(|warning| warning.contains("capital = 999")));
 }
 
 #[test]
@@ -58614,6 +59680,7 @@ fn game_index_diagnostic_reads_hidden_files_without_indexing_them() {
         LayeredScanOptions {
             replace_path_diagnostics: true,
             max_replaced_files: 10,
+            use_index_cache: true,
         },
     )
     .unwrap();
@@ -58796,6 +59863,7 @@ fn map_data_audit_reports_replaced_map_files_only_in_diagnostics() {
         LayeredScanOptions {
             replace_path_diagnostics: true,
             max_replaced_files: 10,
+            use_index_cache: true,
         },
     )
     .unwrap();
@@ -58812,4 +59880,22 @@ fn map_data_audit_reports_replaced_map_files_only_in_diagnostics() {
     );
     assert_eq!(report.diagnostic_files_total, 1);
     fs::remove_dir_all(&workspace).unwrap();
+}
+
+#[test]
+fn interactive_validation_flags_preserve_checks_without_cache_or_fuzzy_search() {
+    let args = vec![
+        "--no-index-cache".to_string(),
+        "--compact-report".to_string(),
+    ];
+    let map = parse_args(&args);
+    let options = layered_scan_options_from_args(&map).unwrap();
+    assert!(!options.use_index_cache);
+
+    let mut index = GameIndex::default();
+    index.effects.insert("known_effect".to_string());
+    assert!(!related_code_symbol_matches(&index, "known", Some("effect"), 5).is_empty());
+    index.suppress_related_symbol_search = map.flags.contains("compact-report");
+    assert!(related_code_symbol_matches(&index, "known", Some("effect"), 5).is_empty());
+    assert!(index.effects.contains("known_effect"));
 }

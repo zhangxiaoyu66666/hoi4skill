@@ -19,6 +19,7 @@ pub(crate) const DEFAULT_REPLACED_DIAGNOSTIC_FILES: usize = 200;
 pub(crate) struct LayeredScanOptions {
     pub(crate) replace_path_diagnostics: bool,
     pub(crate) max_replaced_files: usize,
+    pub(crate) use_index_cache: bool,
 }
 
 impl LayeredScanOptions {
@@ -26,6 +27,7 @@ impl LayeredScanOptions {
         Self {
             replace_path_diagnostics: false,
             max_replaced_files: DEFAULT_REPLACED_DIAGNOSTIC_FILES,
+            use_index_cache: true,
         }
     }
 }
@@ -44,6 +46,7 @@ pub(crate) fn layered_scan_options_from_args(map: &ArgMap) -> Result<LayeredScan
             "max-replaced-files",
             DEFAULT_REPLACED_DIAGNOSTIC_FILES,
         )?,
+        use_index_cache: !map.flags.contains("no-index-cache"),
     })
 }
 

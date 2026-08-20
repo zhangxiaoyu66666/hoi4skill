@@ -929,6 +929,10 @@ pub fn run(mut args: Vec<String>) -> CliResult<()> {
         "country-localisation-template" | "country-localization-template" => {
             super::cmd_country_localisation_template(&args)
         }
+        "localisation-glossary"
+        | "localization-glossary"
+        | "translation-glossary"
+        | "terminology-glossary" => super::cmd_localisation_glossary(&args),
         "translate-localisation"
         | "translate-localization"
         | "translation-plan"

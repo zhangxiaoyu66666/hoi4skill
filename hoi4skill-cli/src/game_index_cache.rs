@@ -1,13 +1,14 @@
 //! Versioned persistent cache for parsed HOI4 game-index snapshots.
 
 use crate::*;
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-const GAME_INDEX_CACHE_SCHEMA: u32 = 6;
+const GAME_INDEX_CACHE_SCHEMA: u32 = 21;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 struct GameIndexFileStamp {
@@ -25,23 +26,19 @@ struct GameIndexRootCache {
     index: GameIndex,
 }
 
-pub(crate) fn collect_cached_game_index_layer(
-    target: &mut GameIndex,
+pub(crate) fn cached_game_index_layer_snapshot(
     plan: &LayeredSourcePlan,
     layer_index: usize,
     profile: GameIndexProfile,
     scan_options: LayeredScanOptions,
-) -> Result<(), String> {
+) -> Result<GameIndex, String> {
     let root = &plan.layers()[layer_index].root;
-    if matches!(
-        profile,
-        GameIndexProfile::Full | GameIndexProfile::Validation
-    ) || scan_options.replace_path_diagnostics
+    if !scan_options.use_index_cache
+        || profile == GameIndexProfile::Full
+        || scan_options.replace_path_diagnostics
     {
-        for file in collect_game_index_files_for_layer(plan, layer_index, profile)? {
-            collect_game_index_file(target, root, &file, profile)?;
-        }
-        return Ok(());
+        let files = collect_game_index_files_for_layer(plan, layer_index, profile)?;
+        return collect_game_index_files_parallel(root, &files, profile);
     }
     let files = collect_game_index_files_for_layer(plan, layer_index, profile)?;
     let stamps = game_index_file_stamps(root, &files)?;
@@ -55,15 +52,10 @@ pub(crate) fn collect_cached_game_index_layer(
             && cache.visibility_fingerprint == visibility_fingerprint
             && cache.files == stamps
     }) {
-        merge_game_index(target, &cache.index);
-        return Ok(());
+        return Ok(cache.index);
     }
 
-    let mut snapshot = GameIndex::default();
-    for file in files {
-        collect_game_index_file(&mut snapshot, root, &file, profile)?;
-    }
-    merge_game_index(target, &snapshot);
+    let snapshot = collect_game_index_files_parallel(root, &files, profile)?;
     let cache = GameIndexRootCache {
         schema: GAME_INDEX_CACHE_SCHEMA,
         profile,
@@ -75,32 +67,56 @@ pub(crate) fn collect_cached_game_index_layer(
     // The cache is advisory: a locked or read-only cache directory must never
     // make indexing or strict validation fail after fresh parsing succeeded.
     let _ = write_cache_atomic(&cache_path, &cache);
-    Ok(())
+    Ok(cache.index)
+}
+
+fn collect_game_index_files_parallel(
+    root: &Path,
+    files: &[PathBuf],
+    profile: GameIndexProfile,
+) -> Result<GameIndex, String> {
+    let files_per_chunk = files_per_cpu_chunk(files.len());
+    let partials = files
+        .par_chunks(files_per_chunk)
+        .map(|chunk| {
+            let mut partial = GameIndex::default();
+            for file in chunk {
+                collect_game_index_file(&mut partial, root, file, profile)?;
+            }
+            Ok(partial)
+        })
+        .collect::<Vec<Result<GameIndex, String>>>();
+    let mut snapshot = GameIndex::default();
+    for partial in partials {
+        merge_game_index(&mut snapshot, &partial?);
+    }
+    Ok(snapshot)
 }
 
 fn game_index_file_stamps(
     root: &Path,
     files: &[PathBuf],
 ) -> Result<BTreeMap<String, GameIndexFileStamp>, String> {
-    let mut stamps = BTreeMap::new();
-    for file in files {
-        let metadata =
-            fs::metadata(file).map_err(|error| format!("metadata {}: {error}", file.display()))?;
-        let modified_ns = metadata
-            .modified()
-            .ok()
-            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
-            .map(|duration| duration.as_nanos())
-            .unwrap_or_default();
-        stamps.insert(
-            relative_slash_path(root, file),
-            GameIndexFileStamp {
-                len: metadata.len(),
-                modified_ns,
-            },
-        );
-    }
-    Ok(stamps)
+    files
+        .par_iter()
+        .map(|file| {
+            let metadata = fs::metadata(file)
+                .map_err(|error| format!("metadata {}: {error}", file.display()))?;
+            let modified_ns = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                .map(|duration| duration.as_nanos())
+                .unwrap_or_default();
+            Ok((
+                relative_slash_path(root, file),
+                GameIndexFileStamp {
+                    len: metadata.len(),
+                    modified_ns,
+                },
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()
 }
 
 pub(crate) fn game_index_cache_path(
@@ -112,7 +128,7 @@ pub(crate) fn game_index_cache_path(
         .unwrap_or_else(std::env::temp_dir)
         .join("hoi4skill")
         .join("cache")
-        .join("game-index-v6");
+        .join("game-index-v21");
     let key = stable_path_hash(&slash_path(root));
     let profile = match profile {
         GameIndexProfile::Full => "full",
@@ -207,10 +223,17 @@ pub(crate) fn merge_game_index(target: &mut GameIndex, source: &GameIndex) {
         .extend(source.building_max_levels.clone());
     target.resources.extend(source.resources.iter().cloned());
     target.ideologies.extend(source.ideologies.iter().cloned());
+    target
+        .ideology_types
+        .extend(source.ideology_types.iter().cloned());
+    target.characters.extend(source.characters.iter().cloned());
     target.traits.extend(source.traits.iter().cloned());
     target
         .equipment_types
         .extend(source.equipment_types.iter().cloned());
+    target
+        .equipment_duplicate_archetypes
+        .extend(source.equipment_duplicate_archetypes.clone());
     target
         .technologies
         .extend(source.technologies.iter().cloned());
@@ -222,8 +245,17 @@ pub(crate) fn merge_game_index(target: &mut GameIndex, source: &GameIndex) {
         .wargoal_types
         .extend(source.wargoal_types.iter().cloned());
     target.effects.extend(source.effects.iter().cloned());
+    target
+        .documented_effect_parameters
+        .extend(source.documented_effect_parameters.iter().cloned());
     target.triggers.extend(source.triggers.iter().cloned());
+    target
+        .documented_dynamic_variables
+        .extend(source.documented_dynamic_variables.iter().cloned());
     target.modifiers.extend(source.modifiers.iter().cloned());
+    target
+        .observed_modifiers
+        .extend(source.observed_modifiers.iter().cloned());
     target.ideas.extend(source.ideas.iter().cloned());
     merge_set_map(&mut target.idea_names, &source.idea_names);
     target
@@ -247,6 +279,19 @@ pub(crate) fn merge_game_index(target: &mut GameIndex, source: &GameIndex) {
         &mut target.localisation_entry_aliases,
         &source.localisation_entry_aliases,
     );
+}
+
+pub(crate) fn merge_game_index_layer(
+    target: &mut GameIndex,
+    source: &GameIndex,
+    layer_index: usize,
+) {
+    merge_game_index(target, source);
+    if layer_index == 0 {
+        target
+            .modifiers
+            .extend(source.observed_modifiers.iter().cloned());
+    }
 }
 
 fn merge_set_map(

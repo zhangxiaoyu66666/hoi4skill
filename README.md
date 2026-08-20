@@ -76,6 +76,8 @@ hoi4skill parse-focus-excel --input "M:\path\focus_tree.xlsx" --tag SOV --prefix
 hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from english --to simp_chinese --format prompt --output loc_translate_prompt.md
 hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from french --to german --format prompt --output loc_fr_to_de_prompt.md
 hoi4skill translate-localisation --mod-root "M:\path\existing_mod" --from french --to german --translated-input translated_l_german.yml --apply --report loc_apply_report.json
+hoi4skill localisation-glossary --mod-root "M:\path\existing_mod" --from simp_chinese --to english --set "人民委员会=People's Commissariat"
+hoi4skill localisation-glossary --mod-root "M:\path\existing_mod" --from simp_chinese --to english --check --output glossary_check.json
 hoi4skill validate "M:\path\existing_mod" --game-root "C:\path\Hearts of Iron IV" --request "literal user request"
 ```
 

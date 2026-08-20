@@ -284,6 +284,7 @@ pub(crate) fn is_explicit_localisation_icon_token(value: &str) -> bool {
 }
 
 pub(crate) fn indexed_localisation_icon_exists(value: &str, index: &GameIndex) -> bool {
+    let value = value.split('|').next().unwrap_or(value);
     index.sprites.contains(value) || index.sprites.contains(&format!("GFX_{value}"))
 }
 
@@ -1034,7 +1035,7 @@ pub(crate) fn extract_localisation_tokens(
             '£' => {
                 let mut end_i = i + 1;
                 while let Some((_, next)) = chars.get(end_i) {
-                    if next.is_ascii_alphanumeric() || matches!(next, '_' | '.' | '-') {
+                    if next.is_ascii_alphanumeric() || matches!(next, '_' | '-' | '|') {
                         end_i += 1;
                     } else {
                         break;
@@ -1056,7 +1057,11 @@ pub(crate) fn extract_localisation_tokens(
                         kind: "icon".to_string(),
                         text: value[start..end].to_string(),
                     });
-                    i = end_i;
+                    i = if chars.get(end_i).is_some_and(|(_, next)| *next == '£') {
+                        end_i + 1
+                    } else {
+                        end_i
+                    };
                 }
             }
             '\\' => {

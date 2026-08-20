@@ -55,6 +55,8 @@ pub(crate) fn cmd_translate_localisation(args: &[String]) -> Result<(), String> 
         .or_else(|| map.positionals.first().map(String::as_str))
         .map(normalize_path)
         .transpose()?;
+    let glossary_path = localisation_glossary_path(&map, mod_root.as_deref())?;
+    let glossary = load_localisation_glossary(glossary_path.as_deref())?;
     let source_roots = source_localisation_roots(&map, mod_root.as_deref(), &from)?;
     if apply {
         let Some(mod_root) = mod_root.as_deref() else {
@@ -75,7 +77,7 @@ pub(crate) fn cmd_translate_localisation(args: &[String]) -> Result<(), String> 
             &BTreeSet::new(),
             max_items,
         )?;
-        let report = apply_localisation_translations(
+        let report = apply_localisation_translations_with_glossary(
             mod_root,
             &source_files,
             &from,
@@ -83,6 +85,8 @@ pub(crate) fn cmd_translate_localisation(args: &[String]) -> Result<(), String> 
             &translations,
             overwrite,
             allow_token_mismatch,
+            &glossary,
+            glossary_path.as_deref(),
         )?;
         return write_or_print(
             &report,
@@ -109,11 +113,24 @@ pub(crate) fn cmd_translate_localisation(args: &[String]) -> Result<(), String> 
 
     match format {
         LocalisationTranslationFormat::Prompt => {
-            let prompt = render_localisation_translation_prompt(&from, &to, &source_files);
+            let prompt = render_localisation_translation_prompt_with_glossary(
+                &from,
+                &to,
+                &source_files,
+                &glossary,
+                glossary_path.as_deref(),
+            );
             write_or_print(&prompt, value(&map, "output"))
         }
         LocalisationTranslationFormat::Json => {
-            let json = localisation_translation_json(&from, &to, &source_files, entries_total);
+            let json = localisation_translation_json_with_glossary(
+                &from,
+                &to,
+                &source_files,
+                entries_total,
+                &glossary,
+                glossary_path.as_deref(),
+            );
             write_or_print(&json, value(&map, "output"))
         }
         LocalisationTranslationFormat::Yml => {
@@ -150,7 +167,7 @@ pub(crate) fn collect_translated_localisation_map(
     Ok(translations)
 }
 
-pub(crate) fn apply_localisation_translations(
+pub(crate) fn apply_localisation_translations_with_glossary(
     mod_root: &Path,
     source_files: &[LocalisationSourceFile],
     from: &str,
@@ -158,16 +175,49 @@ pub(crate) fn apply_localisation_translations(
     translations: &BTreeMap<String, String>,
     overwrite: bool,
     allow_token_mismatch: bool,
+    glossary: &LocalisationGlossary,
+    glossary_path: Option<&Path>,
 ) -> Result<String, String> {
     let target_dir = mod_root.join("localisation").join(to);
-    fs::create_dir_all(&target_dir).map_err(|e| format!("create {}: {e}", target_dir.display()))?;
-
     let source_entries = all_translation_entries(source_files);
     let source_keys = source_entries
         .iter()
         .map(|entry| entry.key.clone())
         .collect::<BTreeSet<_>>();
-    let existing_before = target_existing_keys(Some(mod_root), to)?;
+    let existing_target_values = collect_localisation_values(&target_dir)?;
+    let existing_before = existing_target_values
+        .keys()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let glossary_terms =
+        applicable_localisation_glossary_entries(glossary, from, to, &source_entries);
+    let mut glossary_violations = Vec::new();
+    for entry in &source_entries {
+        let effective_target = if existing_before.contains(&entry.key) && !overwrite {
+            existing_target_values.get(&entry.key)
+        } else {
+            translations.get(&entry.key)
+        };
+        if let Some(effective_target) = effective_target {
+            glossary_violations.extend(check_localisation_glossary_value(
+                entry,
+                effective_target,
+                &glossary_terms,
+            ));
+        }
+    }
+    if !glossary_violations.is_empty() {
+        return Err(format!(
+            "localisation glossary mismatch blocked translation apply; use every required target term exactly or explicitly revise the glossary with `localisation-glossary --set`:\n[{}]",
+            glossary_violations
+                .iter()
+                .map(localisation_glossary_violation_json)
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    fs::create_dir_all(&target_dir).map_err(|e| format!("create {}: {e}", target_dir.display()))?;
     let mut grouped: BTreeMap<PathBuf, BTreeMap<String, String>> = BTreeMap::new();
     let mut written_keys = Vec::new();
     let mut existing_keys = Vec::new();
@@ -245,7 +295,8 @@ pub(crate) fn apply_localisation_translations(
             "\"from\": {}, \"to\": {}, \"source_keys_total\": {}, \"translated_keys_total\": {}, ",
             "\"written_files\": {}, \"written_keys\": {}, \"appended_keys\": {}, \"updated_keys\": {}, ",
             "\"existing_keys\": {}, \"missing_keys\": {}, \"missing_after_apply\": {}, ",
-            "\"translated_unused_keys\": {}, \"suspicious_same_as_source\": {}, \"token_mismatches\": {}}}\n"
+            "\"translated_unused_keys\": {}, \"suspicious_same_as_source\": {}, \"token_mismatches\": {}, ",
+            "\"glossary_path\": {}, \"glossary_terms_applied\": {}, \"glossary_violations\": []}}\n"
         ),
         json_str(from),
         json_str(to),
@@ -260,7 +311,11 @@ pub(crate) fn apply_localisation_translations(
         json_array(&missing_after_apply),
         json_array(&translated_unused_keys),
         json_array(&suspicious_same_as_source),
-        format!("[{}]", token_mismatches.join(", "))
+        format!("[{}]", token_mismatches.join(", ")),
+        glossary_path
+            .map(|path| json_str(&slash_path(path)))
+            .unwrap_or_else(|| "null".to_string()),
+        glossary_terms.len()
     ))
 }
 
@@ -509,12 +564,15 @@ pub(crate) fn all_translation_entries(
         .collect()
 }
 
-pub(crate) fn render_localisation_translation_prompt(
+pub(crate) fn render_localisation_translation_prompt_with_glossary(
     from: &str,
     to: &str,
     source_files: &[LocalisationSourceFile],
+    glossary: &LocalisationGlossary,
+    glossary_path: Option<&Path>,
 ) -> String {
     let entries = all_translation_entries(source_files);
+    let glossary_terms = applicable_localisation_glossary_entries(glossary, from, to, &entries);
     let mut out = String::new();
     out.push_str("# HOI4 Localisation Translation Prompt\n\n");
     out.push_str(&format!("- Source language: `{from}`\n"));
@@ -529,10 +587,29 @@ pub(crate) fn render_localisation_translation_prompt(
     out.push_str("- Do not translate tokens such as `$VAR$`, `$STATE|Y$`, `[ROOT.GetName]`, `[From.GetAdjective]`, `§Y...§!`, `£pol_power`, `%`, `\\n`, or `^` control fragments.\n");
     out.push_str("- Keep escaped quotes valid for `.yml` output.\n");
     out.push_str("- Do not add `_mod_name` localisation keys; mod names belong in `descriptor.mod` and the launcher `.mod` file.\n");
+    out.push_str("- The global terminology table is mandatory. Whenever a source value contains a listed source term, use its required target term exactly; do not introduce literary synonyms.\n");
     if to == "simp_chinese" {
         out.push_str("- Translate into natural Simplified Chinese in HOI4 mod style; avoid machine-translation stiffness.\n");
     } else {
         out.push_str("- Translate naturally into the requested target language, keeping HOI4 terms readable for players.\n");
+    }
+    out.push_str("\n## Global Terminology\n\n");
+    if let Some(path) = glossary_path {
+        out.push_str(&format!("- Glossary: `{}`\n", slash_path(path)));
+    }
+    if glossary_terms.is_empty() {
+        out.push_str("- No existing glossary term occurs in this batch. Before choosing a translation for a recurring institution, title, ideology, place, or proper noun, register the first decision with `hoi4skill localisation-glossary --mod-root <mod> --from <source> --to <target> --set \"source=required target\"`.\n");
+    } else {
+        out.push_str("\n| Source term | Required target term | Note |\n");
+        out.push_str("| --- | --- | --- |\n");
+        for term in &glossary_terms {
+            out.push_str(&format!(
+                "| {} | {} | {} |\n",
+                markdown_table_cell(&term.source),
+                markdown_table_cell(&term.target),
+                markdown_table_cell(&term.note)
+            ));
+        }
     }
     out.push_str("\n## Output Shape\n\n");
     out.push_str("```yaml\n");
@@ -623,11 +700,13 @@ pub(crate) fn target_localisation_output_name(name: &str, from: &str, to: &str) 
     name.replace(&from_suffix, &to_suffix)
 }
 
-pub(crate) fn localisation_translation_json(
+pub(crate) fn localisation_translation_json_with_glossary(
     from: &str,
     to: &str,
     source_files: &[LocalisationSourceFile],
     entries_total: usize,
+    glossary: &LocalisationGlossary,
+    glossary_path: Option<&Path>,
 ) -> String {
     let files = source_files
         .iter()
@@ -650,12 +729,27 @@ pub(crate) fn localisation_translation_json(
             )
         })
         .collect::<Vec<_>>();
+    let source_entries = all_translation_entries(source_files);
+    let glossary_terms =
+        applicable_localisation_glossary_entries(glossary, from, to, &source_entries);
     format!(
-        "{{\"schema\": \"hoi4skill.localisation_translate.v1\", \"from\": {}, \"to\": {}, \"source_files\": [{}], \"entries_total\": {}, \"entries\": [{}]}}\n",
+        "{{\"schema\": \"hoi4skill.localisation_translate.v1\", \"from\": {}, \"to\": {}, \"source_files\": [{}], \"entries_total\": {}, \"entries\": [{}], \"glossary_path\": {}, \"glossary_terms\": [{}]}}\n",
         json_str(from),
         json_str(to),
         files.join(", "),
         entries_total,
-        entries.join(", ")
+        entries.join(", "),
+        glossary_path
+            .map(|path| json_str(&slash_path(path)))
+            .unwrap_or_else(|| "null".to_string()),
+        glossary_terms
+            .iter()
+            .map(localisation_glossary_entry_json)
+            .collect::<Vec<_>>()
+            .join(", ")
     )
+}
+
+fn markdown_table_cell(value: &str) -> String {
+    value.replace('|', "\\|").replace('\n', "<br>")
 }

@@ -2,8 +2,10 @@
 
 #[allow(unused_imports)]
 use crate::*;
+use rayon::prelude::*;
 
 pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
+    let profile_started = std::time::Instant::now();
     let map = parse_args(args);
     let root = map
         .positionals
@@ -15,7 +17,7 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
     let game_root = value(&map, "game-root").map(normalize_path).transpose()?;
     let dependency_mods = dependency_mod_roots_for_edited_mod(&map, &root, game_root.is_some())?;
     let scan_options = layered_scan_options_from_args(&map)?;
-    let game_index = game_root
+    let mut game_index = game_root
         .as_ref()
         .map(|path| {
             build_game_index_with_profile_for_target(
@@ -27,15 +29,30 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
             )
         })
         .transpose()?;
+    validation_profile_phase("game_index", profile_started.elapsed());
+    if map.flags.contains("compact-report") {
+        if let Some(index) = game_index.as_mut() {
+            index.suppress_related_symbol_search = true;
+        }
+    }
     if game_index.is_none() && !dependency_mods.is_empty() {
         return Err("--mod-path requires --game-root during validation".to_string());
     }
     let options = validation_options_from_args(&map);
-    let mut reporter = validate_mod_with_options(&root, game_index.as_ref(), options)?;
+    let validation_started = std::time::Instant::now();
+    let purpose = if map.flags.contains("project-check") {
+        ValidationPurpose::ProjectCheck
+    } else {
+        ValidationPurpose::Authoring
+    };
+    let mut reporter =
+        validate_mod_with_options_and_purpose(&root, game_index.as_ref(), options, purpose)?;
+    validation_profile_phase("validation", validation_started.elapsed());
     if let Some(request) = value(&map, "request") {
         check_request_scope_for_new_mod(&root, request, &mut reporter);
     }
     check_text_alignment_from_validate_args(&root, &map, &mut reporter)?;
+    let report_started = std::time::Instant::now();
     let report = validation_report_from_args(
         &root,
         &map,
@@ -44,10 +61,14 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
         &dependency_mods,
         game_index.as_ref(),
     )?;
-    report.effective_reporter.print();
+    validation_profile_phase("report_filter", report_started.elapsed());
+    if !map.flags.contains("no-print") && !map.flags.contains("quiet") {
+        report.effective_reporter.print();
+    }
     if let Some(output) = value(&map, "output") {
         write_or_print(&validation_report_json(&report), Some(output))?;
     }
+    validation_profile_phase("total", profile_started.elapsed());
     if report.effective_reporter.errors.is_empty() {
         Ok(())
     } else {
@@ -62,6 +83,12 @@ pub(crate) fn cmd_validate(args: &[String]) -> Result<(), String> {
             )?;
         }
         Err("validation failed".to_string())
+    }
+}
+
+fn validation_profile_phase(phase: &str, elapsed: std::time::Duration) {
+    if std::env::var_os("HOI4SKILL_PROFILE_VALIDATION").is_some() {
+        eprintln!("PROFILE validation {phase} {}ms", elapsed.as_millis());
     }
 }
 
@@ -396,10 +423,463 @@ pub(crate) struct ValidationOptions {
     pub(crate) strict_code_index: bool,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ValidationPurpose {
+    #[default]
+    Authoring,
+    ProjectCheck,
+}
+
+impl ValidationPurpose {
+    fn is_project_check(self) -> bool {
+        self == Self::ProjectCheck
+    }
+}
+
+fn is_internal_validation_path(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root)
+        .ok()
+        .is_some_and(|relative| slash_path(relative).starts_with(".hoi4skill/"))
+}
+
+#[derive(Default)]
+struct ValidationScan {
+    ids: BTreeMap<String, BTreeSet<PathBuf>>,
+    namespaces: BTreeMap<String, BTreeSet<PathBuf>>,
+    localisation_keys: BTreeSet<String>,
+    localisation_refs: BTreeMap<String, BTreeSet<PathBuf>>,
+    optional_localisation_refs: BTreeMap<String, BTreeSet<PathBuf>>,
+    sprite_names: BTreeSet<String>,
+    raw_gfx_names: BTreeSet<String>,
+    gfx_refs: BTreeMap<String, BTreeSet<PathBuf>>,
+    idea_picture_refs: BTreeMap<String, BTreeSet<PathBuf>>,
+    event_picture_refs: BTreeMap<String, BTreeSet<PathBuf>>,
+    tag_refs: BTreeMap<String, BTreeSet<PathBuf>>,
+    focus_refs: BTreeMap<String, BTreeSet<PathBuf>>,
+    local_focus_ids: BTreeSet<String>,
+    game_data_refs: GameDataRefs,
+    indexed_history_files: Vec<PathBuf>,
+    reporter: Reporter,
+}
+
+impl ValidationScan {
+    fn merge(&mut self, other: Self) {
+        merge_validation_ref_map(&mut self.ids, other.ids);
+        merge_validation_ref_map(&mut self.namespaces, other.namespaces);
+        self.localisation_keys.extend(other.localisation_keys);
+        merge_validation_ref_map(&mut self.localisation_refs, other.localisation_refs);
+        merge_validation_ref_map(
+            &mut self.optional_localisation_refs,
+            other.optional_localisation_refs,
+        );
+        self.sprite_names.extend(other.sprite_names);
+        self.raw_gfx_names.extend(other.raw_gfx_names);
+        merge_validation_ref_map(&mut self.gfx_refs, other.gfx_refs);
+        merge_validation_ref_map(&mut self.idea_picture_refs, other.idea_picture_refs);
+        merge_validation_ref_map(&mut self.event_picture_refs, other.event_picture_refs);
+        merge_validation_ref_map(&mut self.tag_refs, other.tag_refs);
+        merge_validation_ref_map(&mut self.focus_refs, other.focus_refs);
+        self.local_focus_ids.extend(other.local_focus_ids);
+        self.game_data_refs.merge(other.game_data_refs);
+        self.indexed_history_files
+            .extend(other.indexed_history_files);
+        self.reporter.append(other.reporter);
+    }
+}
+
+fn merge_validation_ref_map(
+    target: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+    source: BTreeMap<String, BTreeSet<PathBuf>>,
+) {
+    for (key, paths) in source {
+        target.entry(key).or_default().extend(paths);
+    }
+}
+
+fn scan_validation_files(
+    root: &Path,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+    purpose: ValidationPurpose,
+) -> Result<ValidationScan, String> {
+    let texture_started = std::time::Instant::now();
+    let texture_resolver = ValidationTextureResolver::new(root, game_index)?;
+    validation_profile_phase("texture_resolver", texture_started.elapsed());
+    let inventory_started = std::time::Instant::now();
+    let mut files = collect_file_work_parallel(
+        root,
+        &["txt", "mod", "gfx", "gui", "asset", "yml", "yaml", "jsonl"],
+    )?;
+    if purpose.is_project_check() {
+        files.retain(|file| !is_internal_validation_path(root, &file.path));
+    }
+    validation_profile_phase("file_inventory", inventory_started.elapsed());
+    let chunks = plan_byte_balanced_chunks(&files);
+    let parsing_started = std::time::Instant::now();
+    let partials = chunks
+        .par_iter()
+        .map(|chunk| {
+            let mut partial = ValidationScan::default();
+            for file in &files[chunk.start..chunk.end] {
+                scan_validation_file(
+                    &file.path,
+                    file.bytes,
+                    game_index,
+                    &texture_resolver,
+                    options,
+                    purpose,
+                    &mut partial,
+                )?;
+            }
+            Ok(partial)
+        })
+        .collect::<Vec<Result<ValidationScan, String>>>();
+    validation_profile_phase("file_parsing", parsing_started.elapsed());
+    let merge_started = std::time::Instant::now();
+    let mut scan = ValidationScan::default();
+    for partial in partials {
+        scan.merge(partial?);
+    }
+    validation_profile_phase("scan_merge", merge_started.elapsed());
+    Ok(scan)
+}
+
+fn scan_validation_file(
+    file: &Path,
+    file_bytes: u64,
+    game_index: Option<&GameIndex>,
+    texture_resolver: &ValidationTextureResolver,
+    options: ValidationOptions,
+    purpose: ValidationPurpose,
+    scan: &mut ValidationScan,
+) -> Result<(), String> {
+    let ext = file
+        .extension()
+        .and_then(OsStr::to_str)
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let norm = slash_path(file);
+    if norm.contains("/history/countries/") || norm.contains("/history/states/") {
+        scan.indexed_history_files.push(file.to_path_buf());
+    }
+    if matches!(ext.as_str(), "txt" | "mod" | "gfx" | "gui" | "asset") {
+        let text = read_utf8_lossy(file)?;
+        let cleaned = strip_comments(&text);
+        if file_bytes >= 512 * 1024 && rayon::current_num_threads() > 1 {
+            scan_large_script_file(
+                file,
+                &norm,
+                &ext,
+                &text,
+                &cleaned,
+                game_index,
+                texture_resolver,
+                options,
+                purpose,
+                scan,
+            );
+            return Ok(());
+        }
+        check_braces_cleaned(file, &cleaned, &mut scan.reporter);
+        collect_ids_and_namespaces(
+            file,
+            &text,
+            &mut scan.ids,
+            &mut scan.namespaces,
+            &mut scan.reporter,
+        );
+        collect_localisation_refs_for_purpose(
+            file,
+            &cleaned,
+            purpose,
+            &mut scan.localisation_refs,
+            &mut scan.optional_localisation_refs,
+            &mut scan.reporter,
+        );
+        if ext == "gfx" && norm.contains("/interface/") {
+            collect_sprite_names(&text, &mut scan.sprite_names);
+            scan.raw_gfx_names.extend(raw_gfx_name_assignments(&text));
+            check_sprite_textures_with_resolver(texture_resolver, file, &text, &mut scan.reporter);
+        } else {
+            collect_gfx_refs_cleaned(file, &cleaned, &mut scan.gfx_refs);
+        }
+        collect_idea_picture_refs_cleaned(
+            file,
+            &cleaned,
+            &mut scan.idea_picture_refs,
+            &mut scan.reporter,
+        );
+        collect_event_picture_refs_cleaned(file, &cleaned, &mut scan.event_picture_refs);
+        collect_country_tag_refs_cleaned(file, &cleaned, &mut scan.tag_refs);
+        collect_focus_refs_cleaned(
+            file,
+            &cleaned,
+            &mut scan.focus_refs,
+            &mut scan.local_focus_ids,
+        );
+        collect_game_data_refs_cleaned(file, &cleaned, &mut scan.game_data_refs);
+        check_script_semantics_cleaned(
+            file,
+            &cleaned,
+            game_index,
+            options,
+            purpose,
+            &mut scan.reporter,
+        );
+        check_unresolved_generation_markers_for_purpose(
+            file,
+            &text,
+            options,
+            purpose,
+            &mut scan.reporter,
+        );
+    } else if matches!(ext.as_str(), "yml" | "yaml") {
+        if norm.contains("/localisation/") {
+            let bytes =
+                fs::read(file).map_err(|error| format!("read {}: {error}", file.display()))?;
+            let raw_text = String::from_utf8_lossy(&bytes);
+            let text = raw_text.as_ref();
+            let definitions_already_indexed = game_index.is_some();
+            if file_bytes >= 512 * 1024 && rayon::current_num_threads() > 1 {
+                let mut content_reporter = Reporter::default();
+                let mut indexed_reporter = Reporter::default();
+                rayon::join(
+                    || {
+                        check_localisation_content_for_purpose(
+                            file,
+                            &bytes,
+                            &raw_text,
+                            purpose,
+                            &mut content_reporter,
+                        )
+                    },
+                    || {
+                        check_indexed_localisation_tokens(
+                            file,
+                            &text,
+                            game_index,
+                            options,
+                            &mut indexed_reporter,
+                        );
+                        if !definitions_already_indexed {
+                            collect_localisation_keys(&text, &mut scan.localisation_keys);
+                        }
+                    },
+                );
+                scan.reporter.append(content_reporter);
+                scan.reporter.append(indexed_reporter);
+            } else {
+                check_localisation_content_for_purpose(
+                    file,
+                    &bytes,
+                    &raw_text,
+                    purpose,
+                    &mut scan.reporter,
+                );
+                check_indexed_localisation_tokens(
+                    file,
+                    &text,
+                    game_index,
+                    options,
+                    &mut scan.reporter,
+                );
+                if !definitions_already_indexed {
+                    collect_localisation_keys(&text, &mut scan.localisation_keys);
+                }
+            }
+        } else {
+            let text = read_utf8_lossy(file)?;
+            check_yaml_duplicate_keys(file, &text, &mut scan.reporter);
+        }
+    } else if ext == "jsonl" {
+        let text = read_utf8_lossy(file)?;
+        check_jsonl_duplicate_keys(file, &text, &mut scan.reporter);
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn scan_large_script_file(
+    file: &Path,
+    norm: &str,
+    ext: &str,
+    text: &str,
+    cleaned: &str,
+    game_index: Option<&GameIndex>,
+    texture_resolver: &ValidationTextureResolver,
+    options: ValidationOptions,
+    purpose: ValidationPurpose,
+    scan: &mut ValidationScan,
+) {
+    let mut structure_reporter = Reporter::default();
+    let mut localisation_reporter = Reporter::default();
+    let mut gfx_reporter = Reporter::default();
+    let mut picture_reporter = Reporter::default();
+    let mut semantic_fields_reporter = Reporter::default();
+    let mut effect_reporter = Reporter::default();
+    let mut trigger_reporter = Reporter::default();
+    let mut helper_reporter = Reporter::default();
+    let mut assignment_reporter = Reporter::default();
+    let mut marker_reporter = Reporter::default();
+
+    let ValidationScan {
+        ids,
+        namespaces,
+        localisation_refs,
+        optional_localisation_refs,
+        sprite_names,
+        raw_gfx_names,
+        gfx_refs,
+        idea_picture_refs,
+        event_picture_refs,
+        tag_refs,
+        focus_refs,
+        local_focus_ids,
+        game_data_refs,
+        reporter,
+        ..
+    } = scan;
+
+    rayon::scope(|scope| {
+        scope.spawn(|_| {
+            check_braces_cleaned(file, cleaned, &mut structure_reporter);
+            collect_ids_and_namespaces(file, text, ids, namespaces, &mut structure_reporter);
+        });
+        scope.spawn(|_| {
+            collect_localisation_refs_for_purpose(
+                file,
+                cleaned,
+                purpose,
+                localisation_refs,
+                optional_localisation_refs,
+                &mut localisation_reporter,
+            );
+        });
+        scope.spawn(|_| {
+            if ext == "gfx" && norm.contains("/interface/") {
+                collect_sprite_names(text, sprite_names);
+                raw_gfx_names.extend(raw_gfx_name_assignments(text));
+                check_sprite_textures_with_resolver(
+                    texture_resolver,
+                    file,
+                    text,
+                    &mut gfx_reporter,
+                );
+            } else {
+                collect_gfx_refs_cleaned(file, cleaned, gfx_refs);
+            }
+        });
+        scope.spawn(|_| {
+            collect_idea_picture_refs_cleaned(
+                file,
+                cleaned,
+                idea_picture_refs,
+                &mut picture_reporter,
+            );
+            collect_event_picture_refs_cleaned(file, cleaned, event_picture_refs);
+            collect_country_tag_refs_cleaned(file, cleaned, tag_refs);
+        });
+        scope.spawn(|_| {
+            collect_focus_refs_cleaned(file, cleaned, focus_refs, local_focus_ids);
+        });
+        scope.spawn(|_| collect_game_data_refs_cleaned(file, cleaned, game_data_refs));
+        let checks_script_semantics = norm.contains("/common/")
+            || norm.contains("/events/")
+            || norm.contains("/history/")
+            || norm.ends_with(".txt");
+        if checks_script_semantics {
+            scope.spawn(|_| {
+                if norm.contains("/common/national_focus/") {
+                    check_national_focus_fields_for_purpose(
+                        file,
+                        cleaned,
+                        purpose,
+                        &mut semantic_fields_reporter,
+                    );
+                }
+                if norm.contains("/events/") {
+                    check_event_fields(file, cleaned, &mut semantic_fields_reporter);
+                }
+            });
+            if !norm.contains("/common/game_rules/") {
+                scope.spawn(|_| {
+                    check_effect_contexts_for_purpose(
+                        file,
+                        cleaned,
+                        game_index,
+                        options,
+                        purpose,
+                        &mut effect_reporter,
+                    );
+                });
+                scope.spawn(|_| {
+                    check_trigger_contexts(
+                        file,
+                        cleaned,
+                        game_index,
+                        options,
+                        &mut trigger_reporter,
+                    );
+                });
+            }
+            scope.spawn(|_| {
+                check_scripted_helper_contexts(
+                    file,
+                    norm,
+                    cleaned,
+                    game_index,
+                    options,
+                    &mut helper_reporter,
+                );
+                check_dynamic_modifier_definition_contexts(
+                    file,
+                    norm,
+                    cleaned,
+                    game_index,
+                    options,
+                    &mut helper_reporter,
+                );
+            });
+            scope.spawn(|_| {
+                check_suspicious_assignments(file, cleaned, game_index, &mut assignment_reporter);
+            });
+        }
+        scope.spawn(|_| {
+            check_unresolved_generation_markers_for_purpose(
+                file,
+                text,
+                options,
+                purpose,
+                &mut marker_reporter,
+            );
+        });
+    });
+
+    reporter.append(structure_reporter);
+    reporter.append(localisation_reporter);
+    reporter.append(gfx_reporter);
+    reporter.append(picture_reporter);
+    reporter.append(semantic_fields_reporter);
+    reporter.append(effect_reporter);
+    reporter.append(trigger_reporter);
+    reporter.append(helper_reporter);
+    reporter.append(assignment_reporter);
+    reporter.append(marker_reporter);
+}
+
 pub(crate) fn validate_mod_with_options(
     root: &Path,
     game_index: Option<&GameIndex>,
     options: ValidationOptions,
+) -> Result<Reporter, String> {
+    validate_mod_with_options_and_purpose(root, game_index, options, ValidationPurpose::Authoring)
+}
+
+pub(crate) fn validate_mod_with_options_and_purpose(
+    root: &Path,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+    purpose: ValidationPurpose,
 ) -> Result<Reporter, String> {
     let mut reporter = Reporter::default();
     let base_game_index = game_index;
@@ -410,131 +890,89 @@ pub(crate) fn validate_mod_with_options(
             .indexed_roots
             .iter()
             .any(|indexed| slash_path(indexed).to_ascii_lowercase() == root_key);
-        let fallback_roots = index
-            .indexed_roots
-            .iter()
-            .cloned()
-            .chain((!already_indexed).then(|| root.to_path_buf()))
-            .collect::<Vec<_>>();
-        let fallback_plan = LayeredSourcePlan::from_roots(&fallback_roots)?;
-        let target_declares_replace = fallback_plan
-            .layer_index(root)
-            .is_some_and(|layer| fallback_plan.layer_declares_replace_paths(layer));
-        let mut index = if !already_indexed && target_declares_replace {
-            let dependencies = index
+        if !already_indexed {
+            let fallback_roots = index
                 .indexed_roots
                 .iter()
-                .filter(|indexed| {
-                    !slash_path(indexed).eq_ignore_ascii_case(&slash_path(&index.game_root))
-                })
                 .cloned()
+                .chain(std::iter::once(root.to_path_buf()))
                 .collect::<Vec<_>>();
-            build_game_index_with_profile_for_target(
-                &index.game_root,
-                &dependencies,
-                root,
-                GameIndexProfile::Validation,
-                LayeredScanOptions::effective(),
-            )?
-        } else {
-            clone_game_index_for_validation(index)
-        };
-        if root.is_dir() {
-            if !index
-                .indexed_roots
-                .iter()
-                .any(|indexed| slash_path(indexed).to_ascii_lowercase() == root_key)
-            {
-                index.indexed_roots.push(root.to_path_buf());
-            }
-            if !already_indexed && !target_declares_replace {
-                collect_game_index_root_with_profile(
-                    &mut index,
+            let fallback_plan = LayeredSourcePlan::from_roots(&fallback_roots)?;
+            let target_declares_replace = fallback_plan
+                .layer_index(root)
+                .is_some_and(|layer| fallback_plan.layer_declares_replace_paths(layer));
+            let mut validation_index = if target_declares_replace {
+                let dependencies = index
+                    .indexed_roots
+                    .iter()
+                    .filter(|indexed| {
+                        !slash_path(indexed).eq_ignore_ascii_case(&slash_path(&index.game_root))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                build_game_index_with_profile_for_target(
+                    &index.game_root,
+                    &dependencies,
                     root,
                     GameIndexProfile::Validation,
-                )?;
+                    LayeredScanOptions::effective(),
+                )?
+            } else {
+                clone_game_index_for_validation(index)
+            };
+            if root.is_dir() {
+                validation_index.indexed_roots.push(root.to_path_buf());
+                if !target_declares_replace {
+                    collect_game_index_root_with_profile(
+                        &mut validation_index,
+                        root,
+                        GameIndexProfile::Validation,
+                    )?;
+                }
             }
+            effective_game_index = Some(validation_index);
         }
-        effective_game_index = Some(index);
     }
     let game_index = effective_game_index.as_ref().or(base_game_index);
-    let mut ids: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-    let mut namespaces: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-    let mut localisation_keys: BTreeSet<String> = BTreeSet::new();
-    let mut localisation_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-    let mut sprite_names: BTreeSet<String> = BTreeSet::new();
-    let mut raw_gfx_names: BTreeSet<String> = BTreeSet::new();
-    let mut gfx_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-    let mut idea_picture_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-    let mut event_picture_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-    let mut tag_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-    let mut focus_refs: BTreeMap<String, BTreeSet<PathBuf>> = BTreeMap::new();
-    let mut local_focus_ids: BTreeSet<String> = BTreeSet::new();
-    let mut game_data_refs = GameDataRefs::default();
-    let mut indexed_history_files = Vec::new();
+    let mut scan = ValidationScan::default();
+    let scan_started = std::time::Instant::now();
 
     if !root.exists() {
         reporter.error(format!("{}: path does not exist", root.display()));
     } else if !root.is_dir() {
         reporter.error(format!("{}: path is not a directory", root.display()));
     } else {
-        check_descriptor(root, &mut reporter);
-        for file in collect_files(root)? {
-            let ext = file
-                .extension()
-                .and_then(OsStr::to_str)
-                .unwrap_or("")
-                .to_ascii_lowercase();
-            let norm = slash_path(&file);
-            if norm.contains("/history/countries/") || norm.contains("/history/states/") {
-                indexed_history_files.push(file.clone());
-            }
-            if matches!(ext.as_str(), "txt" | "mod" | "gfx" | "gui" | "asset") {
-                let text = read_utf8_lossy(&file)?;
-                let cleaned = strip_comments(&text);
-                check_braces_cleaned(&file, &cleaned, &mut reporter);
-                collect_ids_and_namespaces(&file, &text, &mut ids, &mut namespaces, &mut reporter);
-                collect_localisation_refs(&file, &text, &mut localisation_refs, &mut reporter);
-                if ext == "gfx" && norm.contains("/interface/") {
-                    collect_sprite_names(&text, &mut sprite_names);
-                    raw_gfx_names.extend(raw_gfx_name_assignments(&text));
-                    check_sprite_textures(root, &file, &text, game_index, &mut reporter);
-                } else {
-                    collect_gfx_refs_cleaned(&file, &cleaned, &mut gfx_refs);
-                }
-                collect_idea_picture_refs_cleaned(
-                    &file,
-                    &cleaned,
-                    &mut idea_picture_refs,
-                    &mut reporter,
-                );
-                collect_event_picture_refs_cleaned(&file, &cleaned, &mut event_picture_refs);
-                collect_country_tag_refs_cleaned(&file, &cleaned, &mut tag_refs);
-                collect_focus_refs_cleaned(&file, &cleaned, &mut focus_refs, &mut local_focus_ids);
-                collect_game_data_refs_cleaned(&file, &cleaned, &mut game_data_refs);
-                check_script_semantics_cleaned(&file, &cleaned, game_index, options, &mut reporter);
-                check_unresolved_generation_markers(&file, &text, options, &mut reporter);
-            } else if matches!(ext.as_str(), "yml" | "yaml") {
-                let text = read_utf8_lossy(&file)?;
-                if norm.contains("/localisation/") {
-                    check_localisation(&file, &mut reporter);
-                    check_indexed_localisation_tokens(
-                        &file,
-                        &text,
-                        game_index,
-                        options,
-                        &mut reporter,
-                    );
-                    collect_localisation_keys(&text, &mut localisation_keys);
-                } else {
-                    check_yaml_duplicate_keys(&file, &text, &mut reporter);
-                }
-            } else if ext == "jsonl" {
-                let text = read_utf8_lossy(&file)?;
-                check_jsonl_duplicate_keys(&file, &text, &mut reporter);
-            }
+        let validates_game_root = purpose.is_project_check()
+            && game_index.is_some_and(|index| {
+                slash_path(&index.game_root).eq_ignore_ascii_case(&slash_path(root))
+            });
+        if !validates_game_root {
+            check_descriptor(root, &mut reporter);
         }
+        scan = scan_validation_files(root, game_index, options, purpose)?;
+        reporter.append(scan.reporter);
     }
+    validation_profile_phase("file_scan", scan_started.elapsed());
+    let cross_reference_started = std::time::Instant::now();
+
+    let ValidationScan {
+        ids,
+        namespaces,
+        localisation_keys,
+        localisation_refs,
+        optional_localisation_refs,
+        sprite_names,
+        raw_gfx_names,
+        gfx_refs,
+        idea_picture_refs,
+        event_picture_refs,
+        tag_refs,
+        focus_refs,
+        local_focus_ids,
+        game_data_refs,
+        indexed_history_files,
+        reporter: _,
+    } = scan;
 
     if game_index.is_none() && !indexed_history_files.is_empty() {
         reporter.error(format!(
@@ -553,49 +991,131 @@ pub(crate) fn validate_mod_with_options(
         );
     }
 
+    reporter.append(report_duplicate_ids(&ids, &namespaces));
+    reporter.append(report_localisation_refs(
+        &localisation_refs,
+        &optional_localisation_refs,
+        &localisation_keys,
+        game_index,
+        base_game_index,
+        options,
+    ));
+    reporter.append(report_picture_refs(
+        &gfx_refs,
+        &idea_picture_refs,
+        &event_picture_refs,
+        &sprite_names,
+        &raw_gfx_names,
+        game_index,
+        options,
+        purpose,
+    ));
+    reporter.append(report_indexed_game_data_refs(
+        &tag_refs,
+        &game_data_refs,
+        game_index,
+        options,
+    ));
+    reporter.append(report_focus_refs(&focus_refs, &local_focus_ids, game_index));
+    validation_profile_phase("cross_references", cross_reference_started.elapsed());
+
+    if purpose.is_project_check() {
+        reporter.deduplicate();
+    }
+
+    Ok(reporter)
+}
+
+fn report_duplicate_ids(
+    ids: &BTreeMap<String, BTreeSet<PathBuf>>,
+    namespaces: &BTreeMap<String, BTreeSet<PathBuf>>,
+) -> Reporter {
+    let mut reporter = Reporter::default();
     for (id, paths) in ids {
         if paths.len() > 1 {
             reporter.warn(format!(
                 "duplicate high-risk id {id}: {}",
                 paths
                     .iter()
-                    .map(|p| p.display().to_string())
+                    .map(|path| path.display().to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
         }
     }
-    for (ns, paths) in namespaces {
+    for (namespace, paths) in namespaces {
         if paths.len() > 1 {
             reporter.warn(format!(
-                "namespace {ns} appears in multiple files: {}",
+                "namespace {namespace} appears in multiple files: {}",
                 paths
                     .iter()
-                    .map(|p| p.display().to_string())
+                    .map(|path| path.display().to_string())
                     .collect::<Vec<_>>()
                     .join(", ")
             ));
         }
     }
+    reporter
+}
+
+fn report_localisation_refs(
+    localisation_refs: &BTreeMap<String, BTreeSet<PathBuf>>,
+    optional_localisation_refs: &BTreeMap<String, BTreeSet<PathBuf>>,
+    localisation_keys: &BTreeSet<String>,
+    game_index: Option<&GameIndex>,
+    base_game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+) -> Reporter {
+    let mut reporter = Reporter::default();
     for (key, paths) in localisation_refs {
-        if !is_known_localisation_key(&key, &localisation_keys, game_index)
-            && !is_known_localisation_key(&key, &localisation_keys, base_game_index)
+        if !is_known_localisation_key(key, localisation_keys, game_index)
+            && !is_known_localisation_key(key, localisation_keys, base_game_index)
         {
             report_paths(
                 &mut reporter,
                 game_index.is_some() || options.strict_code_index,
                 format!(
-                    "localisation key {key} is referenced but not defined in this mod or indexed roots"
+                    "[confirmed_missing] localisation key {key} is referenced but not defined in this mod or indexed roots"
                 ),
-                &paths,
+                paths,
             );
         }
     }
+    for (key, paths) in optional_localisation_refs {
+        if !is_known_localisation_key(key, localisation_keys, game_index)
+            && !is_known_localisation_key(key, localisation_keys, base_game_index)
+        {
+            for path in paths {
+                reporter.warn(format!(
+                    "{}: optional localisation key {key} is not defined; the object remains valid but its description will be missing",
+                    path.display()
+                ));
+            }
+        }
+    }
+    reporter
+}
+
+pub(crate) fn report_picture_refs(
+    gfx_refs: &BTreeMap<String, BTreeSet<PathBuf>>,
+    idea_picture_refs: &BTreeMap<String, BTreeSet<PathBuf>>,
+    event_picture_refs: &BTreeMap<String, BTreeSet<PathBuf>>,
+    sprite_names: &BTreeSet<String>,
+    raw_gfx_names: &BTreeSet<String>,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+    purpose: ValidationPurpose,
+) -> Reporter {
+    let mut reporter = Reporter::default();
     for (sprite, paths) in gfx_refs {
-        if !is_known_sprite_with_options(&sprite, &sprite_names, game_index, options) {
-            let classification = if raw_gfx_names.contains(&sprite)
-                || game_index.is_some_and(|index| index.raw_gfx_names.contains(&sprite))
-            {
+        if !is_known_sprite_with_options(sprite, sprite_names, game_index, options) {
+            let base_sprite = gfx_sprite_base_name(sprite);
+            let raw_definition_exists = raw_gfx_names.contains(base_sprite)
+                || game_index.is_some_and(|index| index.raw_gfx_names.contains(base_sprite));
+            if purpose.is_project_check() && raw_definition_exists {
+                continue;
+            }
+            let classification = if raw_definition_exists {
                 "parser_gap"
             } else {
                 "confirmed_missing"
@@ -606,7 +1126,7 @@ pub(crate) fn validate_mod_with_options(
                 format!(
                     "[{classification}] GFX key {sprite} is referenced but not defined in this mod or indexed roots"
                 ),
-                &paths,
+                paths,
             );
         }
     }
@@ -615,17 +1135,31 @@ pub(crate) fn validate_mod_with_options(
         .filter_map(|sprite| sprite.strip_prefix("GFX_idea_").map(str::to_string))
         .collect::<BTreeSet<_>>();
     for (picture, paths) in idea_picture_refs {
-        let known = local_idea_pictures.contains(&picture)
-            || game_index.is_some_and(|index| index.idea_pictures.contains(&picture))
+        let raw_name = if picture.starts_with("GFX_") {
+            picture.clone()
+        } else if picture.starts_with("idea_") {
+            format!("GFX_{picture}")
+        } else {
+            format!("GFX_idea_{picture}")
+        };
+        let normalized_picture = raw_name.strip_prefix("GFX_idea_").unwrap_or(&raw_name);
+        let known = sprite_names.contains(&raw_name)
+            || raw_gfx_names.contains(&raw_name)
+            || local_idea_pictures.contains(normalized_picture)
+            || game_index.is_some_and(|index| {
+                index.sprites.contains(&raw_name)
+                    || index.raw_gfx_names.contains(&raw_name)
+                    || index.idea_pictures.contains(normalized_picture)
+            })
             || (!options.strict_code_index && picture == "generic_production_bonus");
         if !known {
             report_paths(
                 &mut reporter,
                 game_index.is_some() || options.strict_code_index,
                 format!(
-                    "idea picture {picture} requires a registered GFX_idea_{picture} sprite in this mod or indexed roots"
+                    "idea picture {picture} requires a registered {raw_name} sprite in this mod or indexed roots"
                 ),
-                &paths,
+                paths,
             );
         }
     }
@@ -635,14 +1169,17 @@ pub(crate) fn validate_mod_with_options(
         .cloned()
         .collect::<BTreeSet<_>>();
     for (picture, paths) in event_picture_refs {
-        let known = local_event_pictures.contains(&picture)
-            || game_index.is_some_and(|index| index.event_pictures.contains(&picture))
+        let known = local_event_pictures.contains(picture)
+            || game_index.is_some_and(|index| index.event_pictures.contains(picture))
+            || (purpose.is_project_check()
+                && (raw_gfx_names.contains(picture)
+                    || game_index.is_some_and(|index| index.raw_gfx_names.contains(picture))))
             || (!options.strict_code_index
                 && game_index.is_none()
                 && picture.starts_with("GFX_report_event_"));
         if !known {
             let related = game_index
-                .map(|index| related_code_symbols_text(index, &picture, Some("event_picture")))
+                .map(|index| related_code_symbols_text(index, picture, Some("event_picture")))
                 .unwrap_or_default();
             report_paths(
                 &mut reporter,
@@ -650,161 +1187,186 @@ pub(crate) fn validate_mod_with_options(
                 format!(
                     "event picture {picture} requires a registered event picture sprite in this mod or indexed roots{related}"
                 ),
-                &paths,
+                paths,
             );
         }
     }
-    if let Some(index) = game_index {
-        for (tag, paths) in tag_refs {
-            if !index.country_tags.contains(&tag) && !is_dynamic_tag_ref(&tag) {
-                report_paths(
-                    &mut reporter,
-                    true,
-                    format!("country tag {tag} is referenced but not present in game index"),
-                    &paths,
-                );
-            }
+    reporter
+}
+
+fn report_indexed_game_data_refs(
+    tag_refs: &BTreeMap<String, BTreeSet<PathBuf>>,
+    game_data_refs: &GameDataRefs,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+) -> Reporter {
+    let mut reporter = Reporter::default();
+    let Some(index) = game_index else {
+        return reporter;
+    };
+    for (tag, paths) in tag_refs {
+        if !index.country_tags.contains(tag) && !is_dynamic_tag_ref(tag) {
+            report_paths(
+                &mut reporter,
+                true,
+                format!("country tag {tag} is referenced but not present in game index"),
+                paths,
+            );
         }
-        report_unknown_index_refs(
-            "building type",
-            &game_data_refs.buildings,
-            &index.buildings,
-            &mut reporter,
-            true,
-            Some((index, "building")),
-        );
-        warn_building_levels(&game_data_refs.building_levels, index, &mut reporter);
-        report_unknown_index_refs(
-            "resource",
-            &game_data_refs.resources,
-            &index.resources,
-            &mut reporter,
-            true,
-            Some((index, "resource")),
-        );
-        report_unknown_index_refs(
-            "ideology",
-            &game_data_refs.ideologies,
-            &index.ideologies,
-            &mut reporter,
-            true,
-            None,
-        );
-        report_unknown_index_refs_if_indexed(
-            "trait",
-            &game_data_refs.traits,
-            &index.traits,
-            &mut reporter,
-            true,
-            options.strict_code_index,
-            None,
-        );
-        report_unknown_index_refs_if_indexed(
+    }
+    report_unknown_index_refs(
+        "building type",
+        &game_data_refs.buildings,
+        &index.buildings,
+        &mut reporter,
+        true,
+        Some((index, "building")),
+    );
+    warn_building_levels(&game_data_refs.building_levels, index, &mut reporter);
+    report_unknown_index_refs(
+        "resource",
+        &game_data_refs.resources,
+        &index.resources,
+        &mut reporter,
+        true,
+        Some((index, "resource")),
+    );
+    let known_ideology_ids = index
+        .ideologies
+        .union(&index.ideology_types)
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let ideology_refs = game_data_refs
+        .ideologies
+        .iter()
+        .filter(|(ideology, _)| {
+            !is_builtin_scope_key(ideology)
+                && !index.country_tags.contains(*ideology)
+                && !looks_like_tag(ideology)
+        })
+        .map(|(ideology, paths)| (ideology.clone(), paths.clone()))
+        .collect::<BTreeMap<_, _>>();
+    report_unknown_index_refs(
+        "ideology",
+        &ideology_refs,
+        &known_ideology_ids,
+        &mut reporter,
+        true,
+        None,
+    );
+    let known_character_trait_tokens = index
+        .traits
+        .iter()
+        .chain(known_ideology_ids.iter())
+        .chain(game_data_refs.advisor_slots.iter())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    report_unknown_index_refs_if_indexed(
+        "trait",
+        &game_data_refs.traits,
+        &known_character_trait_tokens,
+        &mut reporter,
+        true,
+        options.strict_code_index,
+        None,
+    );
+    for (label, references, known, related_kind) in [
+        (
             "equipment type",
             &game_data_refs.equipment,
             &index.equipment_types,
-            &mut reporter,
-            true,
-            options.strict_code_index,
-            Some((index, "resource_id")),
-        );
-        report_unknown_index_refs_if_indexed(
+            "resource_id",
+        ),
+        (
             "technology",
             &game_data_refs.technologies,
             &index.technologies,
-            &mut reporter,
-            true,
-            options.strict_code_index,
-            Some((index, "resource_id")),
-        );
-        report_unknown_index_refs_if_indexed(
+            "resource_id",
+        ),
+        (
             "technology category",
             &game_data_refs.technology_categories,
             &index.technology_categories,
-            &mut reporter,
-            true,
-            options.strict_code_index,
-            Some((index, "resource_id")),
-        );
-        report_unknown_index_refs_if_indexed(
+            "resource_id",
+        ),
+        (
             "sub unit",
             &game_data_refs.sub_units,
             &index.sub_units,
-            &mut reporter,
-            true,
-            options.strict_code_index,
-            Some((index, "resource_id")),
-        );
-        report_unknown_index_refs_if_indexed(
+            "resource_id",
+        ),
+        (
             "wargoal type",
             &game_data_refs.wargoal_types,
             &index.wargoal_types,
-            &mut reporter,
-            true,
-            options.strict_code_index,
-            Some((index, "resource_id")),
-        );
-        report_unknown_index_refs_if_indexed(
+            "resource_id",
+        ),
+        (
             "modifier",
             &game_data_refs.modifiers,
             &index.modifiers,
-            &mut reporter,
-            true,
-            options.strict_code_index,
-            Some((index, "modifier")),
-        );
+            "modifier",
+        ),
+        ("idea", &game_data_refs.ideas, &index.ideas, "idea"),
+    ] {
         report_unknown_index_refs_if_indexed(
-            "idea",
-            &game_data_refs.ideas,
-            &index.ideas,
+            label,
+            references,
+            known,
             &mut reporter,
             true,
             options.strict_code_index,
-            Some((index, "idea")),
-        );
-        report_dynamic_modifiers_used_as_ideas(
-            &game_data_refs.ideas,
-            index,
-            &mut reporter,
-            options.strict_code_index,
-        );
-        report_unknown_index_refs_if_indexed(
-            "dynamic modifier",
-            &game_data_refs.dynamic_modifiers,
-            &index.dynamic_modifiers,
-            &mut reporter,
-            true,
-            options.strict_code_index,
-            Some((index, "dynamic_modifier")),
-        );
-        report_unknown_index_refs_if_indexed(
-            "dynamic modifier variable",
-            &game_data_refs.dynamic_modifier_variables,
-            &index.dynamic_modifier_variables,
-            &mut reporter,
-            true,
-            options.strict_code_index,
-            Some((index, "dynamic_modifier_variable")),
+            Some((index, related_kind)),
         );
     }
-    let mut known_focus_ids = local_focus_ids;
-    if let Some(index) = game_index {
-        known_focus_ids.extend(index.focus_ids.iter().cloned());
-    }
+    report_dynamic_modifiers_used_as_ideas(
+        &game_data_refs.ideas,
+        index,
+        &mut reporter,
+        options.strict_code_index,
+    );
+    report_unknown_index_refs_if_indexed(
+        "dynamic modifier",
+        &game_data_refs.dynamic_modifiers,
+        &index.dynamic_modifiers,
+        &mut reporter,
+        true,
+        options.strict_code_index,
+        Some((index, "dynamic_modifier")),
+    );
+    report_unknown_index_refs_if_indexed(
+        "dynamic modifier variable",
+        &game_data_refs.dynamic_modifier_variables,
+        &index.dynamic_modifier_variables,
+        &mut reporter,
+        true,
+        options.strict_code_index,
+        Some((index, "dynamic_modifier_variable")),
+    );
+    reporter
+}
+
+fn report_focus_refs(
+    focus_refs: &BTreeMap<String, BTreeSet<PathBuf>>,
+    local_focus_ids: &BTreeSet<String>,
+    game_index: Option<&GameIndex>,
+) -> Reporter {
+    let mut reporter = Reporter::default();
     for (focus_id, paths) in focus_refs {
-        if !known_focus_ids.contains(&focus_id) {
+        let known = local_focus_ids.contains(focus_id)
+            || game_index.is_some_and(|index| index.focus_ids.contains(focus_id));
+        if !known {
             report_paths(
                 &mut reporter,
                 game_index.is_some(),
                 format!(
                     "focus id {focus_id} is referenced but not present in the indexed focus trees"
                 ),
-                &paths,
+                paths,
             );
         }
     }
-
-    Ok(reporter)
+    reporter
 }
 
 pub(crate) fn clone_game_index_for_validation(index: &GameIndex) -> GameIndex {
@@ -823,6 +1385,8 @@ pub(crate) fn clone_game_index_for_validation(index: &GameIndex) -> GameIndex {
         building_max_levels: index.building_max_levels.clone(),
         resources: index.resources.clone(),
         ideologies: index.ideologies.clone(),
+        ideology_types: index.ideology_types.clone(),
+        characters: index.characters.clone(),
         traits: index.traits.clone(),
         equipment_types: index.equipment_types.clone(),
         technologies: index.technologies.clone(),
@@ -830,12 +1394,15 @@ pub(crate) fn clone_game_index_for_validation(index: &GameIndex) -> GameIndex {
         sub_units: index.sub_units.clone(),
         wargoal_types: index.wargoal_types.clone(),
         effects: index.effects.clone(),
+        documented_effect_parameters: index.documented_effect_parameters.clone(),
         triggers: index.triggers.clone(),
+        documented_dynamic_variables: index.documented_dynamic_variables.clone(),
         modifiers: index.modifiers.clone(),
         ideas: index.ideas.clone(),
         dynamic_modifiers: index.dynamic_modifiers.clone(),
         dynamic_modifier_variables: index.dynamic_modifier_variables.clone(),
         layered_scan: index.layered_scan.clone(),
+        suppress_related_symbol_search: index.suppress_related_symbol_search,
         ..Default::default()
     }
 }
@@ -919,7 +1486,7 @@ fn validation_report_json(report: &ValidationReport) -> String {
         .map(|path| path.display().to_string())
         .collect::<Vec<_>>();
     format!(
-        "{{\n  \"schema\": \"hoi4skill.validation_report.v1\",\n  \"ok\": {},\n  \"status\": {},\n  \"mod_root\": {},\n  \"game_root\": {},\n  \"dependency_mods\": {},\n  \"strict_code_index\": {},\n  \"layered_scan\": {},\n  \"total_errors\": {},\n  \"total_warnings\": {},\n  \"effective_errors\": {},\n  \"effective_warnings\": {},\n  \"baseline_errors_filtered\": {},\n  \"baseline_warnings_filtered\": {},\n  \"changed_files\": {},\n  \"error_groups\": {},\n  \"warning_groups\": {},\n  \"errors\": {},\n  \"warnings\": {}\n}}\n",
+        "{{\n  \"schema\": \"hoi4skill.validation_report.v1\",\n  \"ok\": {},\n  \"status\": {},\n  \"mod_root\": {},\n  \"game_root\": {},\n  \"dependency_mods\": {},\n  \"strict_code_index\": {},\n  \"layered_scan\": {},\n  \"total_errors\": {},\n  \"total_warnings\": {},\n  \"effective_errors\": {},\n  \"effective_warnings\": {},\n  \"baseline_errors_filtered\": {},\n  \"baseline_warnings_filtered\": {},\n  \"changed_files\": {},\n  \"error_groups\": {},\n  \"warning_groups\": {},\n  \"diagnostics\": {},\n  \"errors\": {},\n  \"warnings\": {}\n}}\n",
         json_bool(report.effective_reporter.errors.is_empty()),
         if report.effective_reporter.errors.is_empty() {
             if report.effective_reporter.warnings.is_empty() {
@@ -952,9 +1519,265 @@ fn validation_report_json(report: &ValidationReport) -> String {
         json_array(&report.changed_files),
         validation_issue_groups_json(&report.effective_reporter.errors, 40),
         validation_issue_groups_json(&report.effective_reporter.warnings, 40),
+        validation_diagnostics_json(&report.effective_reporter),
         json_array(&report.effective_reporter.errors),
         json_array(&report.effective_reporter.warnings)
     )
+}
+
+fn validation_diagnostics_json(reporter: &Reporter) -> String {
+    let diagnostics = reporter
+        .errors
+        .iter()
+        .map(|message| validation_diagnostic_json("error", message))
+        .chain(
+            reporter
+                .warnings
+                .iter()
+                .map(|message| validation_diagnostic_json("warning", message)),
+        )
+        .collect::<Vec<_>>();
+    format!("[{}]", diagnostics.join(", "))
+}
+
+fn validation_diagnostic_json(severity: &str, raw: &str) -> String {
+    let category = validation_diagnostic_category(raw);
+    let classification = validation_diagnostic_classification(severity, category, raw);
+    let presentation_severity = if severity == "error"
+        && matches!(
+            classification,
+            "confirmed_missing" | "unresolved_reference" | "tooling_gap"
+        ) {
+        "warning"
+    } else {
+        severity
+    };
+    let code = validation_diagnostic_code(classification, category);
+    let message = clean_validation_diagnostic_message(raw);
+    let subject = validation_diagnostic_subject(&message);
+    format!(
+        "{{\"severity\": {}, \"classification\": {}, \"category\": {}, \"code\": {}, \"subject\": {}, \"message\": {}, \"raw\": {}}}",
+        json_str(presentation_severity),
+        json_str(classification),
+        json_str(category),
+        json_str(code),
+        json_str(&subject),
+        json_str(&message),
+        json_str(raw),
+    )
+}
+
+fn validation_diagnostic_category(message: &str) -> &'static str {
+    let value = message.to_ascii_lowercase();
+    if value.contains("brace") || value.contains("syntax") || value.contains("parse") {
+        "syntax"
+    } else if value.contains("country tag") || value.contains("country scope") {
+        "country_tag"
+    } else if value.contains("localisation key")
+        || value.contains("localization key")
+        || value.contains("localisation file")
+        || value.contains("localization file")
+        || value.contains("yaml")
+        || value.contains("utf-8 bom")
+    {
+        "localisation"
+    } else if value.contains("gfx") || value.contains("sprite") || value.contains("picture") {
+        "gfx"
+    } else if value.contains("dynamic modifier variable") || value.contains("variable") {
+        "variable"
+    } else if value.contains("idea") || value.contains("national spirit") {
+        "idea"
+    } else if value.contains("trait") {
+        "trait"
+    } else if value.contains("trigger") {
+        "trigger"
+    } else if value.contains("effect") {
+        "effect"
+    } else if value.contains("not present")
+        || value.contains("not defined")
+        || value.contains("unknown")
+        || value.contains("missing")
+    {
+        "reference"
+    } else {
+        "general"
+    }
+}
+
+fn validation_diagnostic_classification(
+    severity: &str,
+    category: &str,
+    message: &str,
+) -> &'static str {
+    let value = message.to_ascii_lowercase();
+    if value.contains("[parser_gap]") {
+        return "tooling_gap";
+    }
+    if severity != "error" {
+        return "advisory";
+    }
+    if value.contains("[confirmed_missing]") {
+        return "confirmed_missing";
+    }
+    let unresolved_reference = matches!(
+        category,
+        "localisation"
+            | "country_tag"
+            | "gfx"
+            | "variable"
+            | "idea"
+            | "trait"
+            | "effect"
+            | "trigger"
+            | "reference"
+    ) && (value.contains("not present")
+        || value.contains("not defined")
+        || value.contains("unknown")
+        || value.contains("missing")
+        || value.contains("requires a registered"));
+    if unresolved_reference {
+        "unresolved_reference"
+    } else {
+        "confirmed_error"
+    }
+}
+
+fn clean_validation_diagnostic_message(message: &str) -> String {
+    message
+        .replacen("[confirmed_missing] ", "", 1)
+        .replacen("[parser_gap] ", "", 1)
+}
+
+fn validation_diagnostic_code(classification: &str, category: &str) -> &'static str {
+    if classification == "tooling_gap" {
+        return "checker_coverage_gap";
+    }
+    if classification == "advisory" {
+        return "validation_advisory";
+    }
+    if classification == "confirmed_error" && category == "syntax" {
+        return "syntax_invalid";
+    }
+    if matches!(classification, "confirmed_missing" | "unresolved_reference") {
+        return match category {
+            "localisation" => "localisation_reference_missing",
+            "country_tag" => "country_tag_missing",
+            "gfx" => "gfx_reference_missing",
+            "variable" => "variable_reference_missing",
+            "idea" => "idea_reference_missing",
+            "trait" => "trait_reference_missing",
+            "effect" => "effect_reference_missing",
+            "trigger" => "trigger_reference_missing",
+            _ => "definition_reference_missing",
+        };
+    }
+    "validation_error"
+}
+
+fn validation_diagnostic_subject(message: &str) -> String {
+    if let Some((_, rest)) = message.split_once('`') {
+        if let Some((subject, _)) = rest.split_once('`') {
+            if !subject.trim().is_empty() {
+                return subject.trim().to_string();
+            }
+        }
+    }
+    for prefix in [
+        "country tag ",
+        "localisation key ",
+        "localization key ",
+        "GFX key ",
+        "idea picture ",
+        "event picture ",
+        "dynamic modifier variable ",
+        "variable ",
+        "idea ",
+        "trait ",
+        "effect ",
+        "trigger ",
+        "ideology ",
+        "technology ",
+        "equipment type ",
+        "building type ",
+        "resource ",
+    ] {
+        let Some((_, rest)) = message.split_once(prefix) else {
+            continue;
+        };
+        let end = [
+            " is referenced",
+            " is not present",
+            " is not defined",
+            " requires ",
+            " uses ",
+            ": ",
+        ]
+        .iter()
+        .filter_map(|marker| rest.find(marker))
+        .min()
+        .unwrap_or(rest.len());
+        let subject = rest[..end].trim().trim_matches(['\'', '"']);
+        if !subject.is_empty() && !subject.contains('/') && !subject.contains('\\') {
+            return subject.to_string();
+        }
+    }
+    String::new()
+}
+
+#[cfg(test)]
+mod validation_diagnostic_model_tests {
+    use super::*;
+
+    #[test]
+    fn report_model_downgrades_unresolved_and_tooling_gap_to_review_warnings() {
+        let mut reporter = Reporter::default();
+        reporter.error("country tag SOS is referenced but not present in game index".to_string());
+        reporter
+            .error("[parser_gap] GFX key GFX_dynamic is referenced but not defined".to_string());
+        reporter.error(
+            "[confirmed_missing] localisation key TST_missing is referenced but not defined"
+                .to_string(),
+        );
+        let json = validation_diagnostics_json(&reporter);
+        assert!(json
+            .contains("\"severity\": \"warning\", \"classification\": \"unresolved_reference\""));
+        assert!(json.contains("\"severity\": \"warning\", \"classification\": \"tooling_gap\""));
+        assert!(
+            json.contains("\"severity\": \"warning\", \"classification\": \"confirmed_missing\"")
+        );
+    }
+
+    #[test]
+    fn project_check_treats_generated_focus_description_as_optional() {
+        let path = Path::new("M:/mod/common/national_focus/test.txt");
+        let mut required = BTreeMap::new();
+        let mut optional = BTreeMap::new();
+        let mut reporter = Reporter::default();
+        collect_localisation_refs_for_purpose(
+            path,
+            "focus = { id = TST_focus }",
+            ValidationPurpose::ProjectCheck,
+            &mut required,
+            &mut optional,
+            &mut reporter,
+        );
+        assert!(required.contains_key("TST_focus"));
+        assert!(optional.contains_key("TST_focus_desc"));
+
+        let report = report_localisation_refs(
+            &required,
+            &optional,
+            &BTreeSet::from(["TST_focus".to_string()]),
+            None,
+            None,
+            ValidationOptions::default(),
+        );
+        assert!(report.errors.is_empty());
+        assert!(report
+            .warnings
+            .iter()
+            .any(|message| message.contains("optional localisation key TST_focus_desc")));
+    }
 }
 
 fn validation_repair_context_json(
@@ -1927,6 +2750,18 @@ impl Reporter {
     pub(crate) fn warn(&mut self, msg: String) {
         self.warnings.push(msg);
     }
+    fn append(&mut self, other: Self) {
+        self.errors.extend(other.errors);
+        self.warnings.extend(other.warnings);
+    }
+    pub(crate) fn deduplicate(&mut self) {
+        let mut seen_errors = BTreeSet::new();
+        self.errors
+            .retain(|message| seen_errors.insert(message.clone()));
+        let mut seen_warnings = BTreeSet::new();
+        self.warnings
+            .retain(|message| seen_warnings.insert(message.clone()));
+    }
     pub(crate) fn print(&self) {
         if !self.errors.is_empty() {
             println!("ERRORS:");
@@ -1980,9 +2815,28 @@ pub(crate) fn check_localisation(path: &Path, reporter: &mut Reporter) {
         }
     };
     let text = String::from_utf8_lossy(&bytes);
+    check_localisation_content_for_purpose(
+        path,
+        &bytes,
+        &text,
+        ValidationPurpose::Authoring,
+        reporter,
+    );
+}
+
+fn check_localisation_content_for_purpose(
+    path: &Path,
+    bytes: &[u8],
+    text: &str,
+    purpose: ValidationPurpose,
+    reporter: &mut Reporter,
+) {
     let first = text
         .lines()
-        .find(|line| !line.trim().is_empty())
+        .find(|line| {
+            let trimmed = line.trim_start_matches('\u{feff}').trim();
+            !trimmed.is_empty() && !trimmed.starts_with('#')
+        })
         .unwrap_or("");
     let first = first.trim_start_matches('\u{feff}').trim();
     if first.is_empty() {
@@ -1999,9 +2853,11 @@ pub(crate) fn check_localisation(path: &Path, reporter: &mut Reporter) {
             path.display()
         ));
     }
-    check_mod_name_localisation_keys(path, &text, reporter);
-    check_localisation_tokens(path, &text, reporter);
-    check_yaml_duplicate_keys(path, &text, reporter);
+    check_mod_name_localisation_keys(path, text, reporter);
+    if !purpose.is_project_check() {
+        check_localisation_tokens(path, text, reporter);
+    }
+    check_yaml_duplicate_keys(path, text, reporter);
 }
 
 pub(crate) fn check_localisation_tokens(path: &Path, text: &str, reporter: &mut Reporter) {
@@ -2035,6 +2891,9 @@ pub(crate) fn check_indexed_localisation_tokens(
         return;
     };
     for (line_idx, line) in text.lines().enumerate() {
+        if !line.contains('£') && !line.contains('[') {
+            continue;
+        }
         let line_no = line_idx + 1;
         let Some((key, value)) = parse_localisation_line(line) else {
             continue;
@@ -2496,19 +3355,44 @@ pub(crate) fn collect_localisation_refs(
     refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
     reporter: &mut Reporter,
 ) {
+    let cleaned = strip_comments(text);
+    let mut optional_refs = BTreeMap::new();
+    collect_localisation_refs_for_purpose(
+        path,
+        &cleaned,
+        ValidationPurpose::Authoring,
+        refs,
+        &mut optional_refs,
+        reporter,
+    );
+}
+
+fn collect_localisation_refs_for_purpose(
+    path: &Path,
+    text: &str,
+    purpose: ValidationPurpose,
+    refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+    optional_refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
+    reporter: &mut Reporter,
+) {
     let norm = slash_path(path);
     if norm.contains("/common/national_focus/") {
         for block in blocks_named(text, "focus") {
             if let Some(id) = block_assignment(&block, "id") {
                 add_localisation_ref(refs, &id, path);
-                add_localisation_ref(refs, &format!("{id}_desc"), path);
+                if purpose.is_project_check() {
+                    add_localisation_ref(optional_refs, &format!("{id}_desc"), path);
+                } else {
+                    add_localisation_ref(refs, &format!("{id}_desc"), path);
+                }
             }
         }
     }
 
     if norm.contains("/events/") {
         for block in event_blocks(text) {
-            if block_assignment(&block, "is_triggered_only").is_none()
+            if !purpose.is_project_check()
+                && block_assignment(&block, "is_triggered_only").is_none()
                 && block_assignment(&block, "mean_time_to_happen").is_none()
             {
                 reporter.warn(format!(
@@ -2516,19 +3400,22 @@ pub(crate) fn collect_localisation_refs(
                     path.display()
                 ));
             }
-            for key in ["title", "desc"] {
-                if let Some(value) = block_assignment(&block, key) {
-                    add_localisation_ref_if_key(refs, &value, path);
+            let hidden = block_assignment(&block, "hidden").is_some_and(|value| value == "yes");
+            if !hidden {
+                for key in ["title", "desc"] {
+                    if let Some(value) = block_assignment(&block, key) {
+                        add_localisation_ref_if_key(refs, &value, path);
+                    }
                 }
-            }
-            for option in blocks_named(&block, "option") {
-                if let Some(name) = block_assignment(&option, "name") {
-                    add_localisation_ref_if_key(refs, &name, path);
-                } else {
-                    reporter.warn(format!(
-                        "{}: event option block should include name = <localisation key>",
-                        path.display()
-                    ));
+                for option in blocks_named(&block, "option") {
+                    if let Some(name) = block_assignment(&option, "name") {
+                        add_localisation_ref_if_key(refs, &name, path);
+                    } else if !purpose.is_project_check() {
+                        reporter.warn(format!(
+                            "{}: event option block should include name = <localisation key>",
+                            path.display()
+                        ));
+                    }
                 }
             }
         }
@@ -2596,6 +3483,7 @@ pub(crate) fn is_event_definition_block(block: &str) -> bool {
         })
 }
 
+#[allow(dead_code)]
 pub(crate) fn check_sprite_textures(
     root: &Path,
     path: &Path,
@@ -2603,9 +3491,25 @@ pub(crate) fn check_sprite_textures(
     game_index: Option<&GameIndex>,
     reporter: &mut Reporter,
 ) {
+    let resolver = match ValidationTextureResolver::new(root, game_index) {
+        Ok(resolver) => resolver,
+        Err(error) => {
+            reporter.error(error);
+            return;
+        }
+    };
+    check_sprite_textures_with_resolver(&resolver, path, text, reporter);
+}
+
+fn check_sprite_textures_with_resolver(
+    resolver: &ValidationTextureResolver,
+    path: &Path,
+    text: &str,
+    reporter: &mut Reporter,
+) {
     for block in textured_gfx_type_blocks(text) {
         if let Some(texturefile) = gfx_texturefile_assignment(&block) {
-            if resolve_texture_in_indexed_roots(root, &texturefile, game_index).is_none() {
+            if resolver.resolve_from(path, &texturefile).is_none() {
                 reporter.warn(format!(
                     "{}: sprite texturefile not found in this mod or indexed roots: {}",
                     path.display(),
@@ -2616,24 +3520,75 @@ pub(crate) fn check_sprite_textures(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn resolve_texture_in_indexed_roots(
     root: &Path,
     texturefile: &str,
     game_index: Option<&GameIndex>,
 ) -> Option<PathBuf> {
-    let mut roots = game_index
-        .map(|index| index.indexed_roots.clone())
-        .unwrap_or_default();
-    roots.retain(|indexed| !slash_path(indexed).eq_ignore_ascii_case(&slash_path(root)));
-    roots.push(root.to_path_buf());
-    let plan = LayeredSourcePlan::from_roots(&roots).ok()?;
-    let relative = normalize_replace_path(texturefile);
-    (0..plan.layers().len()).rev().find_map(|layer_index| {
-        if !plan.is_visible(layer_index, &relative) {
-            return None;
+    ValidationTextureResolver::new(root, game_index)
+        .ok()?
+        .resolve(texturefile)
+}
+
+struct ValidationTextureResolver {
+    plan: LayeredSourcePlan,
+}
+
+impl ValidationTextureResolver {
+    fn new(root: &Path, game_index: Option<&GameIndex>) -> Result<Self, String> {
+        let mut roots = game_index
+            .map(|index| index.indexed_roots.clone())
+            .unwrap_or_default();
+        roots.retain(|indexed| !slash_path(indexed).eq_ignore_ascii_case(&slash_path(root)));
+        roots.push(root.to_path_buf());
+        Ok(Self {
+            plan: LayeredSourcePlan::from_roots(&roots)?,
+        })
+    }
+
+    fn resolve(&self, texturefile: &str) -> Option<PathBuf> {
+        let relative = normalize_replace_path(texturefile);
+        (0..self.plan.layers().len()).rev().find_map(|layer_index| {
+            if !self.plan.is_visible(layer_index, &relative) {
+                return None;
+            }
+            resolve_texture(&self.plan.layers()[layer_index].root, texturefile)
+        })
+    }
+
+    fn resolve_from(&self, source: &Path, texturefile: &str) -> Option<PathBuf> {
+        if let Some(package_root) = self.package_root_for_source(source) {
+            if let Some(resolved) = resolve_texture(&package_root, texturefile) {
+                return Some(resolved);
+            }
         }
-        resolve_texture(&plan.layers()[layer_index].root, texturefile)
-    })
+        self.resolve(texturefile)
+    }
+
+    fn package_root_for_source(&self, source: &Path) -> Option<PathBuf> {
+        for layer in self.plan.layers() {
+            let Ok(relative) = source.strip_prefix(&layer.root) else {
+                continue;
+            };
+            let mut components = relative.components();
+            let Some(container_component) = components.next() else {
+                continue;
+            };
+            let container = container_component.as_os_str().to_string_lossy();
+            if !container.eq_ignore_ascii_case("dlc")
+                && !container.eq_ignore_ascii_case("integrated_dlc")
+            {
+                continue;
+            }
+            let Some(package_component) = components.next() else {
+                continue;
+            };
+            let package = package_component.as_os_str();
+            return Some(layer.root.join(container.as_ref()).join(package));
+        }
+        None
+    }
 }
 
 pub(crate) fn collect_sprite_names(text: &str, sprite_names: &mut BTreeSet<String>) {
@@ -2665,7 +3620,7 @@ fn collect_gfx_refs_cleaned(
         return;
     }
     for token in token_candidates(cleaned) {
-        if token.starts_with("GFX_") {
+        if token.starts_with("GFX_") && !token.ends_with('_') {
             refs.entry(token.to_string())
                 .or_default()
                 .insert(path.to_path_buf());
@@ -2688,21 +3643,13 @@ fn collect_idea_picture_refs_cleaned(
     path: &Path,
     cleaned: &str,
     refs: &mut BTreeMap<String, BTreeSet<PathBuf>>,
-    reporter: &mut Reporter,
+    _reporter: &mut Reporter,
 ) {
     if !slash_path(path).contains("/common/ideas/") {
         return;
     }
     for picture in assignment_values_in_text(cleaned, "picture") {
         let picture = picture.trim_matches('"');
-        if picture.starts_with("GFX_idea_") {
-            reporter.error(format!(
-                "{}: idea picture must omit the GFX_idea_ prefix; use `picture = {}`",
-                path.display(),
-                picture.trim_start_matches("GFX_idea_")
-            ));
-            continue;
-        }
         if is_reference_identifier(picture) {
             refs.entry(picture.to_string())
                 .or_default()
@@ -2766,14 +3713,7 @@ fn collect_country_tag_refs_cleaned(
     {
         return;
     }
-    for key in [
-        "tag",
-        "original_tag",
-        "owner",
-        "controller",
-        "add_core_of",
-        "set_cosmetic_tag",
-    ] {
+    for key in ["tag", "original_tag", "owner", "controller", "add_core_of"] {
         for value in assignment_values_in_text(cleaned, key) {
             if looks_like_tag(&value) {
                 refs.entry(value).or_default().insert(path.to_path_buf());
@@ -2836,6 +3776,7 @@ pub(crate) struct GameDataRefs {
     pub(crate) resources: BTreeMap<String, BTreeSet<PathBuf>>,
     pub(crate) ideologies: BTreeMap<String, BTreeSet<PathBuf>>,
     pub(crate) traits: BTreeMap<String, BTreeSet<PathBuf>>,
+    pub(crate) advisor_slots: BTreeSet<String>,
     pub(crate) equipment: BTreeMap<String, BTreeSet<PathBuf>>,
     pub(crate) technologies: BTreeMap<String, BTreeSet<PathBuf>>,
     pub(crate) technology_categories: BTreeMap<String, BTreeSet<PathBuf>>,
@@ -2845,6 +3786,29 @@ pub(crate) struct GameDataRefs {
     pub(crate) ideas: BTreeMap<String, BTreeSet<PathBuf>>,
     pub(crate) dynamic_modifiers: BTreeMap<String, BTreeSet<PathBuf>>,
     pub(crate) dynamic_modifier_variables: BTreeMap<String, BTreeSet<PathBuf>>,
+}
+
+impl GameDataRefs {
+    fn merge(&mut self, other: Self) {
+        merge_validation_ref_map(&mut self.buildings, other.buildings);
+        self.building_levels.extend(other.building_levels);
+        merge_validation_ref_map(&mut self.resources, other.resources);
+        merge_validation_ref_map(&mut self.ideologies, other.ideologies);
+        merge_validation_ref_map(&mut self.traits, other.traits);
+        self.advisor_slots.extend(other.advisor_slots);
+        merge_validation_ref_map(&mut self.equipment, other.equipment);
+        merge_validation_ref_map(&mut self.technologies, other.technologies);
+        merge_validation_ref_map(&mut self.technology_categories, other.technology_categories);
+        merge_validation_ref_map(&mut self.sub_units, other.sub_units);
+        merge_validation_ref_map(&mut self.wargoal_types, other.wargoal_types);
+        merge_validation_ref_map(&mut self.modifiers, other.modifiers);
+        merge_validation_ref_map(&mut self.ideas, other.ideas);
+        merge_validation_ref_map(&mut self.dynamic_modifiers, other.dynamic_modifiers);
+        merge_validation_ref_map(
+            &mut self.dynamic_modifier_variables,
+            other.dynamic_modifier_variables,
+        );
+    }
 }
 
 #[allow(dead_code)]
@@ -2886,6 +3850,13 @@ fn collect_game_data_refs_cleaned(path: &Path, cleaned: &str, refs: &mut GameDat
             }
         }
     }
+    for block in blocks_named(cleaned, "advisor") {
+        if let Some(slot) = direct_assignment_value(&block, "slot") {
+            if is_reference_identifier(slot) {
+                refs.advisor_slots.insert(slot.to_string());
+            }
+        }
+    }
     for block in blocks_named(cleaned, "traits") {
         for token in token_candidates(&block) {
             if is_reference_identifier(token) {
@@ -2922,8 +3893,28 @@ fn collect_game_data_refs_cleaned(path: &Path, cleaned: &str, refs: &mut GameDat
     }
     if !norm.contains("/common/units/equipment/") {
         for block in blocks_named(&cleaned, "equipment") {
-            for key in direct_block_keys(&block) {
-                if is_reference_identifier(&key) {
+            if let Some(equipment) = direct_assignment_value(&block, "type") {
+                if is_reference_identifier(equipment) {
+                    add_ref(&mut refs.equipment, equipment, path);
+                }
+            }
+            let nested_keys = direct_child_blocks(&block)
+                .into_iter()
+                .map(|(key, _)| key)
+                .collect::<BTreeSet<_>>();
+            for key in direct_assignment_keys(&block) {
+                if !nested_keys.contains(&key)
+                    && !is_equipment_block_metadata_key(&key)
+                    && is_reference_identifier(&key)
+                {
+                    add_ref(&mut refs.equipment, &key, path);
+                }
+            }
+            for (key, child) in direct_child_blocks(&block) {
+                let is_concrete_equipment = ["owner", "creator", "version_name"]
+                    .iter()
+                    .any(|field| direct_assignment_value(&child, field).is_some());
+                if is_concrete_equipment && is_reference_identifier(&key) {
                     add_ref(&mut refs.equipment, &key, path);
                 }
             }
@@ -2962,7 +3953,25 @@ fn collect_game_data_refs_cleaned(path: &Path, cleaned: &str, refs: &mut GameDat
         }
     }
     for block in blocks_named(&cleaned, "modifier") {
-        for key in direct_block_keys(&block) {
+        let assignment_keys = direct_assignment_keys(&block);
+        if assignment_keys
+            .iter()
+            .any(|key| matches!(key.as_str(), "factor" | "base"))
+        {
+            continue;
+        }
+        let nested_scope_keys = direct_child_blocks(&block)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect::<BTreeSet<_>>();
+        let conditional_add = assignment_keys.iter().any(|key| key == "add");
+        for key in assignment_keys {
+            if nested_scope_keys.contains(&key) {
+                continue;
+            }
+            if conditional_add && !is_likely_modifier_assignment_key(&key) {
+                continue;
+            }
             if is_modifier_ref_candidate(&key) {
                 add_ref(&mut refs.modifiers, &key, path);
             }
@@ -3014,6 +4023,20 @@ fn collect_game_data_refs_cleaned(path: &Path, cleaned: &str, refs: &mut GameDat
     if norm.contains("/common/scripted_effects/") {
         collect_dynamic_modifier_change_effect_refs(path, &cleaned, refs);
     }
+}
+
+fn is_equipment_block_metadata_key(key: &str) -> bool {
+    matches!(
+        key,
+        "type"
+            | "owner"
+            | "creator"
+            | "version_name"
+            | "version"
+            | "amount"
+            | "requested_factories"
+            | "producer"
+    )
 }
 
 pub(crate) fn is_set_technology_metadata_key(key: &str) -> bool {
@@ -3106,7 +4129,11 @@ pub(crate) fn report_unknown_index_refs(
     related_index: Option<(&GameIndex, &str)>,
 ) {
     for (key, paths) in refs {
-        if !known.contains(key) {
+        if !known.contains(key)
+            && !known
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(key))
+        {
             let related = related_index
                 .map(|(index, kind)| related_code_symbols_text(index, key, Some(kind)))
                 .unwrap_or_default();
@@ -3157,7 +4184,7 @@ pub(crate) fn report_dynamic_modifiers_used_as_ideas(
         return;
     }
     for (idea, paths) in refs {
-        if index.dynamic_modifiers.contains(idea) {
+        if index.dynamic_modifiers.contains(idea) && !index.ideas.contains(idea) {
             report_paths(
                 reporter,
                 true,
@@ -3247,6 +4274,7 @@ pub(crate) fn is_modifier_ref_candidate(key: &str) -> bool {
                 | "value"
                 | "icon"
                 | "picture"
+                | "custom_modifier_tooltip"
                 | "allowed"
                 | "available"
                 | "visible"
@@ -3265,6 +4293,10 @@ pub(crate) fn is_modifier_ref_candidate(key: &str) -> bool {
                 | "OR"
                 | "AND"
         )
+}
+
+pub(crate) fn is_likely_modifier_assignment_key(key: &str) -> bool {
+    key.ends_with("_factor") || key.ends_with("_modifier")
 }
 
 pub(crate) fn token_candidates(text: &str) -> Vec<&str> {
@@ -3306,6 +4338,7 @@ pub(crate) fn is_known_sprite_with_options(
     game_index: Option<&GameIndex>,
     options: ValidationOptions,
 ) -> bool {
+    let sprite = gfx_sprite_base_name(sprite);
     if options.strict_code_index {
         return local_sprites.contains(sprite)
             || game_index.is_some_and(|index| index.sprites.contains(sprite));
@@ -3313,6 +4346,13 @@ pub(crate) fn is_known_sprite_with_options(
     local_sprites.contains(sprite)
         || game_index.is_some_and(|index| index.sprites.contains(sprite))
         || is_known_vanilla_gfx(sprite)
+}
+
+pub(crate) fn gfx_sprite_base_name(sprite: &str) -> &str {
+    sprite
+        .rsplit_once(':')
+        .filter(|(_, frame)| !frame.is_empty() && frame.bytes().all(|byte| byte.is_ascii_digit()))
+        .map_or(sprite, |(base, _)| base)
 }
 
 pub(crate) fn is_known_localisation_key(
@@ -3352,7 +4392,14 @@ pub(crate) fn check_script_semantics_with_options(
     reporter: &mut Reporter,
 ) {
     let cleaned = strip_comments(text);
-    check_script_semantics_cleaned(path, &cleaned, game_index, options, reporter);
+    check_script_semantics_cleaned(
+        path,
+        &cleaned,
+        game_index,
+        options,
+        ValidationPurpose::Authoring,
+        reporter,
+    );
 }
 
 fn check_script_semantics_cleaned(
@@ -3360,6 +4407,7 @@ fn check_script_semantics_cleaned(
     cleaned: &str,
     game_index: Option<&GameIndex>,
     options: ValidationOptions,
+    purpose: ValidationPurpose,
     reporter: &mut Reporter,
 ) {
     let norm = slash_path(path);
@@ -3371,13 +4419,13 @@ fn check_script_semantics_cleaned(
         return;
     }
     if norm.contains("/common/national_focus/") {
-        check_national_focus_fields(path, cleaned, reporter);
+        check_national_focus_fields_for_purpose(path, cleaned, purpose, reporter);
     }
     if norm.contains("/events/") {
         check_event_fields(path, cleaned, reporter);
     }
     if !norm.contains("/common/game_rules/") {
-        check_effect_contexts(path, cleaned, game_index, options, reporter);
+        check_effect_contexts_for_purpose(path, cleaned, game_index, options, purpose, reporter);
         check_trigger_contexts(path, cleaned, game_index, options, reporter);
     }
     check_scripted_helper_contexts(path, &norm, cleaned, game_index, options, reporter);
@@ -3470,7 +4518,10 @@ pub(crate) fn check_dynamic_modifier_definition_block(
                     path.display()
                 ));
             }
-        } else if is_modifier_ref_candidate(&key) && !index.modifiers.contains(&key) {
+        } else if is_modifier_ref_candidate(&key)
+            && !index.modifiers.contains(&key)
+            && !index.modifiers.contains(&key.to_ascii_lowercase())
+        {
             let related = related_code_symbols_text(index, &key, Some("modifier"));
             reporter.error(format!(
                 "{}: dynamic_modifier `{name}` uses unknown modifier `{key}`; use a real modifier from `documentation/modifiers_documentation.md` or verified local code{}",
@@ -3514,6 +4565,19 @@ pub(crate) fn check_unresolved_generation_markers(
     }
 }
 
+pub(crate) fn check_unresolved_generation_markers_for_purpose(
+    path: &Path,
+    text: &str,
+    options: ValidationOptions,
+    purpose: ValidationPurpose,
+    reporter: &mut Reporter,
+) {
+    if purpose.is_project_check() {
+        return;
+    }
+    check_unresolved_generation_markers(path, text, options, reporter);
+}
+
 pub(crate) fn unresolved_generation_marker(line: &str) -> Option<&'static str> {
     let trimmed = line.trim_start();
     if line.contains("Needs Codex mapping before final code") {
@@ -3549,7 +4613,17 @@ pub(crate) fn unresolved_generation_marker(line: &str) -> Option<&'static str> {
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn check_national_focus_fields(path: &Path, text: &str, reporter: &mut Reporter) {
+    check_national_focus_fields_for_purpose(path, text, ValidationPurpose::Authoring, reporter);
+}
+
+pub(crate) fn check_national_focus_fields_for_purpose(
+    path: &Path,
+    text: &str,
+    purpose: ValidationPurpose,
+    reporter: &mut Reporter,
+) {
     const CRITICAL_FOCUS_FIELDS: &[&str] = &[
         "id",
         "icon",
@@ -3576,19 +4650,26 @@ pub(crate) fn check_national_focus_fields(path: &Path, text: &str, reporter: &mu
         "dynamic",
     ];
 
-    check_focus_tree_country_selectors(path, text, reporter);
+    if !purpose.is_project_check() {
+        check_focus_tree_country_selectors(path, text, reporter);
+    }
 
     for block in blocks_named(text, "focus") {
         let focus_id = block_assignment(&block, "id").unwrap_or_else(|| "<unknown>".to_string());
-        if is_position_fallback_focus_id(&focus_id) {
+        if !purpose.is_project_check() && is_position_fallback_focus_id(&focus_id) {
             reporter.error(format!(
                 "{}: focus {focus_id} uses a generated position fallback id; replace it with a semantic focus id",
                 path.display()
             ));
         }
-        check_required_focus_template_fields(path, &focus_id, &block, reporter);
+        if !purpose.is_project_check() {
+            check_required_focus_template_fields(path, &focus_id, &block, reporter);
+        }
         for key in direct_assignment_keys(&block) {
-            if CRITICAL_FOCUS_FIELDS.contains(&key.as_str()) {
+            if CRITICAL_FOCUS_FIELDS
+                .iter()
+                .any(|expected| key.eq_ignore_ascii_case(expected))
+            {
                 continue;
             }
             let expected = focus_field_alias(&key)
@@ -3764,7 +4845,10 @@ pub(crate) fn check_event_fields(path: &Path, text: &str, reporter: &mut Reporte
     for block in event_blocks(text) {
         let event_id = block_assignment(&block, "id").unwrap_or_else(|| "<unknown>".to_string());
         for key in direct_assignment_keys(&block) {
-            if CRITICAL_EVENT_FIELDS.contains(&key.as_str()) {
+            if CRITICAL_EVENT_FIELDS
+                .iter()
+                .any(|expected| key.eq_ignore_ascii_case(expected))
+            {
                 continue;
             }
             if let Some(expected) = closest_critical_field(&key, CRITICAL_EVENT_FIELDS) {
@@ -3875,6 +4959,12 @@ pub(crate) fn direct_assignment_keys(block: &str) -> Vec<String> {
                         continue;
                     }
                 }
+                if j < bytes.len() && bytes[j] == b'"' {
+                    if let Some(end) = quoted_value_end(block, j) {
+                        i = end;
+                        continue;
+                    }
+                }
                 while j < bytes.len()
                     && !(bytes[j] as char).is_whitespace()
                     && bytes[j] != b'{'
@@ -3892,11 +4982,30 @@ pub(crate) fn direct_assignment_keys(block: &str) -> Vec<String> {
     keys
 }
 
+#[allow(dead_code)]
 pub(crate) fn check_effect_contexts(
     path: &Path,
     text: &str,
     game_index: Option<&GameIndex>,
     options: ValidationOptions,
+    reporter: &mut Reporter,
+) {
+    check_effect_contexts_for_purpose(
+        path,
+        text,
+        game_index,
+        options,
+        ValidationPurpose::Authoring,
+        reporter,
+    );
+}
+
+fn check_effect_contexts_for_purpose(
+    path: &Path,
+    text: &str,
+    game_index: Option<&GameIndex>,
+    options: ValidationOptions,
+    purpose: ValidationPurpose,
     reporter: &mut Reporter,
 ) {
     let norm = slash_path(path);
@@ -3910,6 +5019,12 @@ pub(crate) fn check_effect_contexts(
         "option",
         "select_effect",
     ] {
+        if name == "option" && !norm.contains("/events/") {
+            continue;
+        }
+        if name == "effect" && norm.contains("/common/aces/") {
+            continue;
+        }
         for block in blocks_named(text, name) {
             if name == "effects" && norm.contains("/common/scripted_guis/") {
                 let callback_names = direct_child_blocks(&block)
@@ -3953,7 +5068,7 @@ pub(crate) fn check_effect_contexts(
                     ));
                 }
             }
-            if !blocks_named(&block, "modifier").is_empty() {
+            if !purpose.is_project_check() && !blocks_named(&block, "modifier").is_empty() {
                 reporter.warn(format!(
                     "{}: modifier = {{ ... }} appears inside an effect context; modifiers belong in national spirits (`common/ideas`) or valid modifier fields. A focus completion_reward cannot apply long-term modifiers directly; create an idea and use add_ideas, then remove_ideas at the ending boundary if it is temporary",
                     path.display()
@@ -4037,18 +5152,11 @@ pub(crate) fn report_unverifiable_effect_key(
 }
 
 pub(crate) fn is_effect_scope_key_without_effect_docs(key: &str, index: &GameIndex) -> bool {
-    matches!(
-        key,
-        "ROOT"
-            | "FROM"
-            | "PREV"
-            | "THIS"
-            | "OVERLORD"
-            | "overlord"
-            | "owner"
-            | "controller"
-            | "capital_scope"
-    ) || index.country_tags.contains(key)
+    is_builtin_scope_key(key)
+        || is_variable_scope_key(key)
+        || contains_ascii_case_insensitive(&index.characters, key)
+        || index.documented_dynamic_variables.contains(key)
+        || index.country_tags.contains(key)
         || looks_like_tag(key)
 }
 
@@ -4065,7 +5173,14 @@ pub(crate) fn report_unknown_effect_key(
     if is_effect_scope_key(key, index) {
         return;
     }
-    if index.effects.contains(key) {
+    if index.effects.contains(key) || index.effects.contains(&key.to_ascii_lowercase()) {
+        return;
+    }
+    if index.documented_effect_parameters.contains(key)
+        || index
+            .documented_effect_parameters
+            .contains(&key.to_ascii_lowercase())
+    {
         return;
     }
     let related = related_code_symbols_text(index, key, Some("effect"));
@@ -4077,25 +5192,19 @@ pub(crate) fn report_unknown_effect_key(
 }
 
 pub(crate) fn is_effect_scope_key(key: &str, index: &GameIndex) -> bool {
-    matches!(
-        key,
-        "ROOT"
-            | "FROM"
-            | "PREV"
-            | "THIS"
-            | "OVERLORD"
-            | "overlord"
-            | "owner"
-            | "controller"
-            | "capital_scope"
-    ) || index.country_tags.contains(key)
+    is_builtin_scope_key(key)
+        || is_variable_scope_key(key)
+        || contains_ascii_case_insensitive(&index.characters, key)
+        || index.documented_dynamic_variables.contains(key)
+        || index.country_tags.contains(key)
         || looks_like_tag(key)
         || parse_plain_i64(key).is_some()
 }
 
 pub(crate) fn is_effect_control_block(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
     matches!(
-        key,
+        key.as_str(),
         "if" | "else"
             | "else_if"
             | "random"
@@ -4117,8 +5226,9 @@ pub(crate) fn is_effect_key_candidate(key: &str) -> bool {
     if !is_identifier_like(key) {
         return false;
     }
+    let key = key.to_ascii_lowercase();
     !matches!(
-        key,
+        key.as_str(),
         "name"
             | "title"
             | "desc"
@@ -4149,6 +5259,8 @@ pub(crate) fn is_effect_key_candidate(key: &str) -> bool {
             | "else"
             | "else_if"
             | "random_list"
+            | "chance"
+            | "visible_when_empty"
     )
 }
 
@@ -4297,7 +5409,7 @@ pub(crate) fn report_unknown_trigger_key(
     if is_trigger_child_context(key, index) || is_trigger_control_block(key) {
         return;
     }
-    if index.triggers.contains(key) {
+    if index.triggers.contains(key) || index.triggers.contains(&key.to_ascii_lowercase()) {
         return;
     }
     let related = related_code_symbols_text(index, key, Some("trigger"));
@@ -4309,27 +5421,18 @@ pub(crate) fn report_unknown_trigger_key(
 }
 
 pub(crate) fn is_trigger_child_context(key: &str, index: &GameIndex) -> bool {
-    matches!(
-        key,
-        "NOT"
-            | "OR"
-            | "AND"
-            | "NOR"
-            | "ROOT"
-            | "FROM"
-            | "PREV"
-            | "THIS"
-            | "OVERLORD"
-            | "owner"
-            | "controller"
-            | "capital_scope"
-    ) || index.country_tags.contains(key)
+    matches_ascii_case_insensitive(key, &["NOT", "OR", "AND", "NOR"])
+        || is_builtin_scope_key(key)
+        || is_variable_scope_key(key)
+        || contains_ascii_case_insensitive(&index.characters, key)
+        || index.documented_dynamic_variables.contains(key)
+        || index.country_tags.contains(key)
         || looks_like_tag(key)
         || parse_plain_i64(key).is_some()
 }
 
 pub(crate) fn is_trigger_control_block(key: &str) -> bool {
-    matches!(key, "if" | "else" | "else_if")
+    matches_ascii_case_insensitive(key, &["if", "else", "else_if"])
 }
 
 pub(crate) fn is_trigger_key_candidate(key: &str) -> bool {
@@ -4339,8 +5442,9 @@ pub(crate) fn is_trigger_key_candidate(key: &str) -> bool {
     if parse_plain_i64(key).is_some() {
         return false;
     }
+    let key = key.to_ascii_lowercase();
     !matches!(
-        key,
+        key.as_str(),
         "name"
             | "title"
             | "desc"
@@ -4372,15 +5476,18 @@ pub(crate) fn is_trigger_key_candidate(key: &str) -> bool {
             | "always"
             | "original_tag"
             | "is_ai"
-            | "NOT"
-            | "OR"
-            | "AND"
-            | "NOR"
-            | "ROOT"
-            | "FROM"
-            | "PREV"
-            | "THIS"
-            | "OVERLORD"
+            | "less_than"
+            | "greater_than"
+            | "not_equals"
+            | "not"
+            | "or"
+            | "and"
+            | "nor"
+            | "root"
+            | "from"
+            | "prev"
+            | "this"
+            | "overlord"
             | "owner"
             | "controller"
             | "if"
@@ -4389,10 +5496,46 @@ pub(crate) fn is_trigger_key_candidate(key: &str) -> bool {
     )
 }
 
+fn matches_ascii_case_insensitive(key: &str, candidates: &[&str]) -> bool {
+    candidates
+        .iter()
+        .any(|candidate| key.eq_ignore_ascii_case(candidate))
+}
+
+fn contains_ascii_case_insensitive(values: &BTreeSet<String>, key: &str) -> bool {
+    values
+        .iter()
+        .any(|candidate| candidate.eq_ignore_ascii_case(key))
+}
+
+fn is_builtin_scope_key(key: &str) -> bool {
+    matches_ascii_case_insensitive(
+        key,
+        &[
+            "ROOT",
+            "FROM",
+            "PREV",
+            "THIS",
+            "OVERLORD",
+            "OWNER",
+            "CONTROLLER",
+            "OCCUPIED",
+            "CAPITAL",
+            "capital_scope",
+            "FACTION_LEADER",
+        ],
+    )
+}
+
+fn is_variable_scope_key(key: &str) -> bool {
+    key.get(..4)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case("var:"))
+}
+
 pub(crate) fn check_suspicious_assignments(
     path: &Path,
     text: &str,
-    game_index: Option<&GameIndex>,
+    _game_index: Option<&GameIndex>,
     reporter: &mut Reporter,
 ) {
     for line in text.lines() {
@@ -4411,30 +5554,6 @@ pub(crate) fn check_suspicious_assignments(
                     "{}: add_core usually expects a state/province target, got tag-like value `{value}`; check add_core/add_core_of direction",
                     path.display()
                 ));
-            }
-        }
-        if let Some(value) = assignment_value(trimmed, "capital") {
-            if let Ok(capital) = value.parse::<i64>() {
-                if let Some(index) = game_index {
-                    if index.state_ids.contains(&capital) {
-                        reporter.warn(format!(
-                            "{}: capital = {value} matches a known state id; verify HOI4 expects province id here",
-                            path.display()
-                        ));
-                    } else if !index.province_ids.is_empty()
-                        && !index.province_ids.contains(&capital)
-                    {
-                        reporter.warn(format!(
-                            "{}: capital = {value} is not present in the province index; verify the capital province id",
-                            path.display()
-                        ));
-                    }
-                } else {
-                    reporter.warn(format!(
-                        "{}: capital = {value} cannot be verified without game data; confirm it is the intended capital id",
-                        path.display()
-                    ));
-                }
             }
         }
     }

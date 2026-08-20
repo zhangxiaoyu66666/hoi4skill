@@ -106,6 +106,7 @@ Turn the user's mod idea into concrete HOI4 files, using the existing mod's styl
    - For event cards, follow `references/event-cards.md`.
    - For country creation, country leaders, or country leader traits, follow `references/country-creation-leaders.md`.
    - For fast localisation translation between languages, follow `references/localisation-translation.md`.
+   - Treat translation terminology as project data, not prose variation. Register the first approved rendering of every recurring institution, title, ideology, place, and proper noun with `localisation-glossary`; never bypass a glossary mismatch during apply.
 4. Before writing generated workflow content, run a dry run.
    - Run `hoi4skill run-workflow --input <copy.txt> --tag <TAG> --prefix <prefix> --dry-run --output workflow_plan.json`.
    - Read the dry-run plan before writing files. Confirm target tag, prefix, touched systems, generated IDs, localisation targets, skipped reasons, warnings, and validation expectations.

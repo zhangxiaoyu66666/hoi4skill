@@ -18,6 +18,10 @@ hoi4skill validate "<mod-root>" --game-root "C:\path\Hearts of Iron IV" --mod-pa
 
 With an indexed game/mod codebase, invented references are fatal errors instead of soft warnings. That includes unknown focus IDs, country tags, focus/idea/decision/event sprites, technologies, equipment types, wargoal types, ideologies, resources, building types, and indexed modifiers.
 
+Host applications may use `--compact-report` for interactive error lists. It keeps every syntax and indexed-existence check but omits the expensive fuzzy candidate suffix on each error; use the normal command or `check-code-symbol` when detailed candidate suggestions are needed. For one-file checks, `--no-index-cache` avoids blocking on a cache write while preserving the same indexed source scan.
+
+Validation uses one bounded Rayon pool. Work is sized by both available CPU threads and script bytes, so large projects can use modern multi-core CPUs without creating one operating-system thread per file. Set `HOI4SKILL_PROFILE_VALIDATION=1` only during performance diagnosis to print per-stage timings to stderr; it does not change the report.
+
 ## Manual Syntax Checklist
 
 - Braces are balanced in `.txt`, `.mod`, `.gfx`, and `.gui` files.

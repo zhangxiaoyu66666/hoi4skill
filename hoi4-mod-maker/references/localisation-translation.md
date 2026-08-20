@@ -11,9 +11,19 @@ Use this when the user asks to translate HOI4 localisation between any supported
 hoi4skill translate-localisation --mod-root "M:\path\mod" --from <source_language> --to <target_language> --format prompt --output loc_translate_prompt.md
 ```
 
-3. Translate only quoted values. Preserve every key exactly.
-4. Put the translated `l_<target_language>:` block in a temporary file, for example `translated_l_german.yml` when translating to German.
-5. Inject the translated content back into the target language files:
+3. Before translating a recurring term for the first time, register the approved rendering in the project glossary:
+
+```text
+hoi4skill localisation-glossary --mod-root "M:\path\mod" --from simp_chinese --to english --set "人民委员会=People's Commissariat"
+```
+
+The default glossary is `.hoi4skill/localisation_glossary.json`. It is shared by every file and batch in the Mod, while entries remain scoped to an explicit source/target language pair. Use repeated `--set`, or `--source <term> --target <required-term>`, to add decisions. Use `--remove <source-term>` only when intentionally withdrawing a decision. Updating the same source term with `--set` is an explicit glossary revision.
+
+Regenerate the prompt after adding terms. It embeds only terms that occur in the current batch, but the apply gate reads the complete project glossary. Never translate the same institution with a synonym for stylistic variety.
+
+4. Translate only quoted values. Preserve every key exactly.
+5. Put the translated `l_<target_language>:` block in a temporary file, for example `translated_l_german.yml` when translating to German.
+6. Inject the translated content back into the target language files:
 
 ```text
 hoi4skill translate-localisation --mod-root "M:\path\mod" --from <source_language> --to <target_language> --translated-input translated_l_<target_language>.yml --apply --report loc_apply_report.json
@@ -26,18 +36,21 @@ localisation/<source_language>/events_l_<source_language>.yml -> localisation/<t
 localisation/french/events_l_french.yml -> localisation/german/events_l_german.yml
 ```
 
-6. Read `loc_apply_report.json`.
+7. Read `loc_apply_report.json`.
    - `written_keys`: keys injected from the translated file.
    - `existing_keys`: keys already present in the target language.
    - `missing_keys`: source keys without translated values.
    - `missing_after_apply`: source keys still absent after write-back.
    - `translated_unused_keys`: translated keys that do not match any source key, often typo evidence.
    - `suspicious_same_as_source`: values equal to the source language after apply; inspect them for untranslated text.
-7. Run validation:
+8. Audit the entire existing target language against the glossary, then run validation:
 
 ```text
+hoi4skill localisation-glossary --mod-root "M:\path\mod" --from <source_language> --to <target_language> --check --output glossary_check.json
 hoi4skill validate "M:\path\mod"
 ```
+
+`translate-localisation --apply` performs the same glossary preflight before writing anything. It checks both submitted translations and already-existing target values. If one source value contains a registered term but its effective target value omits the required rendering, the whole apply is blocked before any target file is changed. Fix the translation or explicitly revise the glossary; there is no glossary-bypass flag.
 
 ## Mechanical Scaffold
 
@@ -61,6 +74,12 @@ Do not stop at prompt generation. The complete workflow is:
 
 ```text
 compare keys -> extract source values -> translate quoted values -> apply translated values -> check missing_after_apply -> validate
+```
+
+The glossary is part of this loop:
+
+```text
+first terminology decision -> glossary set -> prompt injection -> atomic apply preflight -> whole-target glossary audit
 ```
 
 If `missing_after_apply` is not empty, report the missing keys and do not claim the localisation pass is complete.

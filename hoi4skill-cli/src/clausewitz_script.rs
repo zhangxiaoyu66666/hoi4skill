@@ -191,50 +191,90 @@ pub(crate) fn braced_content_at(text: &str, open_byte: usize) -> Option<(String,
     None
 }
 
-pub(crate) fn blocks_named(text: &str, name: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut rest = text;
-    while let Some(idx) = rest.find(name) {
-        let before_ok = idx == 0
-            || rest[..idx]
-                .chars()
-                .last()
-                .is_none_or(|c| !(c.is_ascii_alphanumeric() || c == '_'));
-        let after_name = &rest[idx + name.len()..];
-        let after_trimmed = after_name.trim_start();
-        let after_ok = if let Some(after_eq) = after_trimmed.strip_prefix('=') {
-            after_eq.trim_start().starts_with('{')
+pub(crate) fn quoted_value_end(text: &str, open_byte: usize) -> Option<usize> {
+    if text.as_bytes().get(open_byte) != Some(&b'"') {
+        return None;
+    }
+    let mut escape = false;
+    for (offset, ch) in text[open_byte + 1..].char_indices() {
+        if ch == '"' && !escape {
+            return Some(open_byte + 1 + offset + 1);
+        }
+        if escape {
+            escape = false;
         } else {
-            after_trimmed.starts_with('{')
-        };
-        if !before_ok || !after_ok {
-            rest = after_name;
+            escape = ch == '\\';
+        }
+    }
+    None
+}
+
+pub(crate) fn blocks_named(text: &str, name: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+    let mut in_quote = false;
+    let mut escape = false;
+    let mut in_comment = false;
+    while i < bytes.len() {
+        let ch = bytes[i] as char;
+        if in_comment {
+            if ch == '\n' || ch == '\r' {
+                in_comment = false;
+            }
+            i += 1;
             continue;
         }
-        rest = &rest[idx + name.len()..];
-        if let Some(open) = rest.find('{') {
-            let content_start = open + 1;
-            let mut depth = 1;
-            let mut end = None;
-            for (i, ch) in rest[content_start..].char_indices() {
-                if ch == '{' {
-                    depth += 1;
-                } else if ch == '}' {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = Some(i);
-                        break;
-                    }
-                }
+        if in_quote {
+            if ch == '"' && !escape {
+                in_quote = false;
             }
-            if let Some(end) = end {
-                out.push(rest[content_start..content_start + end].to_string());
-                rest = &rest[content_start + end + 1..];
+            if escape {
+                escape = false;
             } else {
-                break;
+                escape = ch == '\\';
             }
-        } else {
-            break;
+            i += 1;
+            continue;
+        }
+        if ch == '#' {
+            in_comment = true;
+            i += 1;
+            continue;
+        }
+        if ch == '"' {
+            in_quote = true;
+            escape = false;
+            i += 1;
+            continue;
+        }
+        if !is_identifier_byte(bytes[i]) {
+            i += 1;
+            continue;
+        }
+
+        let start = i;
+        while i < bytes.len() && is_identifier_byte(bytes[i]) {
+            i += 1;
+        }
+        if &text[start..i] != name {
+            continue;
+        }
+        let mut open = i;
+        while open < bytes.len() && (bytes[open] as char).is_whitespace() {
+            open += 1;
+        }
+        if open < bytes.len() && bytes[open] == b'=' {
+            open += 1;
+            while open < bytes.len() && (bytes[open] as char).is_whitespace() {
+                open += 1;
+            }
+        }
+        if open < bytes.len() && bytes[open] == b'{' {
+            if let Some((content, close)) = braced_content_at(text, open) {
+                out.push(content);
+                i = close + 1;
+            }
         }
     }
     out
@@ -294,7 +334,7 @@ pub(crate) fn direct_block_keys(block: &str) -> Vec<String> {
 }
 
 pub(crate) fn is_identifier_byte(byte: u8) -> bool {
-    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':')
+    byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.' | b':' | b'^' | b'@')
 }
 
 pub(crate) fn block_assignment(block: &str, key: &str) -> Option<String> {

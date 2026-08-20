@@ -38,6 +38,13 @@ workflow_plan.json
 history_plan.json
 clausewitz-library/
 .hoi4skill/
+.hoi4skill_smoke/
+hoi4skill-cli/.hoi4skill_smoke/
+generated/
+hoi4skill-cli/generated/
+kr/
+tno/
+Xia Agent/
 
 # Local launcher files and generated demo launchers
 *.mod

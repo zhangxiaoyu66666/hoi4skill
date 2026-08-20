@@ -24,6 +24,10 @@ For HOI4 work in this repository:
   decision title, national-spirit title, or other player-visible text, run
   `hoi4skill check-text-alignment` or `hoi4skill validate --text-source <file>`
   before the final answer. Missing user-provided text is an unfinished result.
+- For localisation translation, persist the first approved rendering of every
+  recurring institution, title, ideology, place, and proper noun with
+  `hoi4skill localisation-glossary`. Regenerate prompts after adding terms and
+  run the whole-target `--check`; never bypass or hand-wave a glossary mismatch.
 - Final HOI4 output must be checked against the local game/dependency codebase:
   use `hoi4skill validate <mod> --game-root <HOI4 root> --strict-code-index`
   (or `run-workflow ... --game-root <HOI4 root> --final-check`). If a generated

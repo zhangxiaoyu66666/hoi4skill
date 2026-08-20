@@ -2,6 +2,8 @@
 
 #[allow(unused_imports)]
 use crate::*;
+use rayon::prelude::*;
+use std::sync::{Arc, Mutex};
 
 #[derive(Default, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct GameIndex {
@@ -27,15 +29,21 @@ pub(crate) struct GameIndex {
     pub(crate) building_max_levels: BTreeMap<String, i64>,
     pub(crate) resources: BTreeSet<String>,
     pub(crate) ideologies: BTreeSet<String>,
+    pub(crate) ideology_types: BTreeSet<String>,
+    pub(crate) characters: BTreeSet<String>,
     pub(crate) traits: BTreeSet<String>,
     pub(crate) equipment_types: BTreeSet<String>,
+    pub(crate) equipment_duplicate_archetypes: BTreeMap<String, String>,
     pub(crate) technologies: BTreeSet<String>,
     pub(crate) technology_categories: BTreeSet<String>,
     pub(crate) sub_units: BTreeSet<String>,
     pub(crate) wargoal_types: BTreeSet<String>,
     pub(crate) effects: BTreeSet<String>,
+    pub(crate) documented_effect_parameters: BTreeSet<String>,
     pub(crate) triggers: BTreeSet<String>,
+    pub(crate) documented_dynamic_variables: BTreeSet<String>,
     pub(crate) modifiers: BTreeSet<String>,
+    pub(crate) observed_modifiers: BTreeSet<String>,
     pub(crate) ideas: BTreeSet<String>,
     pub(crate) idea_names: BTreeMap<String, BTreeSet<String>>,
     pub(crate) dynamic_modifiers: BTreeSet<String>,
@@ -46,6 +54,11 @@ pub(crate) struct GameIndex {
     pub(crate) localisation_entry_aliases: BTreeMap<String, BTreeSet<String>>,
     #[serde(default)]
     pub(crate) layered_scan: LayeredScanReport,
+    #[serde(skip)]
+    pub(crate) related_symbol_cache:
+        Arc<Mutex<HashMap<(String, String, usize), Vec<CodeSymbolMatch>>>>,
+    #[serde(skip)]
+    pub(crate) suppress_related_symbol_search: bool,
 }
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -428,7 +441,8 @@ pub(crate) fn build_game_index_with_profile_options(
         layered_scan: plan.report(scan_options)?,
         ..Default::default()
     };
-    for (layer_index, root) in plan.roots().into_iter().enumerate() {
+    let roots = plan.roots();
+    for root in &roots {
         if !root.exists() {
             return Err(format!("{}: indexed root does not exist", root.display()));
         }
@@ -438,9 +452,20 @@ pub(crate) fn build_game_index_with_profile_options(
                 root.display()
             ));
         }
-        collect_cached_game_index_layer(&mut index, &plan, layer_index, profile, scan_options)?;
+    }
+    let snapshots = (0..roots.len())
+        .into_par_iter()
+        .map(|layer_index| {
+            cached_game_index_layer_snapshot(&plan, layer_index, profile, scan_options)
+        })
+        .collect::<Vec<_>>();
+    for (layer_index, snapshot) in snapshots.into_iter().enumerate() {
+        merge_game_index_layer(&mut index, &snapshot?, layer_index);
     }
     finalize_ideology_derived_modifiers(&mut index);
+    finalize_building_derived_modifiers(&mut index);
+    finalize_resource_derived_modifiers(&mut index);
+    finalize_equipment_derived_types(&mut index);
     if profile == GameIndexProfile::Full {
         finalize_localisation_icon_names(&mut index);
         finalize_dynamic_modifier_localisation(&mut index);
@@ -492,10 +517,26 @@ pub(crate) fn collect_game_index_file(
     if ext == "txt" && norm.contains("/common/country_tags/") {
         let text = read_utf8_lossy(file)?;
         collect_country_tags(&text, &mut index.country_tags);
+    } else if ext == "txt" && norm.contains("/common/country_tag_aliases/") {
+        let text = read_utf8_lossy(file)?;
+        collect_direct_child_entries(&text, &mut index.country_tags);
+    } else if ext == "txt" && norm.contains("/common/countries/") {
+        let text = read_utf8_lossy(file)?;
+        collect_cosmetic_country_tags(&text, &mut index.country_tags);
     } else if matches!(ext.as_str(), "yml" | "yaml") && norm.contains("/localisation/") {
         let text = read_utf8_lossy(file)?;
         if profile == GameIndexProfile::Validation {
-            collect_localisation_keys_for_index(index, &text);
+            if text.len() >= 512 * 1024 && rayon::current_num_threads() > 1 {
+                let keys = text
+                    .par_lines()
+                    .filter_map(|line| parse_localisation_line(line).map(|(key, _)| key))
+                    .collect::<BTreeSet<_>>();
+                index
+                    .localisation_entries
+                    .extend(keys.into_iter().map(|key| (key, String::new())));
+            } else {
+                collect_localisation_keys_for_index(index, &text);
+            }
         } else {
             collect_localisation_index_data(index, &text);
         }
@@ -521,30 +562,46 @@ pub(crate) fn collect_game_index_file(
         collect_named_entries(&text, &mut index.resources, &["resources"]);
     } else if ext == "txt" && norm.contains("/common/ideologies/") {
         let text = read_utf8_lossy(file)?;
-        collect_ideology_ids(&text, &mut index.ideologies);
+        collect_ideology_ids(&text, &mut index.ideologies, &mut index.ideology_types);
+    } else if ext == "txt" && norm.contains("/common/characters/") {
+        let text = read_utf8_lossy(file)?;
+        collect_direct_entries_in_wrappers(&text, &mut index.characters, &["characters"]);
+        collect_character_advisor_idea_tokens(&text, &mut index.ideas);
     } else if ext == "txt" && is_trait_definition_path(&norm) {
         let text = read_utf8_lossy(file)?;
-        collect_direct_entries_in_wrappers(
-            &text,
-            &mut index.traits,
-            &[
-                "leader_traits",
-                "country_leader_traits",
-                "unit_leader_traits",
-                "traits",
-            ],
-        );
+        if norm.contains("/common/scientist_traits/") {
+            collect_direct_child_entries(&text, &mut index.traits);
+        } else {
+            collect_direct_entries_in_wrappers(
+                &text,
+                &mut index.traits,
+                &[
+                    "leader_traits",
+                    "country_leader_traits",
+                    "unit_leader_traits",
+                    "traits",
+                ],
+            );
+        }
     } else if ext == "txt" && norm.contains("/common/units/equipment/") {
         let text = read_utf8_lossy(file)?;
         collect_direct_entries_in_wrappers(
             &text,
             &mut index.equipment_types,
-            &["equipments", "equipment"],
+            &["equipments", "equipment", "duplicate_archetypes"],
+        );
+        collect_duplicate_equipment_archetypes(
+            &text,
+            &mut index.equipment_types,
+            &mut index.equipment_duplicate_archetypes,
         );
     } else if ext == "txt" && norm.contains("/common/technologies/") {
         let text = read_utf8_lossy(file)?;
         collect_direct_entries_in_wrappers(&text, &mut index.technologies, &["technologies"]);
         collect_technology_categories(&text, &mut index.technology_categories);
+    } else if ext == "txt" && norm.contains("/common/units/unit_modifiers/") {
+        let text = read_utf8_lossy(file)?;
+        collect_identifier_tokens_in_wrappers(&text, &mut index.modifiers, &["sub_unit_modifiers"]);
     } else if ext == "txt"
         && norm.contains("/common/units/")
         && !norm.contains("/common/units/equipment/")
@@ -566,6 +623,7 @@ pub(crate) fn collect_game_index_file(
     } else if ext == "txt" && norm.contains("/common/ideas/") {
         let text = read_utf8_lossy(file)?;
         collect_idea_ids(&text, &mut index.ideas);
+        collect_observed_modifier_ids(&text, &mut index.observed_modifiers);
     } else if ext == "txt" && norm.contains("/common/dynamic_modifiers/") {
         let text = read_utf8_lossy(file)?;
         collect_dynamic_modifier_definition_ids(&text, &mut index.dynamic_modifiers);
@@ -578,6 +636,9 @@ pub(crate) fn collect_game_index_file(
     } else if ext == "txt" && norm.contains("/common/modifier_definitions/") {
         let text = read_utf8_lossy(file)?;
         collect_modifier_definition_ids(&text, &mut index.modifiers);
+    } else if ext == "txt" && norm.contains("/common/special_projects/specialization/") {
+        let text = read_utf8_lossy(file)?;
+        collect_specialization_derived_modifiers(&text, &mut index.modifiers);
     } else if ext == "txt" && is_modifier_definition_path(&norm) {
         let text = read_utf8_lossy(file)?;
         collect_direct_entries_in_wrappers(
@@ -588,22 +649,58 @@ pub(crate) fn collect_game_index_file(
     } else if ext == "md" && norm.ends_with("/documentation/modifiers_documentation.md") {
         let text = read_utf8_lossy(file)?;
         collect_markdown_heading_identifiers(&text, &mut index.modifiers);
+        collect_documented_modifier_expansions(&text, &mut index.modifiers);
     } else if ext == "md" && norm.ends_with("/documentation/effects_documentation.md") {
         let text = read_utf8_lossy(file)?;
         collect_markdown_heading_identifiers(&text, &mut index.effects);
+        collect_markdown_code_assignment_keys(&text, &mut index.documented_effect_parameters);
     } else if ext == "md" && norm.ends_with("/documentation/triggers_documentation.md") {
         let text = read_utf8_lossy(file)?;
         collect_markdown_heading_identifiers(&text, &mut index.triggers);
+    } else if ext == "md" && norm.ends_with("/documentation/dynamic_variables_documentation.md") {
+        let text = read_utf8_lossy(file)?;
+        collect_documented_dynamic_scope_identifiers(
+            &text,
+            &mut index.documented_dynamic_variables,
+        );
     } else if ext == "gfx" && norm.contains("/interface/") {
         let text = read_utf8_lossy(file)?;
-        collect_sprite_names(&text, &mut index.sprites);
-        index.raw_gfx_names.extend(raw_gfx_name_assignments(&text));
-        collect_focus_goal_icons_from_gfx_file(file, &text, &mut index.focus_goal_sprites);
-        collect_idea_pictures(&text, &mut index.idea_pictures);
-        collect_event_pictures(&text, &mut index.event_pictures);
-        collect_decision_icons(&text, &mut index.decision_icons);
-        collect_decision_category_pictures(&text, &mut index.decision_category_pictures);
-        collect_leader_portraits(&text, &mut index.leader_portraits);
+        if text.len() >= 512 * 1024 && rayon::current_num_threads() > 1 {
+            let GameIndex {
+                sprites,
+                raw_gfx_names,
+                focus_goal_sprites,
+                idea_pictures,
+                event_pictures,
+                decision_icons,
+                decision_category_pictures,
+                leader_portraits,
+                ..
+            } = index;
+            rayon::scope(|scope| {
+                scope.spawn(|_| collect_sprite_names(&text, sprites));
+                scope.spawn(|_| raw_gfx_names.extend(raw_gfx_name_assignments(&text)));
+                scope.spawn(|_| {
+                    collect_focus_goal_icons_from_gfx_file(file, &text, focus_goal_sprites)
+                });
+                scope.spawn(|_| collect_idea_pictures(&text, idea_pictures));
+                scope.spawn(|_| collect_event_pictures(&text, event_pictures));
+                scope.spawn(|_| collect_decision_icons(&text, decision_icons));
+                scope.spawn(|_| {
+                    collect_decision_category_pictures(&text, decision_category_pictures)
+                });
+                scope.spawn(|_| collect_leader_portraits(&text, leader_portraits));
+            });
+        } else {
+            collect_sprite_names(&text, &mut index.sprites);
+            index.raw_gfx_names.extend(raw_gfx_name_assignments(&text));
+            collect_focus_goal_icons_from_gfx_file(file, &text, &mut index.focus_goal_sprites);
+            collect_idea_pictures(&text, &mut index.idea_pictures);
+            collect_event_pictures(&text, &mut index.event_pictures);
+            collect_decision_icons(&text, &mut index.decision_icons);
+            collect_decision_category_pictures(&text, &mut index.decision_category_pictures);
+            collect_leader_portraits(&text, &mut index.leader_portraits);
+        }
     }
     Ok(())
 }
@@ -615,13 +712,17 @@ pub(crate) fn collect_game_index_files_for_layer(
 ) -> Result<Vec<PathBuf>, String> {
     const FULL_DIRECTORIES: &[&str] = &[
         "common/country_tags",
+        "common/country_tag_aliases",
+        "common/countries",
         "common/national_focus",
         "common/buildings",
         "common/resources",
         "common/ideologies",
+        "common/characters",
         "common/country_leader",
         "common/unit_leader",
         "common/traits",
+        "common/scientist_traits",
         "common/units",
         "common/technologies",
         "common/wargoals",
@@ -632,6 +733,7 @@ pub(crate) fn collect_game_index_files_for_layer(
         "common/dynamic_modifiers",
         "common/modifier_definitions",
         "common/modifiers",
+        "common/special_projects/specialization",
         "history/states",
         "interface",
         "localisation",
@@ -639,13 +741,17 @@ pub(crate) fn collect_game_index_files_for_layer(
     ];
     const CODE_CATALOG_DIRECTORIES: &[&str] = &[
         "common/country_tags",
+        "common/country_tag_aliases",
+        "common/countries",
         "common/national_focus",
         "common/buildings",
         "common/resources",
         "common/ideologies",
+        "common/characters",
         "common/country_leader",
         "common/unit_leader",
         "common/traits",
+        "common/scientist_traits",
         "common/units",
         "common/technologies",
         "common/wargoals",
@@ -656,6 +762,7 @@ pub(crate) fn collect_game_index_files_for_layer(
         "common/dynamic_modifiers",
         "common/modifier_definitions",
         "common/modifiers",
+        "common/special_projects/specialization",
         "history/states",
         "interface",
         "documentation",
@@ -698,15 +805,20 @@ pub(crate) fn collect_game_index_files_for_layer(
             {
                 continue;
             }
-            let relative = format!(
-                "{}/{}/interface",
-                container
-                    .file_name()
-                    .and_then(OsStr::to_str)
-                    .unwrap_or("dlc"),
-                entry.file_name().to_string_lossy()
-            );
-            files.extend(plan.collect_files_from(layer_index, &relative, "interface")?);
+            let container_name = container
+                .file_name()
+                .and_then(OsStr::to_str)
+                .unwrap_or("dlc");
+            let package_name = entry.file_name();
+            for relative in indexed_directories {
+                let physical = format!(
+                    "{}/{}/{}",
+                    container_name,
+                    package_name.to_string_lossy(),
+                    relative
+                );
+                files.extend(plan.collect_files_from(layer_index, &physical, relative)?);
+            }
         }
     }
     if profile != GameIndexProfile::ClausewitzReference {
@@ -714,6 +826,18 @@ pub(crate) fn collect_game_index_files_for_layer(
             files.push(definition);
         }
     }
+    if layer_index == 0 {
+        let intrinsic_ideas = root.join("common").join("ideas");
+        if intrinsic_ideas.is_dir() {
+            files.extend(collect_files(&intrinsic_ideas)?.into_iter().filter(|path| {
+                path.extension()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("txt"))
+            }));
+        }
+    }
+    files.sort_unstable();
+    files.dedup();
     Ok(files)
 }
 
@@ -1040,6 +1164,14 @@ pub(crate) fn collect_country_tags(text: &str, tags: &mut BTreeSet<String>) {
     }
 }
 
+pub(crate) fn collect_cosmetic_country_tags(text: &str, tags: &mut BTreeSet<String>) {
+    for (key, _) in direct_child_blocks(&strip_comments(text)) {
+        if looks_like_tag(&key) {
+            tags.insert(key);
+        }
+    }
+}
+
 pub(crate) fn collect_localisation_index_data(index: &mut GameIndex, text: &str) {
     for line in text.lines() {
         let Some((key, value)) = parse_localisation_line(line) else {
@@ -1097,7 +1229,9 @@ pub(crate) fn finalize_localisation_icon_names(index: &mut GameIndex) {
 }
 
 pub(crate) fn collect_idea_ids(text: &str, ideas: &mut BTreeSet<String>) {
-    for ideas_block in blocks_named(&strip_comments(text), "ideas") {
+    let cleaned = strip_comments(text);
+    let parseable = close_unterminated_blocks_at_eof(&cleaned);
+    for ideas_block in blocks_named(&parseable, "ideas") {
         for (_category, category_block) in direct_child_blocks(&ideas_block) {
             for (idea, _idea_block) in direct_child_blocks(&category_block) {
                 if looks_like_idea_id(&idea) {
@@ -1106,6 +1240,41 @@ pub(crate) fn collect_idea_ids(text: &str, ideas: &mut BTreeSet<String>) {
             }
         }
     }
+}
+
+fn close_unterminated_blocks_at_eof(text: &str) -> String {
+    let mut depth = 0i32;
+    let mut in_quote = false;
+    let mut escape = false;
+    for ch in text.chars() {
+        if in_quote {
+            if ch == '"' && !escape {
+                in_quote = false;
+            }
+            if escape {
+                escape = false;
+            } else {
+                escape = ch == '\\';
+            }
+            continue;
+        }
+        if ch == '"' {
+            in_quote = true;
+            continue;
+        }
+        match ch {
+            '{' => depth += 1,
+            '}' => depth = (depth - 1).max(0),
+            _ => {}
+        }
+    }
+    if depth == 0 {
+        return text.to_string();
+    }
+    let mut parseable = String::with_capacity(text.len() + depth as usize);
+    parseable.push_str(text);
+    parseable.extend(std::iter::repeat_n('}', depth as usize));
+    parseable
 }
 
 pub(crate) fn looks_like_idea_id(value: &str) -> bool {
@@ -1425,6 +1594,7 @@ pub(crate) fn is_trait_definition_path(norm: &str) -> bool {
     norm.contains("/common/country_leader/")
         || norm.contains("/common/unit_leader/")
         || norm.contains("/common/traits/")
+        || norm.contains("/common/scientist_traits/")
 }
 
 pub(crate) fn is_modifier_definition_path(norm: &str) -> bool {
@@ -1444,6 +1614,24 @@ pub(crate) fn collect_direct_entries_in_wrappers(
                     entries.insert(key);
                 }
             }
+        }
+    }
+}
+
+pub(crate) fn collect_identifier_tokens_in_wrappers(
+    text: &str,
+    entries: &mut BTreeSet<String>,
+    wrappers: &[&str],
+) {
+    let cleaned = strip_comments(text);
+    for wrapper in wrappers {
+        for block in blocks_named(&cleaned, wrapper) {
+            entries.extend(
+                token_candidates(&block)
+                    .into_iter()
+                    .filter(|token| is_reference_identifier(token))
+                    .map(str::to_string),
+            );
         }
     }
 }
@@ -1536,6 +1724,117 @@ pub(crate) fn collect_markdown_heading_identifiers(text: &str, entries: &mut BTr
     }
 }
 
+pub(crate) fn collect_documented_dynamic_scope_identifiers(
+    text: &str,
+    entries: &mut BTreeSet<String>,
+) {
+    let mut current = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("### ") {
+            let key = rest
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .trim_matches('`');
+            current = is_identifier_like(key).then(|| key.to_string());
+            continue;
+        }
+        let Some(key) = current.as_ref() else {
+            continue;
+        };
+        let Some(description) = trimmed.strip_prefix("* description:") else {
+            continue;
+        };
+        let description = description.to_ascii_lowercase();
+        let describes_return = description.contains("return") || description.contains("leader of");
+        let describes_scope_object = [
+            "country",
+            "state",
+            "character",
+            "leader",
+            "advisor",
+            "operative",
+            "scientist",
+            "organization",
+        ]
+        .iter()
+        .any(|kind| description.contains(kind));
+        if describes_return && describes_scope_object {
+            entries.insert(key.clone());
+        }
+    }
+}
+
+pub(crate) fn collect_markdown_code_assignment_keys(text: &str, entries: &mut BTreeSet<String>) {
+    let mut in_code = false;
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            in_code = !in_code;
+            continue;
+        }
+        if !in_code {
+            continue;
+        }
+        if let Some(key) = assignment_key(line) {
+            if is_identifier_like(key) {
+                entries.insert(key.to_string());
+            }
+        }
+    }
+}
+
+pub(crate) fn collect_documented_modifier_expansions(text: &str, entries: &mut BTreeSet<String>) {
+    let mut template = None;
+    for line in text.lines() {
+        let trimmed = line.trim();
+        if let Some(heading) = trimmed.strip_prefix("## ") {
+            let candidate = heading
+                .rsplit_once("</span>")
+                .map(|(_, value)| value)
+                .unwrap_or(heading)
+                .trim();
+            template = modifier_template_placeholder(candidate).map(str::to_string);
+            continue;
+        }
+        let Some(current) = template.as_deref() else {
+            continue;
+        };
+        let Some(types) = trimmed.strip_prefix("* **Modified types**:") else {
+            continue;
+        };
+        let Some(start) = current.find('<') else {
+            continue;
+        };
+        let Some(relative_end) = current[start..].find('>') else {
+            continue;
+        };
+        let end = start + relative_end + 1;
+        for value in types
+            .split(',')
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let value = value.trim_matches('`');
+            let expanded = format!("{}{}{}", &current[..start], value, &current[end..]);
+            if is_identifier_like(&expanded) {
+                entries.insert(expanded);
+            }
+        }
+    }
+}
+
+fn modifier_template_placeholder(value: &str) -> Option<&str> {
+    let start = value.find('<')?;
+    let end = start + value[start..].find('>')?;
+    let placeholder = &value[start..=end];
+    if placeholder.contains("span") {
+        None
+    } else {
+        Some(value)
+    }
+}
+
 pub(crate) fn is_documentation_section_heading(key: &str) -> bool {
     matches!(key, "Effects" | "Modifiers" | "Triggers" | "Table")
 }
@@ -1566,8 +1865,25 @@ pub(crate) fn collect_named_entries(text: &str, entries: &mut BTreeSet<String>, 
     }
 }
 
-pub(crate) fn collect_ideology_ids(text: &str, entries: &mut BTreeSet<String>) {
-    collect_direct_entries_in_wrappers(text, entries, &["ideologies"]);
+pub(crate) fn collect_character_advisor_idea_tokens(text: &str, ideas: &mut BTreeSet<String>) {
+    let cleaned = strip_comments(text);
+    for advisor in blocks_named(&cleaned, "advisor") {
+        let Some(idea_token) = direct_assignment_value(&advisor, "idea_token") else {
+            continue;
+        };
+        if is_reference_identifier(idea_token) {
+            ideas.insert(idea_token.to_string());
+        }
+    }
+}
+
+pub(crate) fn collect_ideology_ids(
+    text: &str,
+    ideologies: &mut BTreeSet<String>,
+    ideology_types: &mut BTreeSet<String>,
+) {
+    collect_direct_entries_in_wrappers(text, ideologies, &["ideologies"]);
+    collect_direct_entries_in_wrappers(text, ideology_types, &["types"]);
 }
 
 pub(crate) fn finalize_ideology_derived_modifiers(index: &mut GameIndex) {
@@ -1577,6 +1893,110 @@ pub(crate) fn finalize_ideology_derived_modifiers(index: &mut GameIndex) {
         }
         index.modifiers.insert(format!("{ideology}_drift"));
         index.modifiers.insert(format!("{ideology}_acceptance"));
+    }
+}
+
+pub(crate) fn finalize_building_derived_modifiers(index: &mut GameIndex) {
+    for building in index.buildings.clone() {
+        if is_reference_identifier(&building) {
+            index
+                .modifiers
+                .insert(format!("production_speed_{building}_factor"));
+        }
+    }
+}
+
+pub(crate) fn finalize_resource_derived_modifiers(index: &mut GameIndex) {
+    for resource in index.resources.clone() {
+        if !is_reference_identifier(&resource) {
+            continue;
+        }
+        for prefix in [
+            "country_resource_",
+            "country_resource_cost_",
+            "state_resource_",
+            "temporary_state_resource_",
+        ] {
+            index.modifiers.insert(format!("{prefix}{resource}"));
+        }
+    }
+}
+
+pub(crate) fn collect_specialization_derived_modifiers(
+    text: &str,
+    modifiers: &mut BTreeSet<String>,
+) {
+    for (specialization, _) in direct_child_blocks(&strip_comments(text)) {
+        if is_reference_identifier(&specialization) {
+            modifiers.insert(format!("{specialization}_speed_factor"));
+        }
+    }
+}
+
+pub(crate) fn collect_duplicate_equipment_archetypes(
+    text: &str,
+    equipment_types: &mut BTreeSet<String>,
+    aliases: &mut BTreeMap<String, String>,
+) {
+    let cleaned = strip_comments(text);
+    for wrappers in blocks_named(&cleaned, "duplicate_archetypes") {
+        for (alias, block) in direct_child_blocks(&wrappers) {
+            let Some(archetype) = direct_assignment_value(&block, "archetype") else {
+                continue;
+            };
+            if is_reference_identifier(&alias) && is_reference_identifier(archetype) {
+                aliases.insert(alias, archetype.to_string());
+            }
+            for variants in blocks_named(&block, "variant_name") {
+                equipment_types.extend(
+                    direct_assignment_keys(&variants)
+                        .into_iter()
+                        .filter(|key| is_reference_identifier(key)),
+                );
+            }
+        }
+    }
+}
+
+pub(crate) fn finalize_equipment_derived_types(index: &mut GameIndex) {
+    let base_types = index.equipment_types.clone();
+    for (alias, archetype) in &index.equipment_duplicate_archetypes {
+        for base_type in &base_types {
+            let Some(suffix) = base_type.strip_prefix(archetype) else {
+                continue;
+            };
+            if suffix.strip_prefix('_').is_some_and(|level| {
+                !level.is_empty() && level.chars().all(|ch| ch.is_ascii_digit())
+            }) {
+                index.equipment_types.insert(format!("{alias}{suffix}"));
+            }
+        }
+    }
+}
+
+pub(crate) fn collect_observed_modifier_ids(text: &str, entries: &mut BTreeSet<String>) {
+    let cleaned = strip_comments(text);
+    for block in blocks_named(&cleaned, "modifier") {
+        let assignment_keys = direct_assignment_keys(&block);
+        if assignment_keys
+            .iter()
+            .any(|key| matches!(key.as_str(), "factor" | "base"))
+        {
+            continue;
+        }
+        let nested_keys = direct_child_blocks(&block)
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect::<BTreeSet<_>>();
+        let conditional_add = assignment_keys.iter().any(|key| key == "add");
+        for key in assignment_keys {
+            if !nested_keys.contains(&key)
+                && (!conditional_add || is_likely_modifier_assignment_key(&key))
+                && is_modifier_ref_candidate(&key)
+            {
+                entries.insert(key);
+            }
+        }
     }
 }
 
@@ -2066,7 +2486,7 @@ fn code_catalog_i64_category(
     )
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub(crate) struct CodeSymbolMatch {
     pub(crate) category: &'static str,
     pub(crate) kind: &'static str,
@@ -2132,6 +2552,38 @@ pub(crate) fn check_code_symbol_json(
 }
 
 pub(crate) fn related_code_symbol_matches(
+    index: &GameIndex,
+    query: &str,
+    requested_kind: Option<&str>,
+    limit: usize,
+) -> Vec<CodeSymbolMatch> {
+    if index.suppress_related_symbol_search {
+        return Vec::new();
+    }
+    let cache_key = (
+        requested_kind.unwrap_or("").to_string(),
+        query.to_string(),
+        limit,
+    );
+    if let Some(cached) = index
+        .related_symbol_cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .get(&cache_key)
+        .cloned()
+    {
+        return cached;
+    }
+    let matches = related_code_symbol_matches_uncached(index, query, requested_kind, limit);
+    index
+        .related_symbol_cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .insert(cache_key, matches.clone());
+    matches
+}
+
+fn related_code_symbol_matches_uncached(
     index: &GameIndex,
     query: &str,
     requested_kind: Option<&str>,
